@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"expo-open-ota/ee/identity"
+	"expo-open-ota/internal/handlers"
 	"expo-open-ota/internal/helpers"
 	"io"
 	"log"
@@ -61,30 +62,42 @@ type IngestHandler struct {
 	// branches denormalizes update_id -> branch onto every row; nil leaves
 	// the branch column empty.
 	branches BranchResolver
-	// contacts records every ingesting device into the universal registry,
-	// debounced; nil (stateless mode) leaves telemetry contact-free.
-	contacts *DeviceContactRecorder
+	// checkIns records every ingesting device into the universal registry,
+	// debounced; nil (stateless mode) leaves telemetry unregistered.
+	checkIns *CheckInRecorder
 }
 
-func NewIngestHandler(identityService *identity.Service, telemetry TelemetrySink, branches BranchResolver, contacts *DeviceContactRecorder) *IngestHandler {
-	return &IngestHandler{identityService: identityService, telemetry: telemetry, branches: branches, contacts: contacts}
+func NewIngestHandler(identityService *identity.Service, telemetry TelemetrySink, branches BranchResolver, checkIns *CheckInRecorder) *IngestHandler {
+	return &IngestHandler{identityService: identityService, telemetry: telemetry, branches: branches, checkIns: checkIns}
 }
 
-// noteContacts registers each distinct device of a batch (one, in practice: a
+// recordCheckIns registers each distinct device of a batch (one, in practice: a
 // batch is a single device's backlog) into the registry, debounced by the
-// recorder's cache.
-func noteContacts[R any](ctx context.Context, contacts *DeviceContactRecorder, appID string, remoteIP string, rows []R, clientID func(R) string) {
-	if contacts == nil || len(rows) == 0 {
+// recorder's cache. Telemetry knows the device's running update (the
+// expo.app.updates.id resource attribute, flattened onto every row), so the
+// check-in carries it: devices that rarely poll the manifest still keep their
+// adoption state fresh. Per device, the NEWEST row wins: a backlog flush
+// leads with pre-update sessions carrying the OLD update id, and taking the
+// first row would regress the recorded current right after a release.
+func recordCheckIns[R any](ctx context.Context, checkIns *CheckInRecorder, appID string, remoteIP string, rows []R, clientID func(R) string, updateID func(R) string, timestamp func(R) time.Time) {
+	if checkIns == nil || len(rows) == 0 {
 		return
 	}
-	seen := make(map[string]struct{}, 1)
-	for _, row := range rows {
+	newest := make(map[string]int, 1)
+	for i, row := range rows {
 		device := clientID(row)
-		if _, done := seen[device]; done {
-			continue
+		best, seen := newest[device]
+		if !seen || timestamp(row).After(timestamp(rows[best])) {
+			newest[device] = i
 		}
-		seen[device] = struct{}{}
-		contacts.NoteContact(ctx, appID, device, remoteIP)
+	}
+	for device, i := range newest {
+		checkIns.Record(ctx, handlers.DeviceCheckIn{
+			AppID:           appID,
+			EASClientID:     device,
+			RemoteIP:        remoteIP,
+			CurrentUpdateID: updateID(rows[i]),
+		})
 	}
 }
 
@@ -175,7 +188,10 @@ func (h *IngestHandler) HandleLogs(w http.ResponseWriter, r *http.Request) {
 		if clientIP := helpers.ClientIP(r); clientIP.IsValid() {
 			remoteIP = clientIP.String()
 		}
-		noteContacts(r.Context(), h.contacts, appID, remoteIP, rows, func(row LogRow) string { return row.EASClientID })
+		recordCheckIns(r.Context(), h.checkIns, appID, remoteIP, rows,
+			func(row LogRow) string { return row.EASClientID },
+			func(row LogRow) string { return row.UpdateID },
+			func(row LogRow) time.Time { return row.Timestamp })
 		if len(rows) > 0 {
 			for i := range rows {
 				rows[i].Branch = h.resolveBranch(r.Context(), appID, rows[i].UpdateID)
@@ -272,7 +288,10 @@ func (h *IngestHandler) HandleMetrics(w http.ResponseWriter, r *http.Request) {
 		remoteIP = clientIP.String()
 	}
 	rows := FlattenMetrics(appID, batch, time.Now().UTC())
-	noteContacts(r.Context(), h.contacts, appID, remoteIP, rows, func(row MetricRow) string { return row.EASClientID })
+	recordCheckIns(r.Context(), h.checkIns, appID, remoteIP, rows,
+		func(row MetricRow) string { return row.EASClientID },
+		func(row MetricRow) string { return row.UpdateID },
+		func(row MetricRow) time.Time { return row.Timestamp })
 	if len(rows) > 0 {
 		for i := range rows {
 			rows[i].Branch = h.resolveBranch(r.Context(), appID, rows[i].UpdateID)

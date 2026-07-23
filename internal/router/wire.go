@@ -108,9 +108,9 @@ func InitDependencies(ctx context.Context) (*AppContainer, func()) {
 	// nils, never a typed-nil interface.
 	var telemetrySink observe.TelemetrySink
 	var branchResolver observe.BranchResolver
-	// Records device contacts into the universal registry, debounced; nil
+	// Records device check-ins into the universal registry, debounced; nil
 	// (Observe off) leaves manifest polls and ingestion side-effect free.
-	var deviceContacts *observe.DeviceContactRecorder
+	var checkInRecorder *observe.CheckInRecorder
 
 	cleanup := func() {}
 	dbUrl := config.GetDBURL()
@@ -186,7 +186,7 @@ func InitDependencies(ctx context.Context) (*AppContainer, func()) {
 			identityService = identity.NewService(identity.NewPostgresIdentityStore(dbEngine), geoResolver)
 			telemetrySink = observe.NewClickHouseTelemetrySink(chEngine)
 			branchResolver = observe.NewBranchResolver(cache.GetCache(), pgUpdateStore.GetBranchNameByUpdateUUID)
-			deviceContacts = observe.NewDeviceContactRecorder(identityService, cache.GetCache())
+			checkInRecorder = observe.NewCheckInRecorder(identityService, cache.GetCache())
 		} else {
 			// Not a Fatal: pre-Observe deployments upgrade without
 			// CLICKHOUSE_URL and must keep booting. But an operator who had
@@ -297,15 +297,15 @@ func InitDependencies(ctx context.Context) (*AppContainer, func()) {
 		UploadHandler:            handlers.NewUploadHandler(cliAuthService, deploymentService),
 		UsersHandler:             dashhandlers.NewUsersHandler(userService),
 		UserRepo:                 userRepo,
-		ObserveIngestHandler:     observe.NewIngestHandler(identityService, telemetrySink, branchResolver, deviceContacts),
+		ObserveIngestHandler:     observe.NewIngestHandler(identityService, telemetrySink, branchResolver, checkInRecorder),
 		IdentityHandler:          identity.NewIdentityHandler(identityService),
 	}
 
 	// Every manifest poll registers the polling device in the universal
 	// device registry (background, debounced); the community fallback is
 	// simply "not wired".
-	if deviceContacts != nil {
-		container.ExpoProtocolHandler.SetOnDeviceSeen(deviceContacts.NoteContact)
+	if checkInRecorder != nil {
+		container.ExpoProtocolHandler.SetOnDeviceCheckIn(checkInRecorder.Record)
 	}
 
 	return container, cleanup

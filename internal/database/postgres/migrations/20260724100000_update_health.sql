@@ -1,0 +1,37 @@
+-- +goose Up
+
+-- The update each device is currently running, reported on every manifest
+-- poll (Expo-Current-Update-ID = the launched update) and on telemetry
+-- batches (expo.app.updates.id). NULL means no contact reported an id yet.
+-- Devices on the embedded bundle report the embedded update's OWN id (the
+-- manifest header always carries the launched update), so adoption cohorts
+-- can contain ids that match no published update row; the dashboard labels
+-- those as embedded/unknown. This is the instant-T adoption source of truth
+-- for the WHOLE fleet, with no ClickHouse and no observe SDK required.
+ALTER TABLE device_identity ADD COLUMN current_update_id UUID;
+CREATE INDEX idx_device_identity_current_update ON device_identity (app_id, current_update_id);
+
+-- Launch failures per (device, update), from the manifest error-recovery
+-- headers: an update listed in Expo-Recent-Failed-Update-IDs crashed at
+-- launch on that device and was rolled back (it never becomes current, which
+-- is exactly what makes this table the only place launch crashes exist).
+-- fatal_error is capture-once: the client consumes Expo-Fatal-Error (sends
+-- it exactly once, truncated to 1024 chars), so the first non-empty capture
+-- wins and later sticky re-sends never blank it.
+CREATE TABLE device_update_failures (
+    app_id UUID NOT NULL REFERENCES apps (id) ON DELETE CASCADE,
+    eas_client_id UUID NOT NULL,
+    update_id UUID NOT NULL,
+    fatal_error TEXT NOT NULL DEFAULT '',
+    first_seen_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    last_seen_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (app_id, eas_client_id, update_id)
+);
+-- Health of one update ("how many devices did X crash on") is the dominant
+-- query; the PK serves the per-device view.
+CREATE INDEX idx_device_update_failures_update ON device_update_failures (app_id, update_id);
+
+-- +goose Down
+DROP TABLE device_update_failures;
+DROP INDEX idx_device_identity_current_update;
+ALTER TABLE device_identity DROP COLUMN current_update_id;

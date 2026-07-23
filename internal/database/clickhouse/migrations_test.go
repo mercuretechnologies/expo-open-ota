@@ -18,7 +18,8 @@ func TestMain(m *testing.M) { os.Exit(pgtest.RunSerialized(m)) }
 // service, clickhouse://default:secret@localhost:9000/expo_ota_dev) and
 // TEST_DATABASE_URL (the advisory lock serializing migrators is a Postgres
 // one) to run. Applies the embedded migrations twice (a replica booting
-// after the leader must no-op) and checks the four tables exist.
+// after the leader must no-op), checks the fact tables exist and the
+// Postgres-migrated Source B tables are gone.
 func TestRunDBMigrations(t *testing.T) {
 	dsn := os.Getenv("TEST_CLICKHOUSE_URL")
 	pgURL := os.Getenv("TEST_DATABASE_URL")
@@ -34,12 +35,21 @@ func TestRunDBMigrations(t *testing.T) {
 	require.NoError(t, err)
 	defer engine.Close()
 
-	for _, table := range []string{"observe_metrics", "observe_logs", "device_current_update", "update_crashes"} {
+	for _, table := range []string{"observe_metrics", "observe_logs"} {
 		var exists uint64
 		require.NoError(t, engine.Conn.QueryRow(ctx,
 			"SELECT count() FROM system.tables WHERE database = currentDatabase() AND name = ?", table,
 		).Scan(&exists), table)
 		require.EqualValues(t, 1, exists, "table %s should exist", table)
+	}
+	// The Source B tables moved to Postgres (device_identity.current_update_id
+	// + device_update_failures); the drop migration must have removed them.
+	for _, table := range []string{"device_current_update", "update_crashes"} {
+		var exists uint64
+		require.NoError(t, engine.Conn.QueryRow(ctx,
+			"SELECT count() FROM system.tables WHERE database = currentDatabase() AND name = ?", table,
+		).Scan(&exists), table)
+		require.EqualValues(t, 0, exists, "table %s should be dropped", table)
 	}
 }
 

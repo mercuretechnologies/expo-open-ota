@@ -484,10 +484,12 @@ func (s *PostgresIdentityStore) SearchMetadataValues(ctx context.Context, appID 
 // poll, metrics batch, logs batch) lands here, identity ops only add the
 // metadata on top. The registry is UNCAPPED: the whole fleet is the
 // update-health source of truth, so a known device gets its last_seen bumped
-// (geo opportunistically enriched) and an unknown one is simply registered.
-// Write rate is bounded upstream by the contact recorder's debounce, not
-// here.
-func (s *PostgresIdentityStore) TouchDevice(ctx context.Context, appID string, easClientID string, geo *Geo) error {
+// (geo and current update opportunistically refreshed) and an unknown one is
+// simply registered. currentUpdateID nil means "this contact does not know"
+// (a telemetry batch from the embedded bundle) and leaves the column alone.
+// Write rate is bounded upstream by the contact recorder's debounce, which
+// lets state TRANSITIONS through immediately.
+func (s *PostgresIdentityStore) TouchDevice(ctx context.Context, appID string, easClientID string, geo *Geo, currentUpdateID *string) error {
 	appUUID, err := toPgUUID(appID)
 	if err != nil {
 		return err
@@ -496,8 +498,14 @@ func (s *PostgresIdentityStore) TouchDevice(ctx context.Context, appID string, e
 	if err != nil {
 		return err
 	}
+	var currentUpdate pgtype.UUID // Valid:false = NULL = keep the known value
+	if currentUpdateID != nil {
+		if currentUpdate, err = toPgUUID(*currentUpdateID); err != nil {
+			return err
+		}
+	}
 
-	touch := pgdb.TouchDeviceIdentityParams{AppID: appUUID, EasClientID: clientUUID}
+	touch := pgdb.TouchDeviceIdentityParams{AppID: appUUID, EasClientID: clientUUID, CurrentUpdateID: currentUpdate}
 	if geo != nil {
 		touch.CountryCode = geo.CountryCode
 		touch.City = geo.City
@@ -512,7 +520,7 @@ func (s *PostgresIdentityStore) TouchDevice(ctx context.Context, appID string, e
 		return nil
 	}
 
-	register := pgdb.RegisterDeviceParams{AppID: appUUID, EasClientID: clientUUID}
+	register := pgdb.RegisterDeviceParams{AppID: appUUID, EasClientID: clientUUID, CurrentUpdateID: currentUpdate}
 	if geo != nil {
 		register.CountryCode = geo.CountryCode
 		register.City = geo.City
@@ -522,6 +530,39 @@ func (s *PostgresIdentityStore) TouchDevice(ctx context.Context, appID string, e
 	// Two racers both landing here is absorbed by the upsert's ON CONFLICT.
 	if _, err := s.engine.RegisterDevice(ctx, register); err != nil {
 		return fmt.Errorf("registering device: %w", err)
+	}
+	return nil
+}
+
+// RecordUpdateFailures stores launch failures reported by the manifest
+// error-recovery headers, one row per (device, update). fatalError applies to
+// every listed update whose error is still unrecorded: the client sends it
+// once, on the poll where the freshly-crashed update first appears, and the
+// capture-once SQL keeps sticky re-sends from blanking it. With several ids
+// in one poll (rare) the error could stick to an older failure whose capture
+// was missed; acceptable, the crash FACT is always exact.
+func (s *PostgresIdentityStore) RecordUpdateFailures(ctx context.Context, appID string, easClientID string, updateIDs []string, fatalError string) error {
+	appUUID, err := toPgUUID(appID)
+	if err != nil {
+		return err
+	}
+	clientUUID, err := toPgUUID(easClientID)
+	if err != nil {
+		return err
+	}
+	for _, updateID := range updateIDs {
+		updateUUID, err := toPgUUID(updateID)
+		if err != nil {
+			continue // forged id in the header: skip, never fail the batch
+		}
+		if err := s.engine.UpsertDeviceUpdateFailure(ctx, pgdb.UpsertDeviceUpdateFailureParams{
+			AppID:       appUUID,
+			EasClientID: clientUUID,
+			UpdateID:    updateUUID,
+			FatalError:  fatalError,
+		}); err != nil {
+			return fmt.Errorf("recording update failure: %w", err)
+		}
 	}
 	return nil
 }

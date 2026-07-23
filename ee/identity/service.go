@@ -41,7 +41,11 @@ type IdentityMutator interface {
 	ApplyUnset(ctx context.Context, appID string, easClientID string, keys []string, geo *Geo) (ApplyResult, error)
 	// TouchDevice registers a passive contact (manifest poll, telemetry
 	// batch): bump-or-register, uncapped, the whole fleet is the registry.
-	TouchDevice(ctx context.Context, appID string, easClientID string, geo *Geo) error
+	// currentUpdateID nil = this contact does not know, keep the known value.
+	TouchDevice(ctx context.Context, appID string, easClientID string, geo *Geo, currentUpdateID *string) error
+	// RecordUpdateFailures stores manifest-reported launch failures per
+	// (device, update), fatal_error captured once.
+	RecordUpdateFailures(ctx context.Context, appID string, easClientID string, updateIDs []string, fatalError string) error
 }
 
 // Store is the full data surface the service needs: the ingest write path plus
@@ -102,12 +106,18 @@ func (s *Service) GetDevice(ctx context.Context, appID string, easClientID strin
 // the server registers it (metadata untouched), so device_identity is the
 // universal device registry and the identity ops only layer metadata on top.
 // The geo enrichment rides along exactly as on Apply.
-func (s *Service) TouchDevice(ctx context.Context, appID string, easClientID string, remoteIP string) error {
+func (s *Service) TouchDevice(ctx context.Context, appID string, easClientID string, remoteIP string, currentUpdateID *string) error {
 	var geo *Geo
 	if s.geo != nil && remoteIP != "" {
 		geo = s.geo.Resolve(remoteIP)
 	}
-	return s.store.TouchDevice(ctx, appID, easClientID, geo)
+	return s.store.TouchDevice(ctx, appID, easClientID, geo, currentUpdateID)
+}
+
+// RecordUpdateFailures is the manifest error-recovery sink: launch crashes
+// land in Postgres so update health works with no ClickHouse and no SDK.
+func (s *Service) RecordUpdateFailures(ctx context.Context, appID string, easClientID string, updateIDs []string, fatalError string) error {
+	return s.store.RecordUpdateFailures(ctx, appID, easClientID, updateIDs, fatalError)
 }
 
 // Request is one identity operation extracted from a log event.

@@ -85,13 +85,23 @@ type ChannelRollout struct {
 }
 
 type DeviceIdentity struct {
+	AppID           pgtype.UUID        `json:"app_id"`
+	EasClientID     pgtype.UUID        `json:"eas_client_id"`
+	Metadata        []byte             `json:"metadata"`
+	CountryCode     *string            `json:"country_code"`
+	City            *string            `json:"city"`
+	Lat             *float64           `json:"lat"`
+	Lng             *float64           `json:"lng"`
+	FirstSeenAt     pgtype.Timestamptz `json:"first_seen_at"`
+	LastSeenAt      pgtype.Timestamptz `json:"last_seen_at"`
+	CurrentUpdateID pgtype.UUID        `json:"current_update_id"`
+}
+
+type DeviceUpdateFailure struct {
 	AppID       pgtype.UUID        `json:"app_id"`
 	EasClientID pgtype.UUID        `json:"eas_client_id"`
-	Metadata    []byte             `json:"metadata"`
-	CountryCode *string            `json:"country_code"`
-	City        *string            `json:"city"`
-	Lat         *float64           `json:"lat"`
-	Lng         *float64           `json:"lng"`
+	UpdateID    pgtype.UUID        `json:"update_id"`
+	FatalError  string             `json:"fatal_error"`
 	FirstSeenAt pgtype.Timestamptz `json:"first_seen_at"`
 	LastSeenAt  pgtype.Timestamptz `json:"last_seen_at"`
 }

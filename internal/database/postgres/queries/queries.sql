@@ -1236,6 +1236,7 @@ UPDATE device_identity SET
     city = COALESCE(sqlc.narg('city'), city),
     lat = COALESCE(sqlc.narg('lat'), lat),
     lng = COALESCE(sqlc.narg('lng'), lng),
+    current_update_id = COALESCE(sqlc.narg('current_update_id'), current_update_id),
     last_seen_at = CURRENT_TIMESTAMP
 WHERE app_id = $1 AND eas_client_id = $2;
 
@@ -1243,7 +1244,42 @@ WHERE app_id = $1 AND eas_client_id = $2;
 -- whole fleet is the update-health source of truth). ON CONFLICT absorbs the
 -- race with a concurrent registration of the same device.
 -- name: RegisterDevice :execrows
-INSERT INTO device_identity (app_id, eas_client_id, country_code, city, lat, lng)
-VALUES ($1, $2, sqlc.narg('country_code'), sqlc.narg('city'), sqlc.narg('lat'), sqlc.narg('lng'))
-ON CONFLICT (app_id, eas_client_id) DO UPDATE SET last_seen_at = CURRENT_TIMESTAMP;
+INSERT INTO device_identity (app_id, eas_client_id, country_code, city, lat, lng, current_update_id)
+VALUES ($1, $2, sqlc.narg('country_code'), sqlc.narg('city'), sqlc.narg('lat'), sqlc.narg('lng'), sqlc.narg('current_update_id'))
+ON CONFLICT (app_id, eas_client_id) DO UPDATE SET
+    last_seen_at = CURRENT_TIMESTAMP,
+    current_update_id = COALESCE(EXCLUDED.current_update_id, device_identity.current_update_id);
 
+
+-- Records one launch failure. Capture-once on fatal_error: the client sends
+-- Expo-Fatal-Error exactly once (the poll right after the crash), so a first
+-- non-empty capture is authoritative and sticky header re-sends never blank
+-- or overwrite it.
+-- name: UpsertDeviceUpdateFailure :exec
+INSERT INTO device_update_failures (app_id, eas_client_id, update_id, fatal_error)
+VALUES ($1, $2, $3, sqlc.arg(fatal_error))
+ON CONFLICT (app_id, eas_client_id, update_id) DO UPDATE SET
+    last_seen_at = CURRENT_TIMESTAMP,
+    fatal_error = CASE
+        WHEN device_update_failures.fatal_error = '' THEN EXCLUDED.fatal_error
+        ELSE device_update_failures.fatal_error
+    END;
+
+-- Instant-T adoption: how many devices currently run this update.
+-- name: CountDevicesOnUpdate :one
+SELECT COUNT(*) FROM device_identity
+WHERE app_id = $1 AND current_update_id = $2;
+
+-- Instant-T health: how many devices this update crashed on at launch.
+-- name: CountUpdateFailures :one
+SELECT COUNT(*) FROM device_update_failures
+WHERE app_id = $1 AND update_id = $2;
+
+-- The fleet's adoption breakdown, biggest cohorts first. NULL update = the
+-- embedded bundle (or a device seen before this feature landed).
+-- name: AdoptionBreakdown :many
+SELECT current_update_id, COUNT(*) AS device_count
+FROM device_identity
+WHERE app_id = $1
+GROUP BY current_update_id
+ORDER BY device_count DESC, current_update_id ASC NULLS LAST;

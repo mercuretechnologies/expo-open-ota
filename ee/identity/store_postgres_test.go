@@ -596,13 +596,13 @@ func TestTouchDeviceRegistersAndBumps(t *testing.T) {
 
 	// First contact registers the device; the registry is uncapped.
 	deviceID := uuid.NewString()
-	require.NoError(t, store.TouchDevice(ctx, appID, deviceID, nil))
+	require.NoError(t, store.TouchDevice(ctx, appID, deviceID, nil, nil))
 	created, err := store.GetDevice(ctx, appID, deviceID)
 	require.NoError(t, err)
 	require.NotNil(t, created)
 
 	// A later contact bumps last_seen, never touching metadata.
-	require.NoError(t, store.TouchDevice(ctx, appID, deviceID, nil))
+	require.NoError(t, store.TouchDevice(ctx, appID, deviceID, nil, nil))
 	bumped, err := store.GetDevice(ctx, appID, deviceID)
 	require.NoError(t, err)
 	require.NotNil(t, bumped)
@@ -617,10 +617,10 @@ func TestTouchDeviceGeoCoalesce(t *testing.T) {
 
 	deviceID := uuid.NewString()
 	country := "FR"
-	require.NoError(t, store.TouchDevice(ctx, appID, deviceID, &Geo{CountryCode: &country}))
+	require.NoError(t, store.TouchDevice(ctx, appID, deviceID, &Geo{CountryCode: &country}, nil))
 
 	// A later contact resolving no geo must not erase the known one.
-	require.NoError(t, store.TouchDevice(ctx, appID, deviceID, nil))
+	require.NoError(t, store.TouchDevice(ctx, appID, deviceID, nil, nil))
 	device, err := store.GetDevice(ctx, appID, deviceID)
 	require.NoError(t, err)
 	require.NotNil(t, device)
@@ -642,7 +642,7 @@ func TestTouchDeviceConcurrentSameDevice(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			require.NoError(t, store.TouchDevice(ctx, appID, deviceID, nil))
+			require.NoError(t, store.TouchDevice(ctx, appID, deviceID, nil, nil))
 		}()
 	}
 	wg.Wait()
@@ -651,4 +651,98 @@ func TestTouchDeviceConcurrentSameDevice(t *testing.T) {
 	require.NoError(t, pool.QueryRow(ctx,
 		"SELECT COUNT(*) FROM device_identity WHERE app_id = $1 AND eas_client_id = $2", appID, deviceID).Scan(&rows))
 	require.Equal(t, 1, rows)
+}
+
+func TestTouchDeviceTracksCurrentUpdate(t *testing.T) {
+	store, pool := setupIdentityStore(t)
+	appID := seedApp(t, pool)
+	ctx := context.Background()
+	deviceID := uuid.NewString()
+	updateA, updateB := uuid.NewString(), uuid.NewString()
+
+	// Registration carries the running update.
+	require.NoError(t, store.TouchDevice(ctx, appID, deviceID, nil, &updateA))
+	var current *string
+	readCurrent := func() *string {
+		t.Helper()
+		var v *string
+		require.NoError(t, pool.QueryRow(ctx,
+			"SELECT current_update_id::text FROM device_identity WHERE app_id = $1 AND eas_client_id = $2", appID, deviceID).Scan(&v))
+		return v
+	}
+	current = readCurrent()
+	require.NotNil(t, current)
+	require.Equal(t, updateA, *current)
+
+	// A contact that does not know (nil) keeps the known value.
+	require.NoError(t, store.TouchDevice(ctx, appID, deviceID, nil, nil))
+	current = readCurrent()
+	require.NotNil(t, current)
+	require.Equal(t, updateA, *current)
+
+	// A transition overwrites it.
+	require.NoError(t, store.TouchDevice(ctx, appID, deviceID, nil, &updateB))
+	current = readCurrent()
+	require.NotNil(t, current)
+	require.Equal(t, updateB, *current)
+}
+
+func TestRecordUpdateFailuresCaptureOnce(t *testing.T) {
+	store, pool := setupIdentityStore(t)
+	appID := seedApp(t, pool)
+	ctx := context.Background()
+	deviceID := uuid.NewString()
+	failedUpdate := uuid.NewString()
+
+	require.NoError(t, store.TouchDevice(ctx, appID, deviceID, nil, nil))
+
+	// The crash poll captures the fatal error...
+	require.NoError(t, store.RecordUpdateFailures(ctx, appID, deviceID, []string{failedUpdate}, "TypeError: boom"))
+	// ...sticky re-sends carry no error and must not blank it, nor duplicate.
+	require.NoError(t, store.RecordUpdateFailures(ctx, appID, deviceID, []string{failedUpdate}, ""))
+	// A LATER error must not overwrite the first capture either.
+	require.NoError(t, store.RecordUpdateFailures(ctx, appID, deviceID, []string{failedUpdate}, "different error"))
+	// Forged ids in the list are skipped without failing.
+	require.NoError(t, store.RecordUpdateFailures(ctx, appID, deviceID, []string{"garbage", failedUpdate}, ""))
+
+	var rows int
+	var fatal string
+	require.NoError(t, pool.QueryRow(ctx,
+		"SELECT COUNT(*), MAX(fatal_error) FROM device_update_failures WHERE app_id = $1 AND update_id = $2", appID, failedUpdate).Scan(&rows, &fatal))
+	require.Equal(t, 1, rows, "one failure row per (device, update), sticky re-sends collapse")
+	require.Equal(t, "TypeError: boom", fatal)
+}
+
+func TestUpdateHealthCounts(t *testing.T) {
+	store, pool := setupIdentityStore(t)
+	appID := seedApp(t, pool)
+	ctx := context.Background()
+	updateA, updateB := uuid.NewString(), uuid.NewString()
+
+	// 2 devices on A, 1 on B, 1 on the embedded bundle; B crashed on one.
+	d1, d2, d3, d4 := uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString()
+	require.NoError(t, store.TouchDevice(ctx, appID, d1, nil, &updateA))
+	require.NoError(t, store.TouchDevice(ctx, appID, d2, nil, &updateA))
+	require.NoError(t, store.TouchDevice(ctx, appID, d3, nil, &updateB))
+	require.NoError(t, store.TouchDevice(ctx, appID, d4, nil, nil))
+	require.NoError(t, store.RecordUpdateFailures(ctx, appID, d4, []string{updateB}, "crashed at launch"))
+
+	appUUID, err := toPgUUID(appID)
+	require.NoError(t, err)
+	updateAUUID, err := toPgUUID(updateA)
+	require.NoError(t, err)
+	updateBUUID, err := toPgUUID(updateB)
+	require.NoError(t, err)
+
+	onA, err := store.engine.CountDevicesOnUpdate(ctx, pgdb.CountDevicesOnUpdateParams{AppID: appUUID, CurrentUpdateID: updateAUUID})
+	require.NoError(t, err)
+	require.EqualValues(t, 2, onA)
+	failuresB, err := store.engine.CountUpdateFailures(ctx, pgdb.CountUpdateFailuresParams{AppID: appUUID, UpdateID: updateBUUID})
+	require.NoError(t, err)
+	require.EqualValues(t, 1, failuresB)
+
+	breakdown, err := store.engine.AdoptionBreakdown(ctx, appUUID)
+	require.NoError(t, err)
+	require.Len(t, breakdown, 3, "A cohort, B cohort, embedded-bundle cohort")
+	require.EqualValues(t, 2, breakdown[0].DeviceCount)
 }

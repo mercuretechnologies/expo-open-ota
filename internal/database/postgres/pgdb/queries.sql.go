@@ -13,6 +13,41 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const adoptionBreakdown = `-- name: AdoptionBreakdown :many
+SELECT current_update_id, COUNT(*) AS device_count
+FROM device_identity
+WHERE app_id = $1
+GROUP BY current_update_id
+ORDER BY device_count DESC, current_update_id ASC NULLS LAST
+`
+
+type AdoptionBreakdownRow struct {
+	CurrentUpdateID pgtype.UUID `json:"current_update_id"`
+	DeviceCount     int64       `json:"device_count"`
+}
+
+// The fleet's adoption breakdown, biggest cohorts first. NULL update = the
+// embedded bundle (or a device seen before this feature landed).
+func (q *Queries) AdoptionBreakdown(ctx context.Context, appID pgtype.UUID) ([]AdoptionBreakdownRow, error) {
+	rows, err := q.db.Query(ctx, adoptionBreakdown, appID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []AdoptionBreakdownRow
+	for rows.Next() {
+		var i AdoptionBreakdownRow
+		if err := rows.Scan(&i.CurrentUpdateID, &i.DeviceCount); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const advanceAuditExportCursor = `-- name: AdvanceAuditExportCursor :execresult
 UPDATE audit_export_state
 SET last_exported_id = $2
@@ -93,6 +128,24 @@ func (q *Queries) CountAuditLogEvents(ctx context.Context, arg CountAuditLogEven
 	return count, err
 }
 
+const countDevicesOnUpdate = `-- name: CountDevicesOnUpdate :one
+SELECT COUNT(*) FROM device_identity
+WHERE app_id = $1 AND current_update_id = $2
+`
+
+type CountDevicesOnUpdateParams struct {
+	AppID           pgtype.UUID `json:"app_id"`
+	CurrentUpdateID pgtype.UUID `json:"current_update_id"`
+}
+
+// Instant-T adoption: how many devices currently run this update.
+func (q *Queries) CountDevicesOnUpdate(ctx context.Context, arg CountDevicesOnUpdateParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countDevicesOnUpdate, arg.AppID, arg.CurrentUpdateID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countGrantsByRole = `-- name: CountGrantsByRole :one
 SELECT COUNT(*) FROM user_app_grants
 WHERE role_id = $1
@@ -136,6 +189,24 @@ func (q *Queries) CountGrantsPerUser(ctx context.Context) ([]CountGrantsPerUserR
 		return nil, err
 	}
 	return items, nil
+}
+
+const countUpdateFailures = `-- name: CountUpdateFailures :one
+SELECT COUNT(*) FROM device_update_failures
+WHERE app_id = $1 AND update_id = $2
+`
+
+type CountUpdateFailuresParams struct {
+	AppID    pgtype.UUID `json:"app_id"`
+	UpdateID pgtype.UUID `json:"update_id"`
+}
+
+// Instant-T health: how many devices this update crashed on at launch.
+func (q *Queries) CountUpdateFailures(ctx context.Context, arg CountUpdateFailuresParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countUpdateFailures, arg.AppID, arg.UpdateID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
 }
 
 const decrementIdentityValueStat = `-- name: DecrementIdentityValueStat :exec
@@ -974,7 +1045,7 @@ func (q *Queries) GetChannelsByAppID(ctx context.Context, appID pgtype.UUID) ([]
 }
 
 const getDeviceIdentity = `-- name: GetDeviceIdentity :one
-SELECT app_id, eas_client_id, metadata, country_code, city, lat, lng, first_seen_at, last_seen_at FROM device_identity
+SELECT app_id, eas_client_id, metadata, country_code, city, lat, lng, first_seen_at, last_seen_at, current_update_id FROM device_identity
 WHERE app_id = $1 AND eas_client_id = $2
 `
 
@@ -996,12 +1067,13 @@ func (q *Queries) GetDeviceIdentity(ctx context.Context, arg GetDeviceIdentityPa
 		&i.Lng,
 		&i.FirstSeenAt,
 		&i.LastSeenAt,
+		&i.CurrentUpdateID,
 	)
 	return i, err
 }
 
 const getDeviceIdentityForUpdate = `-- name: GetDeviceIdentityForUpdate :one
-SELECT app_id, eas_client_id, metadata, country_code, city, lat, lng, first_seen_at, last_seen_at FROM device_identity
+SELECT app_id, eas_client_id, metadata, country_code, city, lat, lng, first_seen_at, last_seen_at, current_update_id FROM device_identity
 WHERE app_id = $1 AND eas_client_id = $2
 FOR UPDATE
 `
@@ -1024,6 +1096,7 @@ func (q *Queries) GetDeviceIdentityForUpdate(ctx context.Context, arg GetDeviceI
 		&i.Lng,
 		&i.FirstSeenAt,
 		&i.LastSeenAt,
+		&i.CurrentUpdateID,
 	)
 	return i, err
 }
@@ -2681,7 +2754,7 @@ func (q *Queries) ListAuditLogEventsAfter(ctx context.Context, arg ListAuditLogE
 }
 
 const listDevices = `-- name: ListDevices :many
-SELECT app_id, eas_client_id, metadata, country_code, city, lat, lng, first_seen_at, last_seen_at FROM device_identity
+SELECT app_id, eas_client_id, metadata, country_code, city, lat, lng, first_seen_at, last_seen_at, current_update_id FROM device_identity
 WHERE app_id = $1
   AND ($2::jsonb IS NULL OR metadata @> $2::jsonb)
   AND (
@@ -2731,6 +2804,7 @@ func (q *Queries) ListDevices(ctx context.Context, arg ListDevicesParams) ([]Dev
 			&i.Lng,
 			&i.FirstSeenAt,
 			&i.LastSeenAt,
+			&i.CurrentUpdateID,
 		); err != nil {
 			return nil, err
 		}
@@ -3156,18 +3230,21 @@ func (q *Queries) PurgeExportedAuditLogEventsBefore(ctx context.Context, occurre
 }
 
 const registerDevice = `-- name: RegisterDevice :execrows
-INSERT INTO device_identity (app_id, eas_client_id, country_code, city, lat, lng)
-VALUES ($1, $2, $3, $4, $5, $6)
-ON CONFLICT (app_id, eas_client_id) DO UPDATE SET last_seen_at = CURRENT_TIMESTAMP
+INSERT INTO device_identity (app_id, eas_client_id, country_code, city, lat, lng, current_update_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
+ON CONFLICT (app_id, eas_client_id) DO UPDATE SET
+    last_seen_at = CURRENT_TIMESTAMP,
+    current_update_id = COALESCE(EXCLUDED.current_update_id, device_identity.current_update_id)
 `
 
 type RegisterDeviceParams struct {
-	AppID       pgtype.UUID `json:"app_id"`
-	EasClientID pgtype.UUID `json:"eas_client_id"`
-	CountryCode *string     `json:"country_code"`
-	City        *string     `json:"city"`
-	Lat         *float64    `json:"lat"`
-	Lng         *float64    `json:"lng"`
+	AppID           pgtype.UUID `json:"app_id"`
+	EasClientID     pgtype.UUID `json:"eas_client_id"`
+	CountryCode     *string     `json:"country_code"`
+	City            *string     `json:"city"`
+	Lat             *float64    `json:"lat"`
+	Lng             *float64    `json:"lng"`
+	CurrentUpdateID pgtype.UUID `json:"current_update_id"`
 }
 
 // Registration upsert for the passive path: the registry is uncapped (the
@@ -3181,6 +3258,7 @@ func (q *Queries) RegisterDevice(ctx context.Context, arg RegisterDeviceParams) 
 		arg.City,
 		arg.Lat,
 		arg.Lng,
+		arg.CurrentUpdateID,
 	)
 	if err != nil {
 		return 0, err
@@ -3416,17 +3494,19 @@ UPDATE device_identity SET
     city = COALESCE($4, city),
     lat = COALESCE($5, lat),
     lng = COALESCE($6, lng),
+    current_update_id = COALESCE($7, current_update_id),
     last_seen_at = CURRENT_TIMESTAMP
 WHERE app_id = $1 AND eas_client_id = $2
 `
 
 type TouchDeviceIdentityParams struct {
-	AppID       pgtype.UUID `json:"app_id"`
-	EasClientID pgtype.UUID `json:"eas_client_id"`
-	CountryCode *string     `json:"country_code"`
-	City        *string     `json:"city"`
-	Lat         *float64    `json:"lat"`
-	Lng         *float64    `json:"lng"`
+	AppID           pgtype.UUID `json:"app_id"`
+	EasClientID     pgtype.UUID `json:"eas_client_id"`
+	CountryCode     *string     `json:"country_code"`
+	City            *string     `json:"city"`
+	Lat             *float64    `json:"lat"`
+	Lng             *float64    `json:"lng"`
+	CurrentUpdateID pgtype.UUID `json:"current_update_id"`
 }
 
 // Passive-contact bump (manifest poll, telemetry batch): refresh last_seen and
@@ -3440,6 +3520,7 @@ func (q *Queries) TouchDeviceIdentity(ctx context.Context, arg TouchDeviceIdenti
 		arg.City,
 		arg.Lat,
 		arg.Lng,
+		arg.CurrentUpdateID,
 	)
 	if err != nil {
 		return 0, err
@@ -3574,7 +3655,7 @@ UPDATE device_identity SET
     lng = COALESCE($7, lng),
     last_seen_at = CURRENT_TIMESTAMP
 WHERE app_id = $1 AND eas_client_id = $2
-RETURNING app_id, eas_client_id, metadata, country_code, city, lat, lng, first_seen_at, last_seen_at
+RETURNING app_id, eas_client_id, metadata, country_code, city, lat, lng, first_seen_at, last_seen_at, current_update_id
 `
 
 type UpdateDeviceIdentityParams struct {
@@ -3608,6 +3689,7 @@ func (q *Queries) UpdateDeviceIdentity(ctx context.Context, arg UpdateDeviceIden
 		&i.Lng,
 		&i.FirstSeenAt,
 		&i.LastSeenAt,
+		&i.CurrentUpdateID,
 	)
 	return i, err
 }
@@ -3690,6 +3772,38 @@ type UpdateUserPasswordByIDParams struct {
 
 func (q *Queries) UpdateUserPasswordByID(ctx context.Context, arg UpdateUserPasswordByIDParams) (pgconn.CommandTag, error) {
 	return q.db.Exec(ctx, updateUserPasswordByID, arg.ID, arg.PasswordHash)
+}
+
+const upsertDeviceUpdateFailure = `-- name: UpsertDeviceUpdateFailure :exec
+INSERT INTO device_update_failures (app_id, eas_client_id, update_id, fatal_error)
+VALUES ($1, $2, $3, $4)
+ON CONFLICT (app_id, eas_client_id, update_id) DO UPDATE SET
+    last_seen_at = CURRENT_TIMESTAMP,
+    fatal_error = CASE
+        WHEN device_update_failures.fatal_error = '' THEN EXCLUDED.fatal_error
+        ELSE device_update_failures.fatal_error
+    END
+`
+
+type UpsertDeviceUpdateFailureParams struct {
+	AppID       pgtype.UUID `json:"app_id"`
+	EasClientID pgtype.UUID `json:"eas_client_id"`
+	UpdateID    pgtype.UUID `json:"update_id"`
+	FatalError  string      `json:"fatal_error"`
+}
+
+// Records one launch failure. Capture-once on fatal_error: the client sends
+// Expo-Fatal-Error exactly once (the poll right after the crash), so a first
+// non-empty capture is authoritative and sticky header re-sends never blank
+// or overwrite it.
+func (q *Queries) UpsertDeviceUpdateFailure(ctx context.Context, arg UpsertDeviceUpdateFailureParams) error {
+	_, err := q.db.Exec(ctx, upsertDeviceUpdateFailure,
+		arg.AppID,
+		arg.EasClientID,
+		arg.UpdateID,
+		arg.FatalError,
+	)
+	return err
 }
 
 const upsertEnterpriseLicense = `-- name: UpsertEnterpriseLicense :one
