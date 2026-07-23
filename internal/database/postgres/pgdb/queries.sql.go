@@ -625,6 +625,30 @@ func (q *Queries) GetBranchByName(ctx context.Context, arg GetBranchByNameParams
 	return id, err
 }
 
+const getBranchNameByUpdateUUID = `-- name: GetBranchNameByUpdateUUID :one
+SELECT b.name
+FROM updates u
+INNER JOIN branches b ON u.branch_id = b.id
+WHERE b.app_id = $1 AND u.update_uuid = $2
+LIMIT 1
+`
+
+type GetBranchNameByUpdateUUIDParams struct {
+	AppID      pgtype.UUID `json:"app_id"`
+	UpdateUuid pgtype.UUID `json:"update_uuid"`
+}
+
+// The observe flattener denormalizes the branch onto every ClickHouse row.
+// Resolved from the update uuid (permanent: an update never changes branch),
+// NEVER from the channel (a channel can be re-pointed over time). Cached
+// in-process by the caller, so this runs once per distinct update.
+func (q *Queries) GetBranchNameByUpdateUUID(ctx context.Context, arg GetBranchNameByUpdateUUIDParams) (string, error) {
+	row := q.db.QueryRow(ctx, getBranchNameByUpdateUUID, arg.AppID, arg.UpdateUuid)
+	var name string
+	err := row.Scan(&name)
+	return name, err
+}
+
 const getBranchesByAppID = `-- name: GetBranchesByAppID :many
 WITH latest_runtime AS (
     SELECT DISTINCT ON (u.branch_id)

@@ -588,3 +588,25 @@ func (s *PostgresUpdateStore) CreateRollback(ctx context.Context, appId string, 
 		AppId:          pgAppID.String(),
 	}, nil
 }
+
+// GetBranchNameByUpdateUUID resolves the branch an update belongs to from the
+// uuid clients report on the wire (observe telemetry enrichment). Postgres-only
+// on purpose, NOT part of services.UpdateRepository: the bucket store has no
+// consumer for it and the shared interface should not grow a method one
+// implementation would stub. ("", nil) means "no such update", which is data
+// (permanent, cacheable); an error is transient database trouble.
+func (s *PostgresUpdateStore) GetBranchNameByUpdateUUID(ctx context.Context, appID string, updateUUID string) (string, error) {
+	// ToPgUUID turns a malformed id into a NULL param, which matches no row:
+	// malformed input answers ("", nil), the permanent kind of absence.
+	name, err := s.engine.GetBranchNameByUpdateUUID(ctx, pgdb.GetBranchNameByUpdateUUIDParams{
+		AppID:      ToPgUUID(appID),
+		UpdateUuid: ToPgUUID(updateUUID),
+	})
+	if err != nil {
+		if database.IsNoRows(err) {
+			return "", nil
+		}
+		return "", err
+	}
+	return name, nil
+}

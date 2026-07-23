@@ -1234,3 +1234,14 @@ WHERE app_id = $1
   )
 ORDER BY last_seen_at DESC, eas_client_id DESC
 LIMIT sqlc.arg('lim')::int;
+
+-- The observe flattener denormalizes the branch onto every ClickHouse row.
+-- Resolved from the update uuid (permanent: an update never changes branch),
+-- NEVER from the channel (a channel can be re-pointed over time). Cached
+-- in-process by the caller, so this runs once per distinct update.
+-- name: GetBranchNameByUpdateUUID :one
+SELECT b.name
+FROM updates u
+INNER JOIN branches b ON u.branch_id = b.id
+WHERE b.app_id = $1 AND u.update_uuid = $2
+LIMIT 1;

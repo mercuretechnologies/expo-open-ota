@@ -1,0 +1,92 @@
+{
+  "resourceLogs": [
+    {
+      "resource": {
+        "attributes": [
+          {
+            "key": "service.name",
+            "value": {
+              "stringValue": "com.exemple.app"
+            }
+          },
+          {
+            "key": "os.type",
+            "value": {
+              "stringValue": "linux"
+            }
+          },
+          {
+            "key": "telemetry.sdk.name",
+            "value": {
+              "stringValue": "expo-observe"
+            }
+          },
+          {
+            "key": "telemetry.sdk.language",
+            "value": {
+              "stringValue": "kotlin"
+            }
+          },
+          {
+            "key": "expo.eas_client.id",
+            "value": {
+              "stringValue": "3f9b2c81-4a5d-4e6f-8a9b-0c1d2e3f4a5b"
+            }
+          }
+        ]
+      },
+      "scopeLogs": [
+        {
+          "scope": {
+            "name": "expo-observe",
+            "version": "57.0.7"
+          },
+          "logRecords": [
+            {
+              "timeUnixNano": 1767960497456000000,
+              "observedTimeUnixNano": 1767960497456000000,
+              "severityNumber": 9,
+              "severityText": "INFO",
+              "body": {
+                "stringValue": "Etape adresse"
+              },
+              "attributes": [
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "8a1c5e2d-9f4b-4c7a-b3e6-5d8f0a2b4c6e"
+                  }
+                },
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "funnel_step"
+                  }
+                },
+                {
+                  "key": "etape",
+                  "value": {
+                    "intValue": "2"
+                  }
+                },
+                {
+                  "key": "montant_panier",
+                  "value": {
+                    "doubleValue": 42.5
+                  }
+                },
+                {
+                  "key": "nom_etape",
+                  "value": {
+                    "stringValue": "adresse_livraison"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "schemaUrl": "https://opentelemetry.io/schemas/1.27.0"
+    }
+  ]
+}

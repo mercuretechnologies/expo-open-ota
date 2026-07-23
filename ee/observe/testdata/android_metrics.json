@@ -1,0 +1,115 @@
+{
+  "resourceMetrics": [
+    {
+      "resource": {
+        "attributes": [
+          {
+            "key": "service.name",
+            "value": {
+              "stringValue": "com.exemple.app"
+            }
+          },
+          {
+            "key": "os.type",
+            "value": {
+              "stringValue": "linux"
+            }
+          },
+          {
+            "key": "telemetry.sdk.name",
+            "value": {
+              "stringValue": "expo-observe"
+            }
+          },
+          {
+            "key": "telemetry.sdk.language",
+            "value": {
+              "stringValue": "kotlin"
+            }
+          },
+          {
+            "key": "expo.sdk.version",
+            "value": {
+              "stringValue": "57.0.0"
+            }
+          },
+          {
+            "key": "expo.react_native.version",
+            "value": {
+              "stringValue": "0.83.1"
+            }
+          },
+          {
+            "key": "expo.eas_client.id",
+            "value": {
+              "stringValue": "3f9b2c81-4a5d-4e6f-8a9b-0c1d2e3f4a5b"
+            }
+          },
+          {
+            "key": "service.version",
+            "value": {
+              "stringValue": "1.4.0"
+            }
+          }
+        ]
+      },
+      "scopeMetrics": [
+        {
+          "scope": {
+            "name": "expo-observe",
+            "version": "57.0.7"
+          },
+          "metrics": [
+            {
+              "name": "expo.app_startup.warm_launch_time",
+              "unit": "s",
+              "gauge": {
+                "dataPoints": [
+                  {
+                    "timeUnixNano": 1767960489123000000,
+                    "asDouble": 0.734,
+                    "attributes": [
+                      {
+                        "key": "session.id",
+                        "value": {
+                          "stringValue": "8a1c5e2d-9f4b-4c7a-b3e6-5d8f0a2b4c6e"
+                        }
+                      },
+                      {
+                        "key": "panier",
+                        "value": {
+                          "intValue": "3"
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            },
+            {
+              "name": "expo.unknown.javaHeap",
+              "unit": "s",
+              "gauge": {
+                "dataPoints": [
+                  {
+                    "timeUnixNano": 1767960489123000000,
+                    "asDouble": 12345678.0,
+                    "attributes": [
+                      {
+                        "key": "session.id",
+                        "value": {
+                          "stringValue": "8a1c5e2d-9f4b-4c7a-b3e6-5d8f0a2b4c6e"
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      ],
+      "schemaUrl": "https://opentelemetry.io/schemas/1.27.0"
+    }
+  ]
+}

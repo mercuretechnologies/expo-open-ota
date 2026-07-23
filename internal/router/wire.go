@@ -11,6 +11,7 @@ import (
 	"expo-open-ota/ee/rbac"
 	"expo-open-ota/ee/sso"
 	"expo-open-ota/internal/bucket"
+	"expo-open-ota/internal/cache"
 	"expo-open-ota/internal/database"
 	"expo-open-ota/internal/database/clickhouse"
 	"expo-open-ota/internal/database/postgres"
@@ -101,6 +102,12 @@ func InitDependencies(ctx context.Context) (*AppContainer, func()) {
 	// owns the store; the ingest route and the dashboard handler both go
 	// through it.
 	var identityService *identity.Service
+	// The ClickHouse side of Observe: telemetry rows and their branch
+	// enrichment. Declared as interfaces and only assigned inside the
+	// ClickHouse block, so the no-ClickHouse path hands the handler true
+	// nils, never a typed-nil interface.
+	var telemetrySink observe.TelemetrySink
+	var branchResolver observe.BranchResolver
 
 	cleanup := func() {}
 	dbUrl := config.GetDBURL()
@@ -135,7 +142,10 @@ func InitDependencies(ctx context.Context) (*AppContainer, func()) {
 		auditRepo = audit.NewPostgresAuditStore(dbEngine)
 		branchRepo = store.NewPostgresBranchStore(dbEngine)
 		channelRepo = store.NewPostgresChannelStore(dbEngine)
-		updateRepo = store.NewPostgresUpdateStore(dbEngine)
+		// Concrete (not the services.UpdateRepository interface): the observe
+		// branch resolver borrows its Postgres-only lookup as a method value.
+		pgUpdateStore := store.NewPostgresUpdateStore(dbEngine)
+		updateRepo = pgUpdateStore
 		rolloutRepo = store.NewPostgresRolloutStore(dbEngine)
 
 		// Observe persists telemetry in ClickHouse; no CLICKHOUSE_URL means
@@ -171,6 +181,8 @@ func InitDependencies(ctx context.Context) (*AppContainer, func()) {
 				}
 			}
 			identityService = identity.NewService(identity.NewPostgresIdentityStore(dbEngine), geoResolver)
+			telemetrySink = observe.NewClickHouseTelemetrySink(chEngine)
+			branchResolver = observe.NewBranchResolver(cache.GetCache(), pgUpdateStore.GetBranchNameByUpdateUUID)
 		} else {
 			// Not a Fatal: pre-Observe deployments upgrade without
 			// CLICKHOUSE_URL and must keep booting. But an operator who had
@@ -281,7 +293,7 @@ func InitDependencies(ctx context.Context) (*AppContainer, func()) {
 		UploadHandler:            handlers.NewUploadHandler(cliAuthService, deploymentService),
 		UsersHandler:             dashhandlers.NewUsersHandler(userService),
 		UserRepo:                 userRepo,
-		ObserveIngestHandler:     observe.NewIngestHandler(identityService),
+		ObserveIngestHandler:     observe.NewIngestHandler(identityService, telemetrySink, branchResolver),
 		IdentityHandler:          identity.NewIdentityHandler(identityService),
 	}, cleanup
 }

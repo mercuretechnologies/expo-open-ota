@@ -54,10 +54,26 @@ type IngestHandler struct {
 	// mode (no control plane): identity ops are then acknowledged and dropped,
 	// like every other record, so devices never accumulate a backlog.
 	identityService *identity.Service
+	// telemetry persists the flattened non-identity records in ClickHouse.
+	// nil when no ClickHouse is configured: telemetry is then acknowledged,
+	// counted and dropped.
+	telemetry TelemetrySink
+	// branches denormalizes update_id -> branch onto every row; nil leaves
+	// the branch column empty.
+	branches BranchResolver
 }
 
-func NewIngestHandler(identityService *identity.Service) *IngestHandler {
-	return &IngestHandler{identityService: identityService}
+func NewIngestHandler(identityService *identity.Service, telemetry TelemetrySink, branches BranchResolver) *IngestHandler {
+	return &IngestHandler{identityService: identityService, telemetry: telemetry, branches: branches}
+}
+
+// resolveBranch fills MetricRow/LogRow.Branch; the resolver caches, so the
+// per-row call is a map hit for every row after the first of an update.
+func (h *IngestHandler) resolveBranch(ctx context.Context, appID, updateID string) string {
+	if h.branches == nil {
+		return ""
+	}
+	return h.branches.BranchName(ctx, appID, updateID)
 }
 
 // HandleLogs ingests POST /observe/{APP_ID}/{projectId}/v1/logs. Rate
@@ -100,29 +116,44 @@ func (h *IngestHandler) HandleLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if h.identityService == nil {
-		observeBatch(resultAccepted)
-		w.WriteHeader(http.StatusNoContent)
-		return
-	}
-
 	appID := mux.Vars(r)["APP_ID"]
-	remoteIP := ""
-	if clientIP := helpers.ClientIP(r); clientIP.IsValid() {
-		remoteIP = clientIP.String()
+
+	if h.identityService != nil {
+		remoteIP := ""
+		if clientIP := helpers.ClientIP(r); clientIP.IsValid() {
+			remoteIP = clientIP.String()
+		}
+		requests := identityRequestsFromBatch(batch, appID, remoteIP)
+		for _, req := range identity.CoalesceRequests(requests) {
+			applyContext, cancelApply := context.WithTimeout(r.Context(), identityApplyTimeout)
+			_, err := h.identityService.Apply(applyContext, req)
+			cancelApply()
+			if err != nil {
+				// Store errors are transient (pool exhausted, database down):
+				// 503 keeps the batch on the device for a retry. Re-applying the
+				// already-committed prefix on that retry is idempotent ($set
+				// merges, $unset ignores absent keys), so no double effects.
+				log.Printf("observe: identity apply failed: %v", err)
+				observeBatch(resultUnavailable)
+				w.WriteHeader(http.StatusServiceUnavailable)
+				return
+			}
+		}
 	}
 
-	requests := identityRequestsFromBatch(batch, appID, remoteIP)
-	for _, req := range identity.CoalesceRequests(requests) {
-		applyContext, cancelApply := context.WithTimeout(r.Context(), identityApplyTimeout)
-		_, err := h.identityService.Apply(applyContext, req)
-		cancelApply()
-		if err != nil {
-			// Store errors are transient (pool exhausted, database down):
-			// 503 keeps the batch on the device for a retry. Re-applying the
-			// already-committed prefix on that retry is idempotent ($set
-			// merges, $unset ignores absent keys), so no double effects.
-			log.Printf("observe: identity apply failed: %v", err)
+	// The telemetry path runs after the identity split: rows are the
+	// non-identity records. On insert failure, 503 preserves the batch;
+	// the identity re-apply on that retry is idempotent, and the identical
+	// re-flattened rows carry the same content_hash for query-time dedup.
+	rows := FlattenLogs(appID, batch, time.Now().UTC())
+	if h.telemetry == nil {
+		observeRecordsDropped(reasonTelemetry, len(rows))
+	} else if len(rows) > 0 {
+		for i := range rows {
+			rows[i].Branch = h.resolveBranch(r.Context(), appID, rows[i].UpdateID)
+		}
+		if err := h.telemetry.InsertLogs(r.Context(), rows); err != nil {
+			log.Printf("observe: clickhouse logs insert failed: %v", err)
 			observeBatch(resultUnavailable)
 			w.WriteHeader(http.StatusServiceUnavailable)
 			return
@@ -151,7 +182,9 @@ func identityRequestsFromBatch(batch LogBatch, appID, remoteIP string) []identit
 		for _, record := range resource.Records {
 			eventName, _ := record.Attributes[EventNameKey].(string)
 			if !identity.IsIdentityOp(eventName) {
-				observeRecordsDropped(reasonTelemetry, 1) // ClickHouse path, later.
+				// Telemetry, not identity: the ClickHouse path picks these up
+				// after the identity split (and counts them dropped when no
+				// sink is configured).
 				continue
 			}
 			if req, ok := identity.RequestFromRecord(appID, clientID, identity.Op(eventName), record.Attributes, remoteIP); ok {
@@ -162,14 +195,62 @@ func identityRequestsFromBatch(batch LogBatch, appID, remoteIP string) []identit
 	return requests
 }
 
-// HandleMetrics reserves POST /observe/{APP_ID}/{projectId}/v1/metrics.
-// Metrics are acknowledged and dropped until the ClickHouse path lands: for
-// the SDK, 204 and 404 destroy the batch identically, but the registered
-// route keeps operator logs quiet and the URL shape final. Rate limiting runs
-// in middleware ahead of this handler.
+// HandleMetrics ingests POST /observe/{APP_ID}/{projectId}/v1/metrics: same
+// response contract and same pipeline as HandleLogs minus the identity split
+// (identity ops only ever arrive on /v1/logs). Without a sink it stays the
+// pre-ClickHouse acknowledge-and-drop, skipping even the decode. Rate
+// limiting runs in middleware ahead of this handler.
 func (h *IngestHandler) HandleMetrics(w http.ResponseWriter, r *http.Request) {
-	// Drain within the same cap so keep-alive connections stay reusable.
-	_, _ = io.Copy(io.Discard, http.MaxBytesReader(w, r.Body, maxLogsBodyBytes))
+	defer func() {
+		if rec := recover(); rec != nil {
+			log.Printf("observe: recovered panic in metrics ingestion: %v", rec)
+			observeBatch(resultUnavailable)
+			w.WriteHeader(http.StatusServiceUnavailable)
+		}
+	}()
+
+	if h.telemetry == nil {
+		// Drain within the same cap so keep-alive connections stay reusable.
+		_, _ = io.Copy(io.Discard, http.MaxBytesReader(w, r.Body, maxLogsBodyBytes))
+		observeBatch(resultAccepted)
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxLogsBodyBytes))
+	if err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			observeBatch(resultTooLarge)
+			w.WriteHeader(http.StatusRequestEntityTooLarge)
+			return
+		}
+		observeBatch(resultUnavailable)
+		w.WriteHeader(http.StatusServiceUnavailable)
+		return
+	}
+
+	batch, err := DecodeMetrics(body)
+	if err != nil {
+		observeBatch(resultBadRequest)
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	appID := mux.Vars(r)["APP_ID"]
+	rows := FlattenMetrics(appID, batch, time.Now().UTC())
+	if len(rows) > 0 {
+		for i := range rows {
+			rows[i].Branch = h.resolveBranch(r.Context(), appID, rows[i].UpdateID)
+		}
+		if err := h.telemetry.InsertMetrics(r.Context(), rows); err != nil {
+			log.Printf("observe: clickhouse metrics insert failed: %v", err)
+			observeBatch(resultUnavailable)
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+	}
+
 	observeBatch(resultAccepted)
 	w.WriteHeader(http.StatusNoContent)
 }
