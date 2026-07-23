@@ -42,6 +42,22 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql
 
+  clickhouse:
+    image: clickhouse/clickhouse-server:25.3
+    environment:
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-default}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-secret}
+      CLICKHOUSE_DB: ${CLICKHOUSE_DB:-expo_ota_dev}
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+
   ota-server-test:
     build:
       context: .
@@ -54,3 +70,4 @@ services:
 
 volumes:
   postgres_data:
+  clickhouse_data:

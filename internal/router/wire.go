@@ -12,6 +12,7 @@ import (
 	"expo-open-ota/ee/sso"
 	"expo-open-ota/internal/bucket"
 	"expo-open-ota/internal/database"
+	"expo-open-ota/internal/database/clickhouse"
 	"expo-open-ota/internal/database/postgres"
 	"expo-open-ota/internal/database/postgres/migrations"
 	"expo-open-ota/internal/handlers"
@@ -91,10 +92,14 @@ func InitDependencies(ctx context.Context) (*AppContainer, func()) {
 	// The audit trail (ee/audit) as well: nil keeps its recorder a no-op, so
 	// stateless deployments never collect an event.
 	var auditRepo audit.AuditRepository
-	// Device identity (ee/identity) lives in the database; nil makes the
-	// observe ingestion acknowledge-and-drop and the dashboard handler answer
-	// 400, so stateless deployments never block on it. The service owns the
-	// store; the ingest route and the dashboard handler both go through it.
+	// Device identity (ee/identity) is part of the Observe feature: its
+	// dimension lives in Postgres, but the telemetry it exists to filter
+	// lives in ClickHouse, so it is wired only when BOTH are configured.
+	// nil makes the observe ingestion acknowledge-and-drop and the dashboard
+	// handler answer 400, letting the dashboard pitch a single "configure
+	// ClickHouse" setup step instead of a half-enabled feature. The service
+	// owns the store; the ingest route and the dashboard handler both go
+	// through it.
 	var identityService *identity.Service
 
 	cleanup := func() {}
@@ -133,23 +138,49 @@ func InitDependencies(ctx context.Context) (*AppContainer, func()) {
 		updateRepo = store.NewPostgresUpdateStore(dbEngine)
 		rolloutRepo = store.NewPostgresRolloutStore(dbEngine)
 
-		// GeoIP enrichment is optional: without a configured GeoLite2 City
-		// database, devices simply stay unlocated. A configured-but-broken
-		// path fails the boot loudly instead of resolving nothing forever.
-		var geoResolver identity.GeoResolver
-		if mmdbPath := config.GetEnv("GEOIP_MMDB_PATH"); mmdbPath != "" {
-			resolver, err := identity.NewGeoLite2Resolver(mmdbPath)
+		// Observe persists telemetry in ClickHouse; no CLICKHOUSE_URL means
+		// the whole Observe surface (identity included) stays off. Like the
+		// GeoIP path below, a configured-but-broken URL fails the boot
+		// loudly instead of silently disabling a feature the operator asked
+		// for.
+		if chUrl := config.GetClickHouseURL(); chUrl != "" {
+			chEngine, err := clickhouse.NewClickHouseEngine(ctx, chUrl)
 			if err != nil {
-				log.Fatalf("🚨 [IDENTITY] %v", err)
+				log.Fatalf("🚨 [CLICKHOUSE] %v", err)
 			}
-			geoResolver = resolver
 			dbCleanup := cleanup
 			cleanup = func() {
-				resolver.Close()
+				chEngine.Close()
 				dbCleanup()
 			}
+			clickhouse.RunDBMigrations(chUrl, dbUrl)
+
+			// GeoIP enrichment is optional: without a configured GeoLite2
+			// City database, devices simply stay unlocated.
+			var geoResolver identity.GeoResolver
+			if mmdbPath := config.GetEnv("GEOIP_MMDB_PATH"); mmdbPath != "" {
+				resolver, err := identity.NewGeoLite2Resolver(mmdbPath)
+				if err != nil {
+					log.Fatalf("🚨 [IDENTITY] %v", err)
+				}
+				geoResolver = resolver
+				chCleanup := cleanup
+				cleanup = func() {
+					resolver.Close()
+					chCleanup()
+				}
+			}
+			identityService = identity.NewService(identity.NewPostgresIdentityStore(dbEngine), geoResolver)
+		} else {
+			// Not a Fatal: pre-Observe deployments upgrade without
+			// CLICKHOUSE_URL and must keep booting. But an operator who had
+			// identity (and maybe GeoIP) live deserves a boot-time notice
+			// that this switch turned it off, not a silent 400 later.
+			log.Println("⚙️  [OBSERVE] CLICKHOUSE_URL is not set; Observe (device identity included) stays disabled")
+			if config.GetEnv("GEOIP_MMDB_PATH") != "" {
+				log.Println("⚠️  [OBSERVE] GEOIP_MMDB_PATH is set but ignored while Observe is disabled")
+			}
 		}
-		identityService = identity.NewService(identity.NewPostgresIdentityStore(dbEngine), geoResolver)
 	} else {
 		log.Println("⚙️  [STATELESS] Initializing Stateless Mode (Flat-Env Mode)...")
 		if err := config.LoadAppsFromFlatEnv(); err != nil {

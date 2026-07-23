@@ -30,11 +30,12 @@ func NewIdentityHandler(service *Service) *IdentityHandler {
 	return &IdentityHandler{service: service}
 }
 
-// requireService short-circuits with a 400 when identity has no storage
-// (stateless mode). Returns the service and true when it is available.
+// requireService short-circuits with a 400 when identity is not wired:
+// stateless mode, or no ClickHouse configured (identity is part of Observe
+// and only comes up with it). Returns the service and true when available.
 func (h *IdentityHandler) requireService(w http.ResponseWriter) (*Service, bool) {
 	if h.service == nil {
-		handlers.RenderError(w, http.StatusBadRequest, "Device identity requires a control plane (database).")
+		handlers.RenderError(w, http.StatusBadRequest, "Device identity is part of Observe: it requires a control plane (DB_URL) and a configured ClickHouse (CLICKHOUSE_URL).")
 		return nil, false
 	}
 	return h.service, true

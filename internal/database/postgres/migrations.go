@@ -23,6 +23,39 @@ const migrationAdvisoryLockID = 823672941
 // instead of a silent hang.
 const migrationLockTimeout = 5 * time.Minute
 
+// AcquireMigrationLock serializes migrators racing on the same lock id:
+// parallel test packages sharing one TEST_DATABASE_URL, or multiple server
+// replicas booting simultaneously. Without a lock they race inside goose
+// (duplicate CREATE TABLE hits pg_type_typname_nsp_index) and the loser dies
+// on Fatalf; with it the first applies, the rest wait then no-op. Advisory
+// locks are session-scoped, so the lock lives on a dedicated connection that
+// release closes. The ClickHouse migration runner borrows this with its own
+// lock id: ClickHouse has no advisory locks, and the Postgres control plane
+// is always configured when ClickHouse is.
+func AcquireMigrationLock(dbURL string, lockID int64) (release func()) {
+	db, err := sql.Open("pgx", dbURL)
+	if err != nil {
+		log.Fatalf("❌ [DATABASE] Failed to open SQL connection for migration lock: %v", err)
+	}
+	lockCtx, cancel := context.WithTimeout(context.Background(), migrationLockTimeout)
+	conn, err := db.Conn(lockCtx)
+	if err != nil {
+		log.Fatalf("❌ [DATABASE] Failed to acquire connection for migration lock: %v", err)
+	}
+	if _, err := conn.ExecContext(lockCtx, "SELECT pg_advisory_lock($1)", lockID); err != nil {
+		log.Fatalf("❌ [DATABASE] Failed to acquire migration advisory lock: %v", err)
+	}
+	return func() {
+		// Background, not lockCtx: the unlock runs after the migrations,
+		// possibly past the timeout. A failed unlock is harmless anyway,
+		// closing the connection releases the lock.
+		_, _ = conn.ExecContext(context.Background(), "SELECT pg_advisory_unlock($1)", lockID)
+		_ = conn.Close()
+		_ = db.Close()
+		cancel()
+	}
+}
+
 func RunDBMigrations(dbURL string) {
 	db, err := sql.Open("pgx", dbURL)
 	if err != nil {
@@ -38,25 +71,8 @@ func RunDBMigrations(dbURL string) {
 
 	log.Println("🔧 [DATABASE] Checking and running PostgreSQL schema migrations...")
 
-	// Several migrators can run at once: parallel test packages sharing one
-	// TEST_DATABASE_URL, or multiple server replicas booting simultaneously.
-	// Without a lock they race inside goose.Up (duplicate CREATE TABLE hits
-	// pg_type_typname_nsp_index) and the loser dies on Fatalf. An advisory
-	// lock serializes them: the first applies, the rest wait then no-op.
-	// Advisory locks are session-scoped, so hold a dedicated connection.
-	lockCtx, cancel := context.WithTimeout(context.Background(), migrationLockTimeout)
-	defer cancel()
-	conn, err := db.Conn(lockCtx)
-	if err != nil {
-		log.Fatalf("❌ [DATABASE] Failed to acquire connection for migration lock: %v", err)
-	}
-	defer conn.Close()
-	if _, err := conn.ExecContext(lockCtx, "SELECT pg_advisory_lock($1)", migrationAdvisoryLockID); err != nil {
-		log.Fatalf("❌ [DATABASE] Failed to acquire migration advisory lock: %v", err)
-	}
-	// Background, not lockCtx: the unlock runs after goose.Up, possibly past the
-	// timeout. A failed unlock is harmless anyway, conn.Close releases the lock.
-	defer conn.ExecContext(context.Background(), "SELECT pg_advisory_unlock($1)", migrationAdvisoryLockID)
+	release := AcquireMigrationLock(dbURL, migrationAdvisoryLockID)
+	defer release()
 
 	// WithAllowMissing applies migrations whose version is lower than the one already
 	// recorded in the database. Parallel PRs get merged out of timestamp order, so a
