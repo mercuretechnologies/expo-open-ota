@@ -73,7 +73,7 @@ lint_ee_headers:
 
 test_app:
 ifeq ($(DOCKER_FLAG),docker)
-	docker-compose --profile test run --rm -e "" ota-server-test go test -v -coverpkg=./... -coverprofile=coverage.out ./...
+	docker-compose --profile test run --rm -e "" ota-server-test sh -c "go test -race ./internal/cache/ && go test -v -coverpkg=./... -coverprofile=coverage.out ./..."
 else
 	$(MAKE_COVERAGE_CMD)
 endif
@@ -86,6 +86,7 @@ test_app_watch:
 # integration tests in ./test count toward the server code they traverse
 # instead of only their own helpers.
 define MAKE_COVERAGE_CMD
+	go test -race ./internal/cache/ && \
 	go test -v -coverpkg=./... -coverprofile=coverage.out ./... && \
 	$(call CLEAN_COVERAGE) && \
 	$(call PRINT_TOTAL) && \

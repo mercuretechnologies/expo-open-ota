@@ -196,7 +196,7 @@ type DeviceCursor struct {
 
 // MetadataFilter narrows the device inventory to installs whose metadata
 // contains an exact key/value. String values only for now (userId, tenant,
-// plan — the dominant filter targets); typed number/bool filtering is not
+// plan, the dominant filter targets); typed number/bool filtering is not
 // wired into the dashboard yet.
 type MetadataFilter struct {
 	Key   string

@@ -19,16 +19,13 @@ import (
 	"fmt"
 	"os"
 	"sync"
-	"sync/atomic"
 	"testing"
-	"time"
 
 	"expo-open-ota/internal/database"
 	"expo-open-ota/internal/database/postgres"
 	"expo-open-ota/internal/database/postgres/pgdb"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/require"
 )
@@ -42,7 +39,7 @@ func setupIdentityStore(t *testing.T) (*PostgresIdentityStore, *pgxpool.Pool) {
 		if os.Getenv("CI") != "" {
 			t.Fatal("TEST_DATABASE_URL must be set in CI: these tests cover SQL that unit tests cannot reach")
 		}
-		t.Skip("TEST_DATABASE_URL not set — start a Postgres and set it to run the identity store tests")
+		t.Skip("TEST_DATABASE_URL not set; start a Postgres and set it to run the identity store tests")
 	}
 	t.Setenv("ADMIN_EMAIL", "seed-admin@example.com")
 	t.Setenv("ADMIN_PASSWORD", "Sup3rSecret!")
@@ -51,14 +48,9 @@ func setupIdentityStore(t *testing.T) (*PostgresIdentityStore, *pgxpool.Pool) {
 	pool, err := pgxpool.New(context.Background(), dbURL)
 	require.NoError(t, err)
 	t.Cleanup(pool.Close)
-	// Licensed by default so the free-tier cap is inert; the cap test builds
-	// its own unlicensed store.
 	store := NewPostgresIdentityStore(&database.Engine{Queries: pgdb.New(pool), DB: pool})
-	store.licenseValid = alwaysLicensed
 	return store, pool
 }
-
-func alwaysLicensed() bool { return true }
 
 func seedApp(t *testing.T, pool *pgxpool.Pool) string {
 	t.Helper()
@@ -597,168 +589,25 @@ func uniqueStrings(in []string) []string {
 	return out
 }
 
-// unlicensedStore builds a store with the free-tier cap active at a small
-// limit so the eviction path is testable without seeding a thousand rows.
-func unlicensedStore(pool *pgxpool.Pool, limit int) *PostgresIdentityStore {
-	s := NewPostgresIdentityStore(&database.Engine{Queries: pgdb.New(pool), DB: pool})
-	s.licenseValid = func() bool { return false }
-	s.deviceLimit = limit
-	return s
-}
-
-func TestFreeTierCapEvictsOldest(t *testing.T) {
-	_, pool := setupIdentityStore(t)
+func TestTouchDeviceRegistersAndBumps(t *testing.T) {
+	store, pool := setupIdentityStore(t)
 	appID := seedApp(t, pool)
 	ctx := context.Background()
-	store := unlicensedStore(pool, 3)
-	declareKey(t, store, appID, "tenant", ValueTypeString)
 
-	// Register 3 devices (at the cap). Stagger last_seen via distinct txns.
-	ids := make([]string, 4)
-	for i := 0; i < 3; i++ {
-		ids[i] = uuid.NewString()
-		_, err := store.ApplySet(ctx, appID, ids[i], map[string]any{"tenant": "acme"}, nil)
-		require.NoError(t, err)
-	}
-	count, err := store.engine.Queries.CountDevices(ctx, mustPgUUID(t, appID))
+	// First contact registers the device; the registry is uncapped.
+	deviceID := uuid.NewString()
+	require.NoError(t, store.TouchDevice(ctx, appID, deviceID, nil))
+	created, err := store.GetDevice(ctx, appID, deviceID)
 	require.NoError(t, err)
-	require.Equal(t, int64(3), count)
+	require.NotNil(t, created)
 
-	// A 4th device evicts the oldest (ids[0]); count stays at the cap.
-	ids[3] = uuid.NewString()
-	_, err = store.ApplySet(ctx, appID, ids[3], map[string]any{"tenant": "globex"}, nil)
+	// A later contact bumps last_seen, never touching metadata.
+	require.NoError(t, store.TouchDevice(ctx, appID, deviceID, nil))
+	bumped, err := store.GetDevice(ctx, appID, deviceID)
 	require.NoError(t, err)
-
-	count, err = store.engine.Queries.CountDevices(ctx, mustPgUUID(t, appID))
-	require.NoError(t, err)
-	require.Equal(t, int64(3), count, "cap holds the app at the limit")
-
-	// The oldest is gone, the newest is present.
-	evicted, err := store.GetDevice(ctx, appID, ids[0])
-	require.NoError(t, err)
-	require.Nil(t, evicted, "the oldest device was evicted")
-	newest, err := store.GetDevice(ctx, appID, ids[3])
-	require.NoError(t, err)
-	require.NotNil(t, newest)
-
-	// Value stats followed the eviction: acme went 3 -> 2 (one evicted),
-	// globex is 1. No ghost counts from the evicted device.
-	values, err := store.SearchMetadataValues(ctx, appID, "tenant", "", 10)
-	require.NoError(t, err)
-	require.ElementsMatch(t, []ValueCount{{Value: "acme", DeviceCount: 2}, {Value: "globex", DeviceCount: 1}}, values)
-}
-
-func TestLicensedStoreHasNoCap(t *testing.T) {
-	baseline, pool := setupIdentityStore(t) // alwaysLicensed
-	appID := seedApp(t, pool)
-	ctx := context.Background()
-	// Same tiny limit, but licensed → cap inert.
-	licensed := NewPostgresIdentityStore(&database.Engine{Queries: pgdb.New(pool), DB: pool})
-	licensed.licenseValid = func() bool { return true }
-	licensed.deviceLimit = 3
-	_ = baseline
-
-	for i := 0; i < 6; i++ {
-		_, err := licensed.ApplySet(ctx, appID, uuid.NewString(), map[string]any{}, nil)
-		require.NoError(t, err)
-	}
-	count, err := licensed.engine.Queries.CountDevices(ctx, mustPgUUID(t, appID))
-	require.NoError(t, err)
-	require.Equal(t, int64(6), count, "a valid license lifts the cap")
-}
-
-// Updates to existing devices must not trigger eviction (only new inserts do).
-func TestFreeTierCapIgnoresUpdates(t *testing.T) {
-	_, pool := setupIdentityStore(t)
-	appID := seedApp(t, pool)
-	ctx := context.Background()
-	store := unlicensedStore(pool, 3)
-	declareKey(t, store, appID, "tenant", ValueTypeString)
-
-	ids := make([]string, 3)
-	for i := 0; i < 3; i++ {
-		ids[i] = uuid.NewString()
-		_, err := store.ApplySet(ctx, appID, ids[i], map[string]any{"tenant": "acme"}, nil)
-		require.NoError(t, err)
-	}
-	// Re-identify the OLDEST many times: it stays (updates don't evict), and
-	// no device is dropped.
-	for i := 0; i < 5; i++ {
-		_, err := store.ApplySet(ctx, appID, ids[0], map[string]any{"tenant": "acme"}, nil)
-		require.NoError(t, err)
-	}
-	count, err := store.engine.Queries.CountDevices(ctx, mustPgUUID(t, appID))
-	require.NoError(t, err)
-	require.Equal(t, int64(3), count)
-	for _, id := range ids {
-		d, err := store.GetDevice(ctx, appID, id)
-		require.NoError(t, err)
-		require.NotNil(t, d, "no device evicted on updates")
-	}
-}
-
-func mustPgUUID(t *testing.T, id string) pgtype.UUID {
-	t.Helper()
-	u, err := toPgUUID(id)
-	require.NoError(t, err)
-	return u
-}
-
-func TestTouchDeviceMonthlyQuota(t *testing.T) {
-	licensedStore, pool := setupIdentityStore(t)
-	appID := seedApp(t, pool)
-	ctx := context.Background()
-	store := unlicensedStore(pool, 2)
-
-	d1, d2, d3 := uuid.NewString(), uuid.NewString(), uuid.NewString()
-
-	// Two devices claim the month's slots...
-	tracked, err := store.TouchDevice(ctx, appID, d1, nil)
-	require.NoError(t, err)
-	require.True(t, tracked)
-	tracked, err = store.TouchDevice(ctx, appID, d2, nil)
-	require.NoError(t, err)
-	require.True(t, tracked)
-
-	// ...the month is full: a third is refused and gets NO row.
-	tracked, err = store.TouchDevice(ctx, appID, d3, nil)
-	require.NoError(t, err)
-	require.False(t, tracked)
-	ghost, err := store.GetDevice(ctx, appID, d3)
-	require.NoError(t, err)
-	require.Nil(t, ghost, "a refused device must not create a row")
-
-	// Slot-holders keep bumping freely at the full quota.
-	tracked, err = store.TouchDevice(ctx, appID, d1, nil)
-	require.NoError(t, err)
-	require.True(t, tracked)
-
-	// d1's activity slides into the previous month (simulated month
-	// boundary): its slot frees, d3 claims it...
-	_, err = pool.Exec(ctx,
-		"UPDATE device_identity SET last_seen_at = date_trunc('month', CURRENT_TIMESTAMP) - INTERVAL '1 day' WHERE app_id = $1 AND eas_client_id = $2",
-		appID, d1)
-	require.NoError(t, err)
-	tracked, err = store.TouchDevice(ctx, appID, d3, nil)
-	require.NoError(t, err)
-	require.True(t, tracked)
-
-	// ...and d1, back from its silent month with the quota full again, is
-	// refused WITHOUT its last_seen being bumped: a refused device must not
-	// become "active this month" while being dropped, and its row (metadata
-	// included) survives for the next month.
-	tracked, err = store.TouchDevice(ctx, appID, d1, nil)
-	require.NoError(t, err)
-	require.False(t, tracked)
-	dormant, err := store.GetDevice(ctx, appID, d1)
-	require.NoError(t, err)
-	require.NotNil(t, dormant, "the refused row must survive")
-	require.True(t, dormant.LastSeenAt.Before(time.Now().AddDate(0, 0, -1)), "refusal must not bump last_seen")
-
-	// A licensed deployment has no quota.
-	tracked, err = licensedStore.TouchDevice(ctx, appID, uuid.NewString(), nil)
-	require.NoError(t, err)
-	require.True(t, tracked)
+	require.NotNil(t, bumped)
+	require.False(t, bumped.LastSeenAt.Before(created.LastSeenAt))
+	require.Empty(t, bumped.Metadata)
 }
 
 func TestTouchDeviceGeoCoalesce(t *testing.T) {
@@ -768,13 +617,10 @@ func TestTouchDeviceGeoCoalesce(t *testing.T) {
 
 	deviceID := uuid.NewString()
 	country := "FR"
-	tracked, err := store.TouchDevice(ctx, appID, deviceID, &Geo{CountryCode: &country})
-	require.NoError(t, err)
-	require.True(t, tracked)
+	require.NoError(t, store.TouchDevice(ctx, appID, deviceID, &Geo{CountryCode: &country}))
 
 	// A later contact resolving no geo must not erase the known one.
-	_, err = store.TouchDevice(ctx, appID, deviceID, nil)
-	require.NoError(t, err)
+	require.NoError(t, store.TouchDevice(ctx, appID, deviceID, nil))
 	device, err := store.GetDevice(ctx, appID, deviceID)
 	require.NoError(t, err)
 	require.NotNil(t, device)
@@ -782,34 +628,27 @@ func TestTouchDeviceGeoCoalesce(t *testing.T) {
 	require.Equal(t, "FR", *device.CountryCode)
 }
 
-// The advisory lock's contract: concurrent registrations cannot overshoot
-// the monthly quota. 20 distinct devices race for 5 slots; exactly 5 must be
-// tracked and exactly 5 rows exist. Without the per-app lock, racers count a
-// stale total and the quota leaks (this test then fails with >5 tracked).
-func TestTouchDeviceConcurrentRegistrationsExactQuota(t *testing.T) {
-	_, pool := setupIdentityStore(t)
+// Two first contacts of the same brand-new device race: both must succeed
+// (the loser lands on RegisterDevice's ON CONFLICT bump) and exactly one row
+// may exist. This is the contract the uncapped registry keeps.
+func TestTouchDeviceConcurrentSameDevice(t *testing.T) {
+	store, pool := setupIdentityStore(t)
 	appID := seedApp(t, pool)
 	ctx := context.Background()
-	store := unlicensedStore(pool, 5)
+	deviceID := uuid.NewString()
 
 	var wg sync.WaitGroup
-	var trackedCount atomic.Int32
-	for range 20 {
+	for range 8 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			tracked, err := store.TouchDevice(ctx, appID, uuid.NewString(), nil)
-			require.NoError(t, err)
-			if tracked {
-				trackedCount.Add(1)
-			}
+			require.NoError(t, store.TouchDevice(ctx, appID, deviceID, nil))
 		}()
 	}
 	wg.Wait()
 
-	require.EqualValues(t, 5, trackedCount.Load(), "the quota must be exact under concurrency")
 	var rows int
 	require.NoError(t, pool.QueryRow(ctx,
-		"SELECT COUNT(*) FROM device_identity WHERE app_id = $1", appID).Scan(&rows))
-	require.Equal(t, 5, rows)
+		"SELECT COUNT(*) FROM device_identity WHERE app_id = $1 AND eas_client_id = $2", appID, deviceID).Scan(&rows))
+	require.Equal(t, 1, rows)
 }

@@ -256,8 +256,6 @@ func NewRouter(container *AppContainer) *mux.Router {
 	appAuthSubrouter.Handle("/branches/{BRANCH}/protection", requirePermission(rbac.PermBranchProtect)(http.HandlerFunc(container.ApiKeyRestrictionHandler.SetBranchProtectionHandler))).Methods(http.MethodPut)
 	// Device identity (ee/identity). Reads stay open to any app viewer; shaping
 	// the allowlist needs the identity:manage permission (admins bypass it).
-	// Free up to 1000 devices/MAU without a license, enterprise beyond (the
-	// freemium gate + eviction cap land in a later batch, in identity.Service).
 	appAuthSubrouter.HandleFunc("/identity/schema", container.IdentityHandler.GetSchemaHandler).Methods(http.MethodGet)
 	appAuthSubrouter.Handle("/identity/schema/{KEY}", requirePermission(rbac.PermIdentityManage)(http.HandlerFunc(container.IdentityHandler.UpsertSchemaKeyHandler))).Methods(http.MethodPut)
 	appAuthSubrouter.Handle("/identity/schema/{KEY}", requirePermission(rbac.PermIdentityManage)(http.HandlerFunc(container.IdentityHandler.DeleteSchemaKeyHandler))).Methods(http.MethodDelete)

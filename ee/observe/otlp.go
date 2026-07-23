@@ -3,11 +3,10 @@
 // (see ee/LICENSE); it is NOT covered by the MIT license of this repository.
 
 // Package observe receives expo-observe telemetry: the OTLP/JSON ingestion
-// routes, decoding, and dispatch. It sees EVERY log record a device ships;
-// identity operations ($set, $set_once, $unset) are routed to ee/identity,
-// and the remaining telemetry records will feed the ClickHouse path when it
-// lands. Identity dispatch is NOT license-gated (the identity feature is free);
-// the future telemetry path is where the enterprise gate will sit.
+// routes, decoding, flattening and dispatch. It sees EVERY log record a
+// device ships; identity operations ($set, $set_once, $unset) are routed to
+// ee/identity, the remaining telemetry records are flattened into ClickHouse
+// rows. The whole surface is free: no license gate anywhere on this path.
 package observe
 
 import (
@@ -23,8 +22,7 @@ import (
 // where the spec says string). Unknown fields are ignored by encoding/json,
 // which is exactly the tolerance we want: rejecting a batch destroys it on
 // the device. The decoded types are neutral on purpose: the ClickHouse
-// flattener will extend them (timestamps, severity, body) without another
-// decoder.
+// flattener (flatten.go) extends them without another decoder.
 
 // LogBatch is one decoded /v1/logs body.
 type LogBatch struct {
@@ -81,7 +79,7 @@ const EASClientIDKey = "expo.eas_client.id"
 // what identity operations are recognized by. Deliberately also defined in
 // ee/identity (recordEventNameKey): observe reads it here to classify
 // identity-vs-telemetry, identity strips it there as envelope. The dependency
-// direction (observe → identity) and the future flattener wanting it as a real
+// direction (observe -> identity) and the flattener wanting it as a real
 // column both forbid collapsing the two into one owner today.
 const EventNameKey = "event.name"
 
@@ -251,7 +249,7 @@ type otlpKvlistValue struct {
 // toGo unwraps the single-key AnyValue union into plain Go values. intValue
 // accepts both wire forms: Android emits the OTLP-conformant string ("42"),
 // iOS deliberately emits a raw JSON number (42). Unrepresentable values decode
-// to nil; downstream consumers (identity's Sanitize, the future flattener)
+// to nil; downstream consumers (identity's Sanitize, the flattener)
 // drop them.
 func (v otlpAnyValue) toGo() any {
 	switch {

@@ -61,39 +61,31 @@ type IngestHandler struct {
 	// branches denormalizes update_id -> branch onto every row; nil leaves
 	// the branch column empty.
 	branches BranchResolver
-	// admission is the free-tier gate: telemetry of devices holding no
-	// registry slot is acknowledged and dropped. nil admits everything
-	// (stateless mode has no sink anyway).
-	admission *DeviceAdmission
+	// contacts records every ingesting device into the universal registry,
+	// debounced; nil (stateless mode) leaves telemetry contact-free.
+	contacts *DeviceContactRecorder
 }
 
-func NewIngestHandler(identityService *identity.Service, telemetry TelemetrySink, branches BranchResolver, admission *DeviceAdmission) *IngestHandler {
-	return &IngestHandler{identityService: identityService, telemetry: telemetry, branches: branches, admission: admission}
+func NewIngestHandler(identityService *identity.Service, telemetry TelemetrySink, branches BranchResolver, contacts *DeviceContactRecorder) *IngestHandler {
+	return &IngestHandler{identityService: identityService, telemetry: telemetry, branches: branches, contacts: contacts}
 }
 
-// admitted filters flattened rows through the free-tier gate, one verdict per
-// distinct device per batch (a batch is one device's backlog, so this is one
-// Admit call amortized further by its cache). Dropped rows are counted.
-func admittedRows[R any](ctx context.Context, admission *DeviceAdmission, appID string, remoteIP string, rows []R, clientID func(R) string) []R {
-	if admission == nil || len(rows) == 0 {
-		return rows
+// noteContacts registers each distinct device of a batch (one, in practice: a
+// batch is a single device's backlog) into the registry, debounced by the
+// recorder's cache.
+func noteContacts[R any](ctx context.Context, contacts *DeviceContactRecorder, appID string, remoteIP string, rows []R, clientID func(R) string) {
+	if contacts == nil || len(rows) == 0 {
+		return
 	}
-	verdicts := make(map[string]bool, 1)
-	kept := rows[:0]
+	seen := make(map[string]struct{}, 1)
 	for _, row := range rows {
 		device := clientID(row)
-		verdict, seen := verdicts[device]
-		if !seen {
-			verdict = admission.Admit(ctx, appID, device, remoteIP)
-			verdicts[device] = verdict
+		if _, done := seen[device]; done {
+			continue
 		}
-		if verdict {
-			kept = append(kept, row)
-		} else {
-			observeRecordsDropped(reasonOverDeviceCap, 1)
-		}
+		seen[device] = struct{}{}
+		contacts.NoteContact(ctx, appID, device, remoteIP)
 	}
-	return kept
 }
 
 // resolveBranch fills MetricRow/LogRow.Branch; the resolver caches, so the
@@ -106,11 +98,10 @@ func (h *IngestHandler) resolveBranch(ctx context.Context, appID, updateID strin
 }
 
 // HandleLogs ingests POST /observe/{APP_ID}/{projectId}/v1/logs. Rate
-// limiting and app-existence run in middleware ahead of this handler. Today
-// the only consumer is identity; telemetry records are acknowledged and
-// dropped. When the ClickHouse path lands, its dispatch slots in right after
-// the identity split, behind the enterprise license gate (identity stays
-// free).
+// limiting and app-existence run in middleware ahead of this handler. The
+// pipeline: identity ops ($set/$set_once/$unset) are applied first, then the
+// telemetry records are flattened and inserted into ClickHouse, with each
+// ingesting device registered in the universal registry (debounced).
 func (h *IngestHandler) HandleLogs(w http.ResponseWriter, r *http.Request) {
 	// A panic must not turn into gorilla's 500: 500 destroys the batch on the
 	// device, 503 preserves it for a retry.
@@ -171,10 +162,11 @@ func (h *IngestHandler) HandleLogs(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// The telemetry path runs after the identity split: rows are the
-	// non-identity records, filtered through the free-tier admission gate.
-	// On insert failure, 503 preserves the batch; the identity re-apply on
-	// that retry is idempotent, and the identical re-flattened rows carry
-	// the same content_hash for query-time dedup.
+	// non-identity records; each ingesting device is also registered in the
+	// universal registry (debounced). On insert failure, 503 preserves the
+	// batch; the identity re-apply on that retry is idempotent, and the
+	// identical re-flattened rows carry the same content_hash for query-time
+	// dedup.
 	rows := FlattenLogs(appID, batch, time.Now().UTC())
 	if h.telemetry == nil {
 		observeRecordsDropped(reasonTelemetry, len(rows))
@@ -183,7 +175,7 @@ func (h *IngestHandler) HandleLogs(w http.ResponseWriter, r *http.Request) {
 		if clientIP := helpers.ClientIP(r); clientIP.IsValid() {
 			remoteIP = clientIP.String()
 		}
-		rows = admittedRows(r.Context(), h.admission, appID, remoteIP, rows, func(row LogRow) string { return row.EASClientID })
+		noteContacts(r.Context(), h.contacts, appID, remoteIP, rows, func(row LogRow) string { return row.EASClientID })
 		if len(rows) > 0 {
 			for i := range rows {
 				rows[i].Branch = h.resolveBranch(r.Context(), appID, rows[i].UpdateID)
@@ -280,7 +272,7 @@ func (h *IngestHandler) HandleMetrics(w http.ResponseWriter, r *http.Request) {
 		remoteIP = clientIP.String()
 	}
 	rows := FlattenMetrics(appID, batch, time.Now().UTC())
-	rows = admittedRows(r.Context(), h.admission, appID, remoteIP, rows, func(row MetricRow) string { return row.EASClientID })
+	noteContacts(r.Context(), h.contacts, appID, remoteIP, rows, func(row MetricRow) string { return row.EASClientID })
 	if len(rows) > 0 {
 		for i := range rows {
 			rows[i].Branch = h.resolveBranch(r.Context(), appID, rows[i].UpdateID)

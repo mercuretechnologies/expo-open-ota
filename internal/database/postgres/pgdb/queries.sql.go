@@ -93,33 +93,6 @@ func (q *Queries) CountAuditLogEvents(ctx context.Context, arg CountAuditLogEven
 	return count, err
 }
 
-const countDevices = `-- name: CountDevices :one
-SELECT COUNT(*) FROM device_identity WHERE app_id = $1
-`
-
-func (q *Queries) CountDevices(ctx context.Context, appID pgtype.UUID) (int64, error) {
-	row := q.db.QueryRow(ctx, countDevices, appID)
-	var count int64
-	err := row.Scan(&count)
-	return count, err
-}
-
-const countDevicesActiveThisMonth = `-- name: CountDevicesActiveThisMonth :one
-SELECT COUNT(*) FROM device_identity
-WHERE app_id = $1 AND last_seen_at >= date_trunc('month', CURRENT_TIMESTAMP)
-`
-
-// The monthly-active count backing the free-tier quota: devices whose
-// last_seen falls in the current calendar month (UTC, the server timezone).
-// Monotone within a month, resets at the month boundary; served by
-// idx_device_identity_last_seen.
-func (q *Queries) CountDevicesActiveThisMonth(ctx context.Context, appID pgtype.UUID) (int64, error) {
-	row := q.db.QueryRow(ctx, countDevicesActiveThisMonth, appID)
-	var count int64
-	err := row.Scan(&count)
-	return count, err
-}
-
 const countGrantsByRole = `-- name: CountGrantsByRole :one
 SELECT COUNT(*) FROM user_app_grants
 WHERE role_id = $1
@@ -241,21 +214,6 @@ func (q *Queries) DeleteChannelRollout(ctx context.Context, arg DeleteChannelRol
 	return result.RowsAffected(), nil
 }
 
-const deleteDevices = `-- name: DeleteDevices :exec
-DELETE FROM device_identity
-WHERE app_id = $1 AND eas_client_id = ANY($2::uuid[])
-`
-
-type DeleteDevicesParams struct {
-	AppID     pgtype.UUID   `json:"app_id"`
-	ClientIds []pgtype.UUID `json:"client_ids"`
-}
-
-func (q *Queries) DeleteDevices(ctx context.Context, arg DeleteDevicesParams) error {
-	_, err := q.db.Exec(ctx, deleteDevices, arg.AppID, arg.ClientIds)
-	return err
-}
-
 const deleteEnterpriseLicense = `-- name: DeleteEnterpriseLicense :exec
 DELETE FROM enterprise_license
 `
@@ -362,7 +320,7 @@ func (q *Queries) DeleteZeroIdentityValueStats(ctx context.Context, arg DeleteZe
 	return err
 }
 
-const ensureDeviceIdentity = `-- name: EnsureDeviceIdentity :execrows
+const ensureDeviceIdentity = `-- name: EnsureDeviceIdentity :exec
 INSERT INTO device_identity (app_id, eas_client_id)
 VALUES ($1, $2)
 ON CONFLICT (app_id, eas_client_id) DO NOTHING
@@ -377,15 +335,10 @@ type EnsureDeviceIdentityParams struct {
 // purpose: FOR UPDATE cannot lock a row that does not exist yet, so two
 // concurrent first identifies of the same install would both merge against
 // an empty map and one would silently win. Insert-then-lock serializes them.
-// Returns the number of rows inserted: 1 when this install is brand new, 0
-// when it already existed. The free-tier device cap only needs to run on a
-// genuine new-device insert, so the caller keys the count/eviction off this.
-func (q *Queries) EnsureDeviceIdentity(ctx context.Context, arg EnsureDeviceIdentityParams) (int64, error) {
-	result, err := q.db.Exec(ctx, ensureDeviceIdentity, arg.AppID, arg.EasClientID)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
+// Idempotent device-row creation inside mutate's transaction.
+func (q *Queries) EnsureDeviceIdentity(ctx context.Context, arg EnsureDeviceIdentityParams) error {
+	_, err := q.db.Exec(ctx, ensureDeviceIdentity, arg.AppID, arg.EasClientID)
+	return err
 }
 
 const getActiveRolloutUpdates = `-- name: GetActiveRolloutUpdates :many
@@ -2902,22 +2855,6 @@ func (q *Queries) ListUserAppGrants(ctx context.Context, userID pgtype.UUID) ([]
 	return items, nil
 }
 
-const lockDeviceRegistration = `-- name: LockDeviceRegistration :exec
-SELECT pg_advisory_xact_lock(823672944, hashtext($1::text))
-`
-
-// Serializes free-tier device registrations per app for the duration of the
-// caller's transaction (auto-released at commit/rollback). Advisory-lock id
-// 823672944 in the two-int keyspace (the int8 space holds 941=pg migrations,
-// 942=pgtest, 943=clickhouse migrations); hashtext collisions between apps
-// only cost spurious serialization, never correctness. This is what makes
-// the monthly quota EXACT: count-then-insert races cannot overshoot, and
-// waiters queue on the lock, database-wide, across replicas.
-func (q *Queries) LockDeviceRegistration(ctx context.Context, appID string) error {
-	_, err := q.db.Exec(ctx, lockDeviceRegistration, appID)
-	return err
-}
-
 const markUpdateAsChecked = `-- name: MarkUpdateAsChecked :execrows
 WITH target AS (
     SELECT u.id, u.branch_id, u.runtime_version_id, u.platform, u.rollout_percentage, u.created_at
@@ -3195,48 +3132,6 @@ func (q *Queries) MigrateLegacyUpdate(ctx context.Context, arg MigrateLegacyUpda
 	return err
 }
 
-const oldestDevicesExcluding = `-- name: OldestDevicesExcluding :many
-SELECT eas_client_id, metadata FROM device_identity
-WHERE app_id = $1 AND eas_client_id <> $2
-ORDER BY last_seen_at ASC, eas_client_id ASC
-LIMIT $3::int
-`
-
-type OldestDevicesExcludingParams struct {
-	AppID       pgtype.UUID `json:"app_id"`
-	EasClientID pgtype.UUID `json:"eas_client_id"`
-	Lim         int32       `json:"lim"`
-}
-
-type OldestDevicesExcludingRow struct {
-	EasClientID pgtype.UUID `json:"eas_client_id"`
-	Metadata    []byte      `json:"metadata"`
-}
-
-// The oldest devices of an app by last activity, excluding one (the install
-// being written, which is the most recent and must never be evicted). Feeds
-// the free-tier eviction: their metadata is read so the per-value stats can be
-// decremented before the rows are deleted.
-func (q *Queries) OldestDevicesExcluding(ctx context.Context, arg OldestDevicesExcludingParams) ([]OldestDevicesExcludingRow, error) {
-	rows, err := q.db.Query(ctx, oldestDevicesExcluding, arg.AppID, arg.EasClientID, arg.Lim)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []OldestDevicesExcludingRow
-	for rows.Next() {
-		var i OldestDevicesExcludingRow
-		if err := rows.Scan(&i.EasClientID, &i.Metadata); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const purgeAuditLogEventsBefore = `-- name: PurgeAuditLogEventsBefore :execresult
 DELETE FROM audit_log_events
 WHERE occurred_at < $1
@@ -3275,10 +3170,9 @@ type RegisterDeviceParams struct {
 	Lng         *float64    `json:"lng"`
 }
 
-// Plain registration upsert for the passive path. The free-tier capacity and
-// stale-eviction POLICY lives in TouchDevice's transaction (Go), not here:
-// room is made (or the attempt refused) before this runs. ON CONFLICT absorbs
-// the race with a concurrent registration of the same device.
+// Registration upsert for the passive path: the registry is uncapped (the
+// whole fleet is the update-health source of truth). ON CONFLICT absorbs the
+// race with a concurrent registration of the same device.
 func (q *Queries) RegisterDevice(ctx context.Context, arg RegisterDeviceParams) (int64, error) {
 	result, err := q.db.Exec(ctx, registerDevice,
 		arg.AppID,
@@ -3524,7 +3418,6 @@ UPDATE device_identity SET
     lng = COALESCE($6, lng),
     last_seen_at = CURRENT_TIMESTAMP
 WHERE app_id = $1 AND eas_client_id = $2
-  AND last_seen_at >= date_trunc('month', CURRENT_TIMESTAMP)
 `
 
 type TouchDeviceIdentityParams struct {
@@ -3537,11 +3430,8 @@ type TouchDeviceIdentityParams struct {
 }
 
 // Passive-contact bump (manifest poll, telemetry batch): refresh last_seen and
-// opportunistically enrich geo, never touching metadata. Month-conditioned ON
-// PURPOSE: only a device ALREADY active this calendar month (it holds one of
-// the monthly slots) bumps freely; a row last seen in a previous month must
-// re-enter through the quota check like a new device, or old installs would
-// sneak past a full month. 1 row = tracked; 0 = quota path.
+// opportunistically enrich geo, never touching metadata. 1 row = known device;
+// 0 = brand new, the caller registers it.
 func (q *Queries) TouchDeviceIdentity(ctx context.Context, arg TouchDeviceIdentityParams) (int64, error) {
 	result, err := q.db.Exec(ctx, touchDeviceIdentity,
 		arg.AppID,

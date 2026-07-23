@@ -40,17 +40,14 @@ type IdentityMutator interface {
 	ApplySetOnce(ctx context.Context, appID string, easClientID string, raw map[string]any, geo *Geo) (ApplyResult, error)
 	ApplyUnset(ctx context.Context, appID string, easClientID string, keys []string, geo *Geo) (ApplyResult, error)
 	// TouchDevice registers a passive contact (manifest poll, telemetry
-	// batch): bump-or-register within free capacity, never evicting. tracked
-	// reports whether the device holds a slot, which is what gates telemetry
-	// ingestion into ClickHouse.
-	TouchDevice(ctx context.Context, appID string, easClientID string, geo *Geo) (bool, error)
+	// batch): bump-or-register, uncapped, the whole fleet is the registry.
+	TouchDevice(ctx context.Context, appID string, easClientID string, geo *Geo) error
 }
 
 // Store is the full data surface the service needs: the ingest write path plus
 // the dashboard read/CRUD queries. *PostgresIdentityStore implements it. The
-// service is the single owner of the store, so both the ingest route and the
-// dashboard handler go through it — which is also where license gating will
-// sit (one gate for the whole feature).
+// service is the single owner of the store: both the ingest route and the
+// dashboard handler go through it.
 type Store interface {
 	IdentityMutator
 	GetSchema(ctx context.Context, appID string) (Schema, error)
@@ -75,8 +72,7 @@ func NewService(store Store, geo GeoResolver) *Service {
 	return &Service{store: store, geo: geo}
 }
 
-// Dashboard read/CRUD surface. Thin delegations today; the license gate will
-// live here in the enterprise batch so it covers ingest and dashboard alike.
+// Dashboard read/CRUD surface: thin delegations, the store owns semantics.
 
 func (s *Service) GetSchema(ctx context.Context, appID string) (Schema, error) {
 	return s.store.GetSchema(ctx, appID)
@@ -106,7 +102,7 @@ func (s *Service) GetDevice(ctx context.Context, appID string, easClientID strin
 // the server registers it (metadata untouched), so device_identity is the
 // universal device registry and the identity ops only layer metadata on top.
 // The geo enrichment rides along exactly as on Apply.
-func (s *Service) TouchDevice(ctx context.Context, appID string, easClientID string, remoteIP string) (bool, error) {
+func (s *Service) TouchDevice(ctx context.Context, appID string, easClientID string, remoteIP string) error {
 	var geo *Geo
 	if s.geo != nil && remoteIP != "" {
 		geo = s.geo.Resolve(remoteIP)
