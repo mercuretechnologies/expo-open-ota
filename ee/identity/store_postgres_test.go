@@ -19,7 +19,9 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"expo-open-ota/internal/database"
 	"expo-open-ota/internal/database/postgres"
@@ -700,4 +702,114 @@ func mustPgUUID(t *testing.T, id string) pgtype.UUID {
 	u, err := toPgUUID(id)
 	require.NoError(t, err)
 	return u
+}
+
+func TestTouchDeviceMonthlyQuota(t *testing.T) {
+	licensedStore, pool := setupIdentityStore(t)
+	appID := seedApp(t, pool)
+	ctx := context.Background()
+	store := unlicensedStore(pool, 2)
+
+	d1, d2, d3 := uuid.NewString(), uuid.NewString(), uuid.NewString()
+
+	// Two devices claim the month's slots...
+	tracked, err := store.TouchDevice(ctx, appID, d1, nil)
+	require.NoError(t, err)
+	require.True(t, tracked)
+	tracked, err = store.TouchDevice(ctx, appID, d2, nil)
+	require.NoError(t, err)
+	require.True(t, tracked)
+
+	// ...the month is full: a third is refused and gets NO row.
+	tracked, err = store.TouchDevice(ctx, appID, d3, nil)
+	require.NoError(t, err)
+	require.False(t, tracked)
+	ghost, err := store.GetDevice(ctx, appID, d3)
+	require.NoError(t, err)
+	require.Nil(t, ghost, "a refused device must not create a row")
+
+	// Slot-holders keep bumping freely at the full quota.
+	tracked, err = store.TouchDevice(ctx, appID, d1, nil)
+	require.NoError(t, err)
+	require.True(t, tracked)
+
+	// d1's activity slides into the previous month (simulated month
+	// boundary): its slot frees, d3 claims it...
+	_, err = pool.Exec(ctx,
+		"UPDATE device_identity SET last_seen_at = date_trunc('month', CURRENT_TIMESTAMP) - INTERVAL '1 day' WHERE app_id = $1 AND eas_client_id = $2",
+		appID, d1)
+	require.NoError(t, err)
+	tracked, err = store.TouchDevice(ctx, appID, d3, nil)
+	require.NoError(t, err)
+	require.True(t, tracked)
+
+	// ...and d1, back from its silent month with the quota full again, is
+	// refused WITHOUT its last_seen being bumped: a refused device must not
+	// become "active this month" while being dropped, and its row (metadata
+	// included) survives for the next month.
+	tracked, err = store.TouchDevice(ctx, appID, d1, nil)
+	require.NoError(t, err)
+	require.False(t, tracked)
+	dormant, err := store.GetDevice(ctx, appID, d1)
+	require.NoError(t, err)
+	require.NotNil(t, dormant, "the refused row must survive")
+	require.True(t, dormant.LastSeenAt.Before(time.Now().AddDate(0, 0, -1)), "refusal must not bump last_seen")
+
+	// A licensed deployment has no quota.
+	tracked, err = licensedStore.TouchDevice(ctx, appID, uuid.NewString(), nil)
+	require.NoError(t, err)
+	require.True(t, tracked)
+}
+
+func TestTouchDeviceGeoCoalesce(t *testing.T) {
+	store, pool := setupIdentityStore(t)
+	appID := seedApp(t, pool)
+	ctx := context.Background()
+
+	deviceID := uuid.NewString()
+	country := "FR"
+	tracked, err := store.TouchDevice(ctx, appID, deviceID, &Geo{CountryCode: &country})
+	require.NoError(t, err)
+	require.True(t, tracked)
+
+	// A later contact resolving no geo must not erase the known one.
+	_, err = store.TouchDevice(ctx, appID, deviceID, nil)
+	require.NoError(t, err)
+	device, err := store.GetDevice(ctx, appID, deviceID)
+	require.NoError(t, err)
+	require.NotNil(t, device)
+	require.NotNil(t, device.CountryCode)
+	require.Equal(t, "FR", *device.CountryCode)
+}
+
+// The advisory lock's contract: concurrent registrations cannot overshoot
+// the monthly quota. 20 distinct devices race for 5 slots; exactly 5 must be
+// tracked and exactly 5 rows exist. Without the per-app lock, racers count a
+// stale total and the quota leaks (this test then fails with >5 tracked).
+func TestTouchDeviceConcurrentRegistrationsExactQuota(t *testing.T) {
+	_, pool := setupIdentityStore(t)
+	appID := seedApp(t, pool)
+	ctx := context.Background()
+	store := unlicensedStore(pool, 5)
+
+	var wg sync.WaitGroup
+	var trackedCount atomic.Int32
+	for range 20 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			tracked, err := store.TouchDevice(ctx, appID, uuid.NewString(), nil)
+			require.NoError(t, err)
+			if tracked {
+				trackedCount.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+
+	require.EqualValues(t, 5, trackedCount.Load(), "the quota must be exact under concurrency")
+	var rows int
+	require.NoError(t, pool.QueryRow(ctx,
+		"SELECT COUNT(*) FROM device_identity WHERE app_id = $1", appID).Scan(&rows))
+	require.Equal(t, 5, rows)
 }

@@ -39,6 +39,11 @@ type IdentityMutator interface {
 	ApplySet(ctx context.Context, appID string, easClientID string, raw map[string]any, geo *Geo) (ApplyResult, error)
 	ApplySetOnce(ctx context.Context, appID string, easClientID string, raw map[string]any, geo *Geo) (ApplyResult, error)
 	ApplyUnset(ctx context.Context, appID string, easClientID string, keys []string, geo *Geo) (ApplyResult, error)
+	// TouchDevice registers a passive contact (manifest poll, telemetry
+	// batch): bump-or-register within free capacity, never evicting. tracked
+	// reports whether the device holds a slot, which is what gates telemetry
+	// ingestion into ClickHouse.
+	TouchDevice(ctx context.Context, appID string, easClientID string, geo *Geo) (bool, error)
 }
 
 // Store is the full data surface the service needs: the ingest write path plus
@@ -95,6 +100,18 @@ func (s *Service) ListDevices(ctx context.Context, appID string, filter *Metadat
 
 func (s *Service) GetDevice(ctx context.Context, appID string, easClientID string) (*Device, error) {
 	return s.store.GetDevice(ctx, appID, easClientID)
+}
+
+// TouchDevice is Apply's passive sibling: every contact a device makes with
+// the server registers it (metadata untouched), so device_identity is the
+// universal device registry and the identity ops only layer metadata on top.
+// The geo enrichment rides along exactly as on Apply.
+func (s *Service) TouchDevice(ctx context.Context, appID string, easClientID string, remoteIP string) (bool, error) {
+	var geo *Geo
+	if s.geo != nil && remoteIP != "" {
+		geo = s.geo.Resolve(remoteIP)
+	}
+	return s.store.TouchDevice(ctx, appID, easClientID, geo)
 }
 
 // Request is one identity operation extracted from a log event.

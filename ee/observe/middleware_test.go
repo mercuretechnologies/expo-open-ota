@@ -70,7 +70,7 @@ func post(h http.Handler, path, remote string) *httptest.ResponseRecorder {
 func TestCachedAppResolverMemoizesLookup(t *testing.T) {
 	resetObserveCache(t)
 	repo := &countingAppRepo{}
-	h := chain(NewIngestHandler(nil, nil, nil), repo)
+	h := chain(NewIngestHandler(nil, nil, nil, nil), repo)
 
 	for i := 0; i < 5; i++ {
 		rec := post(h, "/observe/known-app/proj/v1/logs", "203.0.113.20:1")
@@ -83,7 +83,7 @@ func TestCachedAppResolverMemoizesLookup(t *testing.T) {
 func TestCachedAppResolverCachesUnknown(t *testing.T) {
 	resetObserveCache(t)
 	repo := &countingAppRepo{unknown: true}
-	h := chain(NewIngestHandler(nil, nil, nil), repo)
+	h := chain(NewIngestHandler(nil, nil, nil, nil), repo)
 
 	for i := 0; i < 5; i++ {
 		rec := post(h, "/observe/ghost-app/proj/v1/logs", "203.0.113.21:1")
@@ -96,7 +96,7 @@ func TestCachedAppResolverCachesUnknown(t *testing.T) {
 func TestCachedAppResolverRejectsMalformedID(t *testing.T) {
 	resetObserveCache(t)
 	repo := &countingAppRepo{}
-	h := chain(NewIngestHandler(nil, nil, nil), repo)
+	h := chain(NewIngestHandler(nil, nil, nil, nil), repo)
 	// A control character in the id fails the syntactic guard before any read.
 	rec := post(h, "/observe/%00bad/proj/v1/logs", "203.0.113.22:1")
 	require.Equal(t, http.StatusNotFound, rec.Code)

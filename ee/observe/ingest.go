@@ -61,10 +61,39 @@ type IngestHandler struct {
 	// branches denormalizes update_id -> branch onto every row; nil leaves
 	// the branch column empty.
 	branches BranchResolver
+	// admission is the free-tier gate: telemetry of devices holding no
+	// registry slot is acknowledged and dropped. nil admits everything
+	// (stateless mode has no sink anyway).
+	admission *DeviceAdmission
 }
 
-func NewIngestHandler(identityService *identity.Service, telemetry TelemetrySink, branches BranchResolver) *IngestHandler {
-	return &IngestHandler{identityService: identityService, telemetry: telemetry, branches: branches}
+func NewIngestHandler(identityService *identity.Service, telemetry TelemetrySink, branches BranchResolver, admission *DeviceAdmission) *IngestHandler {
+	return &IngestHandler{identityService: identityService, telemetry: telemetry, branches: branches, admission: admission}
+}
+
+// admitted filters flattened rows through the free-tier gate, one verdict per
+// distinct device per batch (a batch is one device's backlog, so this is one
+// Admit call amortized further by its cache). Dropped rows are counted.
+func admittedRows[R any](ctx context.Context, admission *DeviceAdmission, appID string, remoteIP string, rows []R, clientID func(R) string) []R {
+	if admission == nil || len(rows) == 0 {
+		return rows
+	}
+	verdicts := make(map[string]bool, 1)
+	kept := rows[:0]
+	for _, row := range rows {
+		device := clientID(row)
+		verdict, seen := verdicts[device]
+		if !seen {
+			verdict = admission.Admit(ctx, appID, device, remoteIP)
+			verdicts[device] = verdict
+		}
+		if verdict {
+			kept = append(kept, row)
+		} else {
+			observeRecordsDropped(reasonOverDeviceCap, 1)
+		}
+	}
+	return kept
 }
 
 // resolveBranch fills MetricRow/LogRow.Branch; the resolver caches, so the
@@ -142,21 +171,29 @@ func (h *IngestHandler) HandleLogs(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// The telemetry path runs after the identity split: rows are the
-	// non-identity records. On insert failure, 503 preserves the batch;
-	// the identity re-apply on that retry is idempotent, and the identical
-	// re-flattened rows carry the same content_hash for query-time dedup.
+	// non-identity records, filtered through the free-tier admission gate.
+	// On insert failure, 503 preserves the batch; the identity re-apply on
+	// that retry is idempotent, and the identical re-flattened rows carry
+	// the same content_hash for query-time dedup.
 	rows := FlattenLogs(appID, batch, time.Now().UTC())
 	if h.telemetry == nil {
 		observeRecordsDropped(reasonTelemetry, len(rows))
-	} else if len(rows) > 0 {
-		for i := range rows {
-			rows[i].Branch = h.resolveBranch(r.Context(), appID, rows[i].UpdateID)
+	} else {
+		remoteIP := ""
+		if clientIP := helpers.ClientIP(r); clientIP.IsValid() {
+			remoteIP = clientIP.String()
 		}
-		if err := h.telemetry.InsertLogs(r.Context(), rows); err != nil {
-			log.Printf("observe: clickhouse logs insert failed: %v", err)
-			observeBatch(resultUnavailable)
-			w.WriteHeader(http.StatusServiceUnavailable)
-			return
+		rows = admittedRows(r.Context(), h.admission, appID, remoteIP, rows, func(row LogRow) string { return row.EASClientID })
+		if len(rows) > 0 {
+			for i := range rows {
+				rows[i].Branch = h.resolveBranch(r.Context(), appID, rows[i].UpdateID)
+			}
+			if err := h.telemetry.InsertLogs(r.Context(), rows); err != nil {
+				log.Printf("observe: clickhouse logs insert failed: %v", err)
+				observeBatch(resultUnavailable)
+				w.WriteHeader(http.StatusServiceUnavailable)
+				return
+			}
 		}
 	}
 
@@ -238,7 +275,12 @@ func (h *IngestHandler) HandleMetrics(w http.ResponseWriter, r *http.Request) {
 	}
 
 	appID := mux.Vars(r)["APP_ID"]
+	remoteIP := ""
+	if clientIP := helpers.ClientIP(r); clientIP.IsValid() {
+		remoteIP = clientIP.String()
+	}
 	rows := FlattenMetrics(appID, batch, time.Now().UTC())
+	rows = admittedRows(r.Context(), h.admission, appID, remoteIP, rows, func(row MetricRow) string { return row.EASClientID })
 	if len(rows) > 0 {
 		for i := range rows {
 			rows[i].Branch = h.resolveBranch(r.Context(), appID, rows[i].UpdateID)

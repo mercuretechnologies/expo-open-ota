@@ -104,6 +104,22 @@ func (q *Queries) CountDevices(ctx context.Context, appID pgtype.UUID) (int64, e
 	return count, err
 }
 
+const countDevicesActiveThisMonth = `-- name: CountDevicesActiveThisMonth :one
+SELECT COUNT(*) FROM device_identity
+WHERE app_id = $1 AND last_seen_at >= date_trunc('month', CURRENT_TIMESTAMP)
+`
+
+// The monthly-active count backing the free-tier quota: devices whose
+// last_seen falls in the current calendar month (UTC, the server timezone).
+// Monotone within a month, resets at the month boundary; served by
+// idx_device_identity_last_seen.
+func (q *Queries) CountDevicesActiveThisMonth(ctx context.Context, appID pgtype.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countDevicesActiveThisMonth, appID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countGrantsByRole = `-- name: CountGrantsByRole :one
 SELECT COUNT(*) FROM user_app_grants
 WHERE role_id = $1
@@ -2886,6 +2902,22 @@ func (q *Queries) ListUserAppGrants(ctx context.Context, userID pgtype.UUID) ([]
 	return items, nil
 }
 
+const lockDeviceRegistration = `-- name: LockDeviceRegistration :exec
+SELECT pg_advisory_xact_lock(823672944, hashtext($1::text))
+`
+
+// Serializes free-tier device registrations per app for the duration of the
+// caller's transaction (auto-released at commit/rollback). Advisory-lock id
+// 823672944 in the two-int keyspace (the int8 space holds 941=pg migrations,
+// 942=pgtest, 943=clickhouse migrations); hashtext collisions between apps
+// only cost spurious serialization, never correctness. This is what makes
+// the monthly quota EXACT: count-then-insert races cannot overshoot, and
+// waiters queue on the lock, database-wide, across replicas.
+func (q *Queries) LockDeviceRegistration(ctx context.Context, appID string) error {
+	_, err := q.db.Exec(ctx, lockDeviceRegistration, appID)
+	return err
+}
+
 const markUpdateAsChecked = `-- name: MarkUpdateAsChecked :execrows
 WITH target AS (
     SELECT u.id, u.branch_id, u.runtime_version_id, u.platform, u.rollout_percentage, u.created_at
@@ -3228,6 +3260,40 @@ func (q *Queries) PurgeExportedAuditLogEventsBefore(ctx context.Context, occurre
 	return q.db.Exec(ctx, purgeExportedAuditLogEventsBefore, occurredAt)
 }
 
+const registerDevice = `-- name: RegisterDevice :execrows
+INSERT INTO device_identity (app_id, eas_client_id, country_code, city, lat, lng)
+VALUES ($1, $2, $3, $4, $5, $6)
+ON CONFLICT (app_id, eas_client_id) DO UPDATE SET last_seen_at = CURRENT_TIMESTAMP
+`
+
+type RegisterDeviceParams struct {
+	AppID       pgtype.UUID `json:"app_id"`
+	EasClientID pgtype.UUID `json:"eas_client_id"`
+	CountryCode *string     `json:"country_code"`
+	City        *string     `json:"city"`
+	Lat         *float64    `json:"lat"`
+	Lng         *float64    `json:"lng"`
+}
+
+// Plain registration upsert for the passive path. The free-tier capacity and
+// stale-eviction POLICY lives in TouchDevice's transaction (Go), not here:
+// room is made (or the attempt refused) before this runs. ON CONFLICT absorbs
+// the race with a concurrent registration of the same device.
+func (q *Queries) RegisterDevice(ctx context.Context, arg RegisterDeviceParams) (int64, error) {
+	result, err := q.db.Exec(ctx, registerDevice,
+		arg.AppID,
+		arg.EasClientID,
+		arg.CountryCode,
+		arg.City,
+		arg.Lat,
+		arg.Lng,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const repointChannelToRolloutBranch = `-- name: RepointChannelToRolloutBranch :execrows
 UPDATE channels
 SET branch_id = (
@@ -3448,6 +3514,47 @@ func (q *Queries) TopIdentityValues(ctx context.Context, arg TopIdentityValuesPa
 		return nil, err
 	}
 	return items, nil
+}
+
+const touchDeviceIdentity = `-- name: TouchDeviceIdentity :execrows
+UPDATE device_identity SET
+    country_code = COALESCE($3, country_code),
+    city = COALESCE($4, city),
+    lat = COALESCE($5, lat),
+    lng = COALESCE($6, lng),
+    last_seen_at = CURRENT_TIMESTAMP
+WHERE app_id = $1 AND eas_client_id = $2
+  AND last_seen_at >= date_trunc('month', CURRENT_TIMESTAMP)
+`
+
+type TouchDeviceIdentityParams struct {
+	AppID       pgtype.UUID `json:"app_id"`
+	EasClientID pgtype.UUID `json:"eas_client_id"`
+	CountryCode *string     `json:"country_code"`
+	City        *string     `json:"city"`
+	Lat         *float64    `json:"lat"`
+	Lng         *float64    `json:"lng"`
+}
+
+// Passive-contact bump (manifest poll, telemetry batch): refresh last_seen and
+// opportunistically enrich geo, never touching metadata. Month-conditioned ON
+// PURPOSE: only a device ALREADY active this calendar month (it holds one of
+// the monthly slots) bumps freely; a row last seen in a previous month must
+// re-enter through the quota check like a new device, or old installs would
+// sneak past a full month. 1 row = tracked; 0 = quota path.
+func (q *Queries) TouchDeviceIdentity(ctx context.Context, arg TouchDeviceIdentityParams) (int64, error) {
+	result, err := q.db.Exec(ctx, touchDeviceIdentity,
+		arg.AppID,
+		arg.EasClientID,
+		arg.CountryCode,
+		arg.City,
+		arg.Lat,
+		arg.Lng,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const touchSSOIdentityLastLogin = `-- name: TouchSSOIdentityLastLogin :exec

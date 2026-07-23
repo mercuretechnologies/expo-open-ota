@@ -1,8 +1,10 @@
 package handlers
 
 import (
+	"context"
 	"errors"
 	"expo-open-ota/config"
+	"expo-open-ota/internal/helpers"
 	"expo-open-ota/internal/services"
 	"expo-open-ota/internal/types"
 	"log"
@@ -14,10 +16,22 @@ import (
 
 type ExpoProtocolHandler struct {
 	protocolService *services.ExpoProtocolService
+	// onDeviceSeen, when wired, registers the polling device in the universal
+	// device registry (the Observe feature's). A method-value seam like the
+	// audit recorder: the composition root wires it when Observe is enabled,
+	// and it must never block or fail the manifest path (the wired side runs
+	// its registry write in the background).
+	onDeviceSeen func(ctx context.Context, appID string, easClientID string, remoteIP string)
 }
 
 func NewExpoProtocolHandler(ps *services.ExpoProtocolService) *ExpoProtocolHandler {
 	return &ExpoProtocolHandler{protocolService: ps}
+}
+
+// SetOnDeviceSeen wires the device-contact recorder; nil (never called) keeps
+// manifest polls side-effect free.
+func (h *ExpoProtocolHandler) SetOnDeviceSeen(fn func(ctx context.Context, appID string, easClientID string, remoteIP string)) {
+	h.onDeviceSeen = fn
 }
 
 // resolveAppID returns the app a manifest or asset request targets. The
@@ -87,6 +101,17 @@ func (h *ExpoProtocolHandler) HandleManifest(w http.ResponseWriter, r *http.Requ
 		CurrentUpdateID:       r.Header.Get("expo-current-update-id"),
 		ExpoFatalError:        r.Header.Get("expo-fatal-error"),
 		RecentFailedUpdateIDs: r.Header.Get("Expo-Recent-Failed-Update-Ids"),
+	}
+
+	// Every poll is a device contact: the registry (when wired) sees it
+	// before the manifest resolution, whose outcome is irrelevant to "this
+	// device exists and is alive".
+	if h.onDeviceSeen != nil && params.ClientID != "" {
+		remoteIP := ""
+		if clientIP := helpers.ClientIP(r); clientIP.IsValid() {
+			remoteIP = clientIP.String()
+		}
+		h.onDeviceSeen(r.Context(), appId, params.ClientID, remoteIP)
 	}
 
 	result, err := h.protocolService.ResolveManifestBundle(r.Context(), params)

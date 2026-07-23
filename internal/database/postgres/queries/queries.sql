@@ -1245,3 +1245,46 @@ FROM updates u
 INNER JOIN branches b ON u.branch_id = b.id
 WHERE b.app_id = $1 AND u.update_uuid = $2
 LIMIT 1;
+
+-- Passive-contact bump (manifest poll, telemetry batch): refresh last_seen and
+-- opportunistically enrich geo, never touching metadata. Month-conditioned ON
+-- PURPOSE: only a device ALREADY active this calendar month (it holds one of
+-- the monthly slots) bumps freely; a row last seen in a previous month must
+-- re-enter through the quota check like a new device, or old installs would
+-- sneak past a full month. 1 row = tracked; 0 = quota path.
+-- name: TouchDeviceIdentity :execrows
+UPDATE device_identity SET
+    country_code = COALESCE(sqlc.narg('country_code'), country_code),
+    city = COALESCE(sqlc.narg('city'), city),
+    lat = COALESCE(sqlc.narg('lat'), lat),
+    lng = COALESCE(sqlc.narg('lng'), lng),
+    last_seen_at = CURRENT_TIMESTAMP
+WHERE app_id = $1 AND eas_client_id = $2
+  AND last_seen_at >= date_trunc('month', CURRENT_TIMESTAMP);
+
+-- Plain registration upsert for the passive path. The free-tier capacity and
+-- stale-eviction POLICY lives in TouchDevice's transaction (Go), not here:
+-- room is made (or the attempt refused) before this runs. ON CONFLICT absorbs
+-- the race with a concurrent registration of the same device.
+-- name: RegisterDevice :execrows
+INSERT INTO device_identity (app_id, eas_client_id, country_code, city, lat, lng)
+VALUES ($1, $2, sqlc.narg('country_code'), sqlc.narg('city'), sqlc.narg('lat'), sqlc.narg('lng'))
+ON CONFLICT (app_id, eas_client_id) DO UPDATE SET last_seen_at = CURRENT_TIMESTAMP;
+
+-- Serializes free-tier device registrations per app for the duration of the
+-- caller's transaction (auto-released at commit/rollback). Advisory-lock id
+-- 823672944 in the two-int keyspace (the int8 space holds 941=pg migrations,
+-- 942=pgtest, 943=clickhouse migrations); hashtext collisions between apps
+-- only cost spurious serialization, never correctness. This is what makes
+-- the monthly quota EXACT: count-then-insert races cannot overshoot, and
+-- waiters queue on the lock, database-wide, across replicas.
+-- name: LockDeviceRegistration :exec
+SELECT pg_advisory_xact_lock(823672944, hashtext(sqlc.arg(app_id)::text));
+
+-- The monthly-active count backing the free-tier quota: devices whose
+-- last_seen falls in the current calendar month (UTC, the server timezone).
+-- Monotone within a month, resets at the month boundary; served by
+-- idx_device_identity_last_seen.
+-- name: CountDevicesActiveThisMonth :one
+SELECT COUNT(*) FROM device_identity
+WHERE app_id = $1 AND last_seen_at >= date_trunc('month', CURRENT_TIMESTAMP);

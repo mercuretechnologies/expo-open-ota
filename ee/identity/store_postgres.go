@@ -18,10 +18,12 @@ import (
 )
 
 const (
-	// FreeDeviceLimit is how many devices an app may keep WITHOUT a valid
-	// enterprise license. Beyond it, the oldest-by-last_seen device is evicted
-	// when a new one is registered, so an unlicensed app tracks its 1000 most
-	// recently active installs. A valid license lifts the cap entirely.
+	// FreeDeviceLimit is the free tier's monthly quota: how many distinct
+	// devices may be ACTIVE in the current calendar month WITHOUT a valid
+	// enterprise license (TouchDevice refuses the rest, telemetry dropped;
+	// the quota self-resets at the month boundary). Identity ops additionally
+	// use it as the dimension-table size bound (mutate's LRU eviction). A
+	// valid license lifts both entirely.
 	FreeDeviceLimit = 1000
 	// maxEvictPerWrite bounds how many devices a single write evicts, so a
 	// large app that just lost its license shrinks toward the cap over many
@@ -227,6 +229,43 @@ func (s *PostgresIdentityStore) ApplyUnset(ctx context.Context, appID string, ea
 	return s.mutate(ctx, appID, easClientID, mutationUnset, nil, keys, geo)
 }
 
+// applyStatOps settles a batch of per-value stat mutations inside the
+// caller's transaction. The sort makes every writer touch (key, value) rows
+// in the same order, which is what keeps concurrent mutations deadlock-free;
+// decrements sort before increments of the same pair so a move never leaves
+// a transient zero row behind.
+func applyStatOps(ctx context.Context, q *pgdb.Queries, appUUID pgtype.UUID, ops []statOp) error {
+	sort.Slice(ops, func(i, j int) bool {
+		if ops[i].key != ops[j].key {
+			return ops[i].key < ops[j].key
+		}
+		if ops[i].value != ops[j].value {
+			return ops[i].value < ops[j].value
+		}
+		return ops[i].decrement
+	})
+	for _, op := range ops {
+		if op.decrement {
+			decParams := pgdb.DecrementIdentityValueStatParams{AppID: appUUID, Key: op.key, Value: op.value}
+			if err := q.DecrementIdentityValueStat(ctx, decParams); err != nil {
+				return fmt.Errorf("decrementing value stat: %w", err)
+			}
+			// Prune immediately: same row, already locked by the
+			// decrement, so this cannot introduce a new lock ordering.
+			delParams := pgdb.DeleteZeroIdentityValueStatsParams{AppID: appUUID, Key: op.key, Value: op.value}
+			if err := q.DeleteZeroIdentityValueStats(ctx, delParams); err != nil {
+				return fmt.Errorf("pruning zero value stat: %w", err)
+			}
+			continue
+		}
+		incParams := pgdb.IncrementIdentityValueStatParams{AppID: appUUID, Key: op.key, Value: op.value}
+		if err := q.IncrementIdentityValueStat(ctx, incParams); err != nil {
+			return fmt.Errorf("incrementing value stat: %w", err)
+		}
+	}
+	return nil
+}
+
 func (s *PostgresIdentityStore) mutate(ctx context.Context, appID string, easClientID string, kind mutationKind, raw map[string]any, unsetKeys []string, geo *Geo) (ApplyResult, error) {
 	appUUID, err := toPgUUID(appID)
 	if err != nil {
@@ -361,33 +400,8 @@ func (s *PostgresIdentityStore) mutate(ctx context.Context, appID string, easCli
 			}
 		}
 
-		sort.Slice(ops, func(i, j int) bool {
-			if ops[i].key != ops[j].key {
-				return ops[i].key < ops[j].key
-			}
-			if ops[i].value != ops[j].value {
-				return ops[i].value < ops[j].value
-			}
-			return ops[i].decrement
-		})
-		for _, op := range ops {
-			if op.decrement {
-				decParams := pgdb.DecrementIdentityValueStatParams{AppID: appUUID, Key: op.key, Value: op.value}
-				if err := q.DecrementIdentityValueStat(ctx, decParams); err != nil {
-					return fmt.Errorf("decrementing value stat: %w", err)
-				}
-				// Prune immediately: same row, already locked by the
-				// decrement, so this cannot introduce a new lock ordering.
-				delParams := pgdb.DeleteZeroIdentityValueStatsParams{AppID: appUUID, Key: op.key, Value: op.value}
-				if err := q.DeleteZeroIdentityValueStats(ctx, delParams); err != nil {
-					return fmt.Errorf("pruning zero value stat: %w", err)
-				}
-				continue
-			}
-			incParams := pgdb.IncrementIdentityValueStatParams{AppID: appUUID, Key: op.key, Value: op.value}
-			if err := q.IncrementIdentityValueStat(ctx, incParams); err != nil {
-				return fmt.Errorf("incrementing value stat: %w", err)
-			}
+		if err := applyStatOps(ctx, q, appUUID, ops); err != nil {
+			return err
 		}
 
 		// Delete the evicted device rows now that their stats are decremented.
@@ -541,4 +555,94 @@ func (s *PostgresIdentityStore) SearchMetadataValues(ctx context.Context, appID 
 		values = append(values, ValueCount{Value: row.Value, DeviceCount: row.DeviceCount})
 	}
 	return values, nil
+}
+
+// TouchDevice is the universal device registration: EVERY contact (manifest
+// poll, metrics batch, logs batch) lands here, identity ops only add the
+// metadata on top. The free tier is a CALENDAR-MONTH quota (UTC, the
+// database clock): a device already active this month bumps freely; one not
+// yet active this month (brand new, or last seen in a previous month) claims
+// one of the FreeDeviceLimit monthly slots, and once the month is full it is
+// refused: tracked=false, telemetry not ingested, and crucially its
+// last_seen is NOT bumped (a refused device must not become "active this
+// month" while being dropped). The quota resets by itself at the month
+// boundary. Nothing is ever evicted here; explicit identity ops keep their
+// LRU eviction (mutate), which also bounds the dimension table's size.
+func (s *PostgresIdentityStore) TouchDevice(ctx context.Context, appID string, easClientID string, geo *Geo) (bool, error) {
+	appUUID, err := toPgUUID(appID)
+	if err != nil {
+		return false, err
+	}
+	clientUUID, err := toPgUUID(easClientID)
+	if err != nil {
+		return false, err
+	}
+
+	touch := pgdb.TouchDeviceIdentityParams{AppID: appUUID, EasClientID: clientUUID}
+	if geo != nil {
+		touch.CountryCode = geo.CountryCode
+		touch.City = geo.City
+		touch.Lat = geo.Lat
+		touch.Lng = geo.Lng
+	}
+	rows, err := s.engine.TouchDeviceIdentity(ctx, touch)
+	if err != nil {
+		return false, fmt.Errorf("touching device: %w", err)
+	}
+	if rows == 1 {
+		return true, nil
+	}
+
+	// Not active this month yet: quota check, then upsert, serialized per
+	// app by an advisory lock so the count-then-insert can never overshoot:
+	// the quota is exact, and racers queue on the lock (database-wide, so it
+	// holds across replicas, which no in-process queue would).
+	tracked := false
+	err = s.engine.WithTx(ctx, func(q *pgdb.Queries) error {
+		if s.capActive() {
+			// Licensed deployments skip the lock: no quota, nothing to
+			// serialize. Transaction-scoped: released at commit/rollback.
+			if err := q.LockDeviceRegistration(ctx, appID); err != nil {
+				return fmt.Errorf("locking device registration: %w", err)
+			}
+		}
+		// Re-try the bump AFTER the lock: the loser of a same-device race
+		// must observe the winner's committed registration and land on
+		// "tracked", never on a refusal the admission layer would cache.
+		rows, err := q.TouchDeviceIdentity(ctx, touch)
+		if err != nil {
+			return fmt.Errorf("re-touching device: %w", err)
+		}
+		if rows == 1 {
+			tracked = true
+			return nil
+		}
+		if s.capActive() {
+			count, err := q.CountDevicesActiveThisMonth(ctx, appUUID)
+			if err != nil {
+				return fmt.Errorf("counting monthly active devices: %w", err)
+			}
+			if count >= int64(s.deviceLimit) {
+				return nil // month full: refused, and NOT bumped
+			}
+		}
+		register := pgdb.RegisterDeviceParams{AppID: appUUID, EasClientID: clientUUID}
+		if geo != nil {
+			register.CountryCode = geo.CountryCode
+			register.City = geo.City
+			register.Lat = geo.Lat
+			register.Lng = geo.Lng
+		}
+		// Inserts a new device, or bumps a previous-month row back into the
+		// active set (the ON CONFLICT arm), both having passed the quota.
+		if _, err := q.RegisterDevice(ctx, register); err != nil {
+			return fmt.Errorf("registering device: %w", err)
+		}
+		tracked = true
+		return nil
+	})
+	if err != nil {
+		return false, err
+	}
+	return tracked, nil
 }

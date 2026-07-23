@@ -76,32 +76,32 @@ const logsPath = "/observe/app-1/ignored-project/v1/logs"
 
 func TestHandleLogsResponseContract(t *testing.T) {
 	t.Run("nil service acknowledges and drops", func(t *testing.T) {
-		recorder := serveIngest(NewIngestHandler(nil, nil, nil), http.MethodPost, logsPath, []byte(androidLogsFixture))
+		recorder := serveIngest(NewIngestHandler(nil, nil, nil, nil), http.MethodPost, logsPath, []byte(androidLogsFixture))
 		require.Equal(t, http.StatusNoContent, recorder.Code)
 	})
 
 	t.Run("unreadable body is a permanent 400", func(t *testing.T) {
-		handler := NewIngestHandler(identity.NewService(&recordingMutator{}, nil), nil, nil)
+		handler := NewIngestHandler(identity.NewService(&recordingMutator{}, nil), nil, nil, nil)
 		recorder := serveIngest(handler, http.MethodPost, logsPath, []byte("not json"))
 		require.Equal(t, http.StatusBadRequest, recorder.Code)
 	})
 
 	t.Run("oversized body is a permanent 413", func(t *testing.T) {
-		handler := NewIngestHandler(identity.NewService(&recordingMutator{}, nil), nil, nil)
+		handler := NewIngestHandler(identity.NewService(&recordingMutator{}, nil), nil, nil, nil)
 		big := bytes.Repeat([]byte("x"), maxLogsBodyBytes+1)
 		recorder := serveIngest(handler, http.MethodPost, logsPath, big)
 		require.Equal(t, http.StatusRequestEntityTooLarge, recorder.Code)
 	})
 
 	t.Run("store failure is a retryable 503, never 500", func(t *testing.T) {
-		handler := NewIngestHandler(identity.NewService(&recordingMutator{fail: true}, nil), nil, nil)
+		handler := NewIngestHandler(identity.NewService(&recordingMutator{fail: true}, nil), nil, nil, nil)
 		recorder := serveIngest(handler, http.MethodPost, logsPath, []byte(androidLogsFixture))
 		require.Equal(t, http.StatusServiceUnavailable, recorder.Code)
 	})
 
 	t.Run("telemetry-only batch is acknowledged untouched", func(t *testing.T) {
 		mutator := &recordingMutator{}
-		handler := NewIngestHandler(identity.NewService(mutator, nil), nil, nil)
+		handler := NewIngestHandler(identity.NewService(mutator, nil), nil, nil, nil)
 		body := strings.ReplaceAll(androidLogsFixture, "$set", "exception")
 		recorder := serveIngest(handler, http.MethodPost, logsPath, []byte(body))
 		require.Equal(t, http.StatusNoContent, recorder.Code)
@@ -110,7 +110,7 @@ func TestHandleLogsResponseContract(t *testing.T) {
 
 	t.Run("forged client id skips records without failing the batch", func(t *testing.T) {
 		mutator := &recordingMutator{}
-		handler := NewIngestHandler(identity.NewService(mutator, nil), nil, nil)
+		handler := NewIngestHandler(identity.NewService(mutator, nil), nil, nil, nil)
 		body := strings.ReplaceAll(androidLogsFixture, "8b9c1fe0-93b3-4b3a-8c1d-2f4a5e6b7c8d", "not-a-uuid")
 		recorder := serveIngest(handler, http.MethodPost, logsPath, []byte(body))
 		require.Equal(t, http.StatusNoContent, recorder.Code)
@@ -119,7 +119,7 @@ func TestHandleLogsResponseContract(t *testing.T) {
 
 	t.Run("identity ops reach the service", func(t *testing.T) {
 		mutator := &recordingMutator{}
-		handler := NewIngestHandler(identity.NewService(mutator, nil), nil, nil)
+		handler := NewIngestHandler(identity.NewService(mutator, nil), nil, nil, nil)
 		recorder := serveIngest(handler, http.MethodPost, logsPath, []byte(androidLogsFixture))
 		require.Equal(t, http.StatusNoContent, recorder.Code)
 		require.True(t, mutator.hadDeadline, "each identity apply must have a request-scoped deadline")
@@ -135,7 +135,7 @@ func TestHandleLogsResponseContract(t *testing.T) {
 	})
 
 	t.Run("metrics stub acknowledges and drops", func(t *testing.T) {
-		recorder := serveIngest(NewIngestHandler(nil, nil, nil), http.MethodPost, "/observe/app-1/p/v1/metrics", []byte(`{"resourceMetrics":[]}`))
+		recorder := serveIngest(NewIngestHandler(nil, nil, nil, nil), http.MethodPost, "/observe/app-1/p/v1/metrics", []byte(`{"resourceMetrics":[]}`))
 		require.Equal(t, http.StatusNoContent, recorder.Code)
 	})
 }
@@ -172,7 +172,7 @@ func TestIngestEndToEnd(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	handler := NewIngestHandler(identity.NewService(identityStore, nil), nil, nil)
+	handler := NewIngestHandler(identity.NewService(identityStore, nil), nil, nil, nil)
 	path := "/observe/" + appID + "/whatever-project/v1/logs"
 	recorder := serveIngest(handler, http.MethodPost, path, []byte(androidLogsFixture))
 	require.Equal(t, http.StatusNoContent, recorder.Code)

@@ -108,6 +108,9 @@ func InitDependencies(ctx context.Context) (*AppContainer, func()) {
 	// nils, never a typed-nil interface.
 	var telemetrySink observe.TelemetrySink
 	var branchResolver observe.BranchResolver
+	// The free-tier admission gate; nil (Observe off) admits nothing because
+	// the sink is nil too, and leaves manifest polls side-effect free.
+	var deviceAdmission *observe.DeviceAdmission
 
 	cleanup := func() {}
 	dbUrl := config.GetDBURL()
@@ -183,6 +186,7 @@ func InitDependencies(ctx context.Context) (*AppContainer, func()) {
 			identityService = identity.NewService(identity.NewPostgresIdentityStore(dbEngine), geoResolver)
 			telemetrySink = observe.NewClickHouseTelemetrySink(chEngine)
 			branchResolver = observe.NewBranchResolver(cache.GetCache(), pgUpdateStore.GetBranchNameByUpdateUUID)
+			deviceAdmission = observe.NewDeviceAdmission(identityService, cache.GetCache())
 		} else {
 			// Not a Fatal: pre-Observe deployments upgrade without
 			// CLICKHOUSE_URL and must keep booting. But an operator who had
@@ -269,7 +273,7 @@ func InitDependencies(ctx context.Context) (*AppContainer, func()) {
 	rolloutService := services.NewRolloutService(rolloutRepo, channelRepo, updateRepo, deploymentService)
 	rolloutService.SetOnAuditEvent(auditService.Record)
 
-	return &AppContainer{
+	container := &AppContainer{
 		AuthHandler:              dashhandlers.NewAuthHandler(dashboardAuthService),
 		DashboardAuthService:     dashboardAuthService,
 		CliAuthService:           cliAuthService,
@@ -293,7 +297,17 @@ func InitDependencies(ctx context.Context) (*AppContainer, func()) {
 		UploadHandler:            handlers.NewUploadHandler(cliAuthService, deploymentService),
 		UsersHandler:             dashhandlers.NewUsersHandler(userService),
 		UserRepo:                 userRepo,
-		ObserveIngestHandler:     observe.NewIngestHandler(identityService, telemetrySink, branchResolver),
+		ObserveIngestHandler:     observe.NewIngestHandler(identityService, telemetrySink, branchResolver, deviceAdmission),
 		IdentityHandler:          identity.NewIdentityHandler(identityService),
-	}, cleanup
+	}
+
+	// Every manifest poll registers the polling device in the universal
+	// device registry (background, debounced): the community fallback is
+	// simply "not wired", the seam can only enable a feature, never bypass
+	// its gate (the free-tier cap lives inside TouchDevice, EE code).
+	if deviceAdmission != nil {
+		container.ExpoProtocolHandler.SetOnDeviceSeen(deviceAdmission.NoteContact)
+	}
+
+	return container, cleanup
 }

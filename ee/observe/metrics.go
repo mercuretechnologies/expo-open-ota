@@ -33,6 +33,10 @@ var (
 const (
 	reasonForgedClientID = "forged_client_id"
 	reasonTelemetry      = "telemetry_no_sink"
+	// The device holds no free-tier slot (identity.FreeDeviceLimit reached,
+	// no enterprise license): telemetry acknowledged and dropped. This
+	// counter is the operator-visible pressure on the free cap.
+	reasonOverDeviceCap = "over_device_cap"
 )
 
 func init() {

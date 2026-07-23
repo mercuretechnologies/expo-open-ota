@@ -29,15 +29,22 @@ func NewLocalCache() *LocalCache {
 
 func (c *LocalCache) Get(key string) string {
 	c.mu.RLock()
-	defer c.mu.RUnlock()
-
 	item, exists := c.items[withPrefix(key)]
+	c.mu.RUnlock()
 	if !exists {
 		return ""
 	}
 
 	if item.Expiration != nil && time.Now().After(*item.Expiration) {
-		delete(c.items, withPrefix(key))
+		// Deleting under the read lock would be a concurrent map write (two
+		// Gets racing on an expired key is an unrecoverable runtime fatal):
+		// upgrade to the write lock and re-check, a concurrent Set may have
+		// refreshed the entry in the gap.
+		c.mu.Lock()
+		if current, ok := c.items[withPrefix(key)]; ok && current.Expiration != nil && time.Now().After(*current.Expiration) {
+			delete(c.items, withPrefix(key))
+		}
+		c.mu.Unlock()
 		return ""
 	}
 
