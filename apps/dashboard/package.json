@@ -22,6 +22,8 @@
     "@radix-ui/react-tooltip": "^1.1.8",
     "@tanstack/react-query": "^5.66.0",
     "@tanstack/react-table": "^8.20.6",
+    "@visx/responsive": "^4.0.0",
+    "@visx/xychart": "^4.0.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "cmdk": "^1.0.0",

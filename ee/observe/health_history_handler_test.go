@@ -41,12 +41,12 @@ func (r *recordingHealthHistoryReader) Read(
 func serveHealthHistory(handler *HealthHistoryHandler, appID, query string) *httptest.ResponseRecorder {
 	router := mux.NewRouter()
 	router.HandleFunc(
-		"/api/apps/{APP_ID}/identity/update-health/history",
+		"/api/apps/{APP_ID}/observe/update-health/history",
 		handler.GetUpdateHealthHistoryHandler,
 	).Methods(http.MethodGet)
 	request := httptest.NewRequest(
 		http.MethodGet,
-		"/api/apps/"+appID+"/identity/update-health/history?"+query,
+		"/api/apps/"+appID+"/observe/update-health/history?"+query,
 		nil,
 	)
 	recorder := httptest.NewRecorder()
@@ -57,6 +57,18 @@ func serveHealthHistory(handler *HealthHistoryHandler, appID, query string) *htt
 func TestHealthHistoryHandlerReturnsUnavailableWithoutClickHouse(t *testing.T) {
 	recorder := serveHealthHistory(
 		NewHealthHistoryHandler(nil),
+		uuid.NewString(),
+		"ids="+uuid.NewString(),
+	)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.JSONEq(t, `{"available":false,"updates":{}}`, recorder.Body.String())
+}
+
+func TestHealthHistoryHandlerReturnsUnavailableWithTypedNilHistory(t *testing.T) {
+	var history *HealthHistory
+	recorder := serveHealthHistory(
+		NewHealthHistoryHandler(history),
 		uuid.NewString(),
 		"ids="+uuid.NewString(),
 	)

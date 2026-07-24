@@ -1,10 +1,12 @@
-import { useMemo } from 'react';
-import type { ReactNode } from 'react';
+import { useMemo, useState } from 'react';
+import type { ComponentType, SVGProps } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Activity, AlertTriangle, Users } from 'lucide-react';
+import { TimeSeriesChart, TimeSeriesDefinition } from '@/components/charts/TimeSeriesChart';
+import { Skeleton } from '@/components/ui/skeleton';
 import { api, UpdateHealthHistoryPoint } from '@/lib/api';
 import { useSelectedApp } from '@/lib/SelectedAppContext';
-import { Skeleton } from '@/components/ui/skeleton';
+import { cn } from '@/lib/utils';
 
 export type HealthHistorySeries = {
   key: string;
@@ -14,9 +16,35 @@ export type HealthHistorySeries = {
 };
 
 type AggregatedPoint = Omit<UpdateHealthHistoryPoint, 'role'>;
+type Metric = 'health' | 'adoption' | 'faults';
 
-const chartWidth = 520;
-const chartHeight = 84;
+type MetricOption = {
+  key: Metric;
+  label: string;
+  description: string;
+  icon: ComponentType<SVGProps<SVGSVGElement>>;
+};
+
+const metricOptions: MetricOption[] = [
+  {
+    key: 'health',
+    label: 'Health',
+    description: 'Successful devices across all attempts',
+    icon: Activity,
+  },
+  {
+    key: 'adoption',
+    label: 'Adoption',
+    description: 'Devices currently running this update',
+    icon: Users,
+  },
+  {
+    key: 'faults',
+    label: 'Faults',
+    description: 'Unique faulty devices, stacked by root cause',
+    icon: AlertTriangle,
+  },
+];
 
 const aggregateSeries = (
   updateUUIDs: string[],
@@ -33,9 +61,7 @@ const aggregateSeries = (
         current.updateIssues += point.updateIssues;
         current.runtimeIssues += point.runtimeIssues;
       } else {
-        byTimestamp.set(point.timestamp, {
-          ...point,
-        });
+        byTimestamp.set(point.timestamp, { ...point });
       }
     }
   }
@@ -50,127 +76,79 @@ const aggregateSeries = (
     });
 };
 
-const linePath = (
-  points: AggregatedPoint[],
-  value: (point: AggregatedPoint) => number | null,
-  maximum?: number
-) => {
-  const values = points.map(value);
-  const finiteValues = values.filter((item): item is number => item != null);
-  if (finiteValues.length === 0) return '';
-  const maxValue = maximum ?? Math.max(1, ...finiteValues);
-  let plotted = 0;
-  return values
-    .map((item, index) => {
-      if (item == null) return null;
-      const x = points.length === 1 ? chartWidth / 2 : (index / (points.length - 1)) * chartWidth;
-      const y = chartHeight - Math.min(1, Math.max(0, item / maxValue)) * chartHeight;
-      const command = plotted === 0 ? 'M' : 'L';
-      plotted += 1;
-      return `${command} ${x.toFixed(2)} ${y.toFixed(2)}`;
-    })
-    .filter(Boolean)
-    .join(' ');
-};
-
-const latestValue = (
-  points: AggregatedPoint[],
+const toTimeSeries = (
+  series: Array<HealthHistorySeries & { points: AggregatedPoint[] }>,
   value: (point: AggregatedPoint) => number | null
-) => {
-  for (let index = points.length - 1; index >= 0; index -= 1) {
-    const current = value(points[index]);
-    if (current != null) return current;
+): TimeSeriesDefinition[] =>
+  series.map(item => ({
+    key: item.key,
+    label: item.label,
+    color: item.color,
+    points: item.points.flatMap(point => {
+      const current = value(point);
+      if (current == null) return [];
+      return [{ timestamp: new Date(point.timestamp), value: current }];
+    }),
+  }));
+
+const faultSeries = (
+  series: Array<HealthHistorySeries & { points: AggregatedPoint[] }>
+): TimeSeriesDefinition[] => {
+  const byTimestamp = new Map<number, { native: number; js: number }>();
+  for (const item of series) {
+    for (const point of item.points) {
+      const timestamp = new Date(point.timestamp).getTime();
+      const current = byTimestamp.get(timestamp) ?? { native: 0, js: 0 };
+      current.native += point.updateIssues;
+      current.js += point.runtimeIssues;
+      byTimestamp.set(timestamp, current);
+    }
   }
-  return null;
+  const timestamps = Array.from(byTimestamp.keys()).sort((a, b) => a - b);
+  return [
+    {
+      key: 'native',
+      label: 'Native',
+      color: '#f59e0b',
+      points: timestamps.map(timestamp => ({
+        timestamp: new Date(timestamp),
+        value: byTimestamp.get(timestamp)?.native ?? 0,
+      })),
+    },
+    {
+      key: 'javascript',
+      label: 'JS',
+      color: '#f43f5e',
+      points: timestamps.map(timestamp => ({
+        timestamp: new Date(timestamp),
+        value: byTimestamp.get(timestamp)?.js ?? 0,
+      })),
+    },
+  ];
 };
 
-const HistoryChart = ({
-  title,
-  icon,
+const SeriesLegend = ({
   series,
-  value,
-  format,
-  maximum,
+  formatValue,
 }: {
-  title: string;
-  icon: ReactNode;
-  series: Array<HealthHistorySeries & { points: AggregatedPoint[] }>;
-  value: (point: AggregatedPoint) => number | null;
-  format: (value: number) => string;
-  maximum?: number;
-}) => {
-  const sharedMaximum =
-    maximum ??
-    Math.max(
-      1,
-      ...series.flatMap(item =>
-        item.points.map(value).filter((current): current is number => current != null)
-      )
-    );
-  return (
-    <div className="space-y-2 rounded-lg border bg-background/60 p-3">
-      <div className="flex items-center justify-between gap-3">
-        <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-          {icon}
-          {title}
+  series: TimeSeriesDefinition[];
+  formatValue: (value: number) => string;
+}) => (
+  <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+    {series.map(item => {
+      const latest = item.points[item.points.length - 1]?.value;
+      return (
+        <span key={item.key} className="flex items-center gap-1.5 text-xs">
+          <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: item.color }} />
+          <span className="text-muted-foreground">{item.label}</span>
+          <span className="font-mono font-medium tabular-nums">
+            {latest == null ? '-' : formatValue(latest)}
+          </span>
         </span>
-        <div className="flex flex-wrap justify-end gap-x-3 gap-y-1">
-          {series.map(item => {
-            const latest = latestValue(item.points, value);
-            return (
-              <span key={item.key} className="flex items-center gap-1 text-xs">
-                <span className="h-2 w-2 rounded-full" style={{ backgroundColor: item.color }} />
-                <span className="text-muted-foreground">{item.label}</span>
-                <span className="font-medium tabular-nums">
-                  {latest == null ? '—' : format(latest)}
-                </span>
-              </span>
-            );
-          })}
-        </div>
-      </div>
-      <svg
-        viewBox={`0 0 ${chartWidth} ${chartHeight}`}
-        className="h-20 w-full overflow-visible"
-        role="img"
-        aria-label={`${title} over time`}
-        preserveAspectRatio="none">
-        <line
-          x1="0"
-          y1={chartHeight}
-          x2={chartWidth}
-          y2={chartHeight}
-          className="stroke-border"
-          strokeWidth="1"
-        />
-        <line
-          x1="0"
-          y1={chartHeight / 2}
-          x2={chartWidth}
-          y2={chartHeight / 2}
-          className="stroke-border/50"
-          strokeWidth="1"
-          strokeDasharray="3 4"
-        />
-        {series.map(item => {
-          const path = linePath(item.points, value, sharedMaximum);
-          return path ? (
-            <path
-              key={item.key}
-              d={path}
-              fill="none"
-              stroke={item.color}
-              strokeWidth="2.5"
-              vectorEffect="non-scaling-stroke"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
-          ) : null;
-        })}
-      </svg>
-    </div>
-  );
-};
+      );
+    })}
+  </div>
+);
 
 export const UpdateHealthHistory = ({
   series,
@@ -182,6 +160,7 @@ export const UpdateHealthHistory = ({
   live?: boolean;
 }) => {
   const { selectedAppId } = useSelectedApp();
+  const [metric, setMetric] = useState<Metric>('health');
   const updateUUIDs = useMemo(
     () => Array.from(new Set(series.flatMap(item => item.updateUUIDs))),
     [series]
@@ -200,16 +179,27 @@ export const UpdateHealthHistory = ({
       })),
     [query.data?.updates, series]
   );
-  const hasPoints = aggregated.some(item => item.points.length > 0);
-  const start = aggregated
-    .flatMap(item => item.points)
-    .map(point => point.timestamp)
-    .sort()[0];
-  const end = aggregated
-    .flatMap(item => item.points)
-    .map(point => point.timestamp)
-    .sort()
-    .at(-1);
+  const healthSeries = useMemo(
+    () => toTimeSeries(aggregated, point => point.healthPercent),
+    [aggregated]
+  );
+  const adoptionSeries = useMemo(
+    () => toTimeSeries(aggregated, point => point.devicesOnUpdate),
+    [aggregated]
+  );
+  const faults = useMemo(() => faultSeries(aggregated), [aggregated]);
+  const allPoints = aggregated.flatMap(item => item.points);
+  const hasPoints = allPoints.length > 0;
+  const timestamps = allPoints.map(point => point.timestamp).sort();
+  const start = timestamps[0];
+  const end = timestamps[timestamps.length - 1];
+  const selectedOption = metricOptions.find(option => option.key === metric) ?? metricOptions[0];
+  const chartSeries =
+    metric === 'health' ? healthSeries : metric === 'adoption' ? adoptionSeries : faults;
+  const formatValue =
+    metric === 'health'
+      ? (value: number) => `${value.toFixed(1)}%`
+      : (value: number) => Math.round(value).toLocaleString();
 
   if (query.isLoading) {
     return <Skeleton className="h-80 w-full rounded-xl" />;
@@ -217,7 +207,7 @@ export const UpdateHealthHistory = ({
   if (query.error || query.data?.available === false) return null;
   if (!hasPoints) {
     return (
-      <div className="rounded-lg border border-dashed px-4 py-6 text-center text-xs text-muted-foreground">
+      <div className="rounded-xl border border-dashed px-4 py-6 text-center text-xs text-muted-foreground">
         Health history will appear after the first one-minute snapshot.
       </div>
     );
@@ -228,38 +218,63 @@ export const UpdateHealthHistory = ({
       <div className="flex items-end justify-between gap-3">
         <div>
           <h3 className="text-sm font-medium">Health over time</h3>
-          <p className="text-xs text-muted-foreground">
-            One-minute snapshots from the device registry.
-          </p>
+          <p className="text-xs text-muted-foreground">One-minute device snapshots.</p>
         </div>
         {start && end && (
-          <span className="text-right text-[11px] text-muted-foreground">
+          <span className="text-right font-mono text-[10px] text-muted-foreground">
             {new Date(start).toLocaleString()} – {new Date(end).toLocaleString()}
           </span>
         )}
       </div>
-      <HistoryChart
-        title="Health"
-        icon={<Activity className="h-3.5 w-3.5" />}
-        series={aggregated}
-        value={point => point.healthPercent}
-        format={value => `${value.toFixed(1)}%`}
-        maximum={100}
-      />
-      <HistoryChart
-        title="Devices on update"
-        icon={<Users className="h-3.5 w-3.5" />}
-        series={aggregated}
-        value={point => point.devicesOnUpdate}
-        format={value => Math.round(value).toLocaleString()}
-      />
-      <HistoryChart
-        title="Faulty devices"
-        icon={<AlertTriangle className="h-3.5 w-3.5" />}
-        series={aggregated}
-        value={point => point.faultyDevices}
-        format={value => Math.round(value).toLocaleString()}
-      />
+
+      <div className="overflow-hidden rounded-xl border bg-card shadow-card">
+        <div
+          className="grid grid-cols-3 border-b bg-muted/30 p-1"
+          role="tablist"
+          aria-label="Health history metric">
+          {metricOptions.map(option => {
+            const Icon = option.icon;
+            const active = option.key === metric;
+            return (
+              <button
+                key={option.key}
+                type="button"
+                role="tab"
+                aria-selected={active}
+                onClick={() => setMetric(option.key)}
+                className={cn(
+                  'flex items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                  active
+                    ? 'bg-background text-foreground shadow-sm'
+                    : 'text-muted-foreground hover:text-foreground'
+                )}>
+                <Icon className="h-3.5 w-3.5" />
+                {option.label}
+              </button>
+            );
+          })}
+        </div>
+
+        <div className="space-y-2.5 px-3 pb-2 pt-3">
+          <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2 px-1">
+            <p className="text-[11px] text-muted-foreground">{selectedOption.description}</p>
+            <SeriesLegend series={chartSeries} formatValue={formatValue} />
+          </div>
+          <TimeSeriesChart
+            key={metric}
+            ariaLabel={`${selectedOption.label} over time`}
+            series={chartSeries}
+            mode={metric === 'faults' ? 'stacked' : 'line'}
+            maximum={metric === 'health' ? 100 : undefined}
+            formatValue={formatValue}
+            formatAxisValue={
+              metric === 'health'
+                ? value => `${Math.round(value)}%`
+                : value => Math.round(value).toLocaleString()
+            }
+          />
+        </div>
+      </div>
     </section>
   );
 };

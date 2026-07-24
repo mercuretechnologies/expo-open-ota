@@ -926,7 +926,7 @@ export class ApiClient {
     if (from) search.set('from', from);
     if (to) search.set('to', to);
     return this.request<UpdateHealthHistoryResponse>(
-      `${this.appScope()}/identity/update-health/history?${search.toString()}`,
+      `${this.appScope()}/observe/update-health/history?${search.toString()}`,
       {
         method: 'GET',
       }

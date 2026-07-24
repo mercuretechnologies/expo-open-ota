@@ -15,6 +15,8 @@ import Constants from 'expo-constants'
 import { useState, useEffect } from 'react'
 import { UpdatesLogViewer } from '@/components/LogViewer'
 
+
+
 export default function HomeScreen() {
   const [loading, load] = useState<boolean>(false)
   const [logs, setLogs] = useState<Updates.UpdatesLogEntry[]>([])
@@ -29,7 +31,15 @@ export default function HomeScreen() {
     }
 
     fetchLogs()
+    randomCrash()
   }, [])
+
+  const randomCrash = () => {
+    // Random throw an error 50% of time
+    if (Math.random() < 0.5) {
+      throw new Error('Random crash!')
+    }
+  }
 
   const checkUpdates = async () => {
     if (__DEV__ || loading || Platform.OS === 'web') {

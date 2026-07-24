@@ -23,6 +23,7 @@ function RootLayout() {
   useEffect(() => {
     // Once per JS session, not once per render.
     Observe.logEvent('app_started');
+    Observe.dispatchEvents();
   }, []);
 
   useEffect(() => {

@@ -35,6 +35,12 @@ type HealthHistoryHandler struct {
 }
 
 func NewHealthHistoryHandler(reader HealthHistoryReader) *HealthHistoryHandler {
+	// A nil *HealthHistory stored in an interface is itself non-nil. Wiring
+	// does exactly that when ClickHouse is disabled, so normalize it here
+	// before the handler uses the interface.
+	if history, ok := reader.(*HealthHistory); ok && history == nil {
+		reader = nil
+	}
 	return &HealthHistoryHandler{reader: reader}
 }
 
