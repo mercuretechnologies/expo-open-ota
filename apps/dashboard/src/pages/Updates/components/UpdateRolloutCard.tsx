@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { AlertTriangle, CheckCircle2, Split } from 'lucide-react';
-import { api, describeApiError, UpdateRolloutInfo } from '@/lib/api';
+import { api, describeApiError, UpdateHealthRecord, UpdateRolloutInfo } from '@/lib/api';
 import { useSelectedApp } from '@/lib/SelectedAppContext';
 import { useToast } from '@/hooks/use-toast';
 import { Card, CardContent } from '@/components/ui/card';
@@ -16,21 +16,34 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { RolloutBar } from '@/components/rollout/RolloutBar';
+import { HealthBadge } from '@/pages/Updates/components/HealthBadge';
+import { UpdateHealthHistory } from '@/pages/Updates/components/UpdateHealthHistory';
 
 // Renders the active per-update rollout for a (branch, runtime version). The
 // controls (progress forward, finish, or revert) only show when the account
 // holds the update-rollout permission (canManageRollout). `updates` holds one
-// row per platform, all sharing the same update id and percentage.
+// row per platform; each platform row is a DISTINCT update (own id and UUID),
+// they only share the rollout percentage.
 export const UpdateRolloutCard = ({
   branch,
   runtimeVersion,
   updates,
   canManageRollout,
+  rolloutHealth,
+  controlHealth,
+  rolloutUpdateUUIDs = [],
+  controlUpdateUUIDs = [],
 }: {
   branch: string;
   runtimeVersion: string;
   updates: UpdateRolloutInfo[];
   canManageRollout: boolean;
+  // Registry-backed adoption of the update being rolled out and of the
+  // control update devices fall back to; undefined while loading.
+  rolloutHealth?: UpdateHealthRecord;
+  controlHealth?: UpdateHealthRecord;
+  rolloutUpdateUUIDs?: string[];
+  controlUpdateUUIDs?: string[];
 }) => {
   const { selectedAppId } = useSelectedApp();
   const { toast } = useToast();
@@ -143,7 +156,51 @@ export const UpdateRolloutCard = ({
               rollout ends.
             </p>
             <RolloutBar value={percentage} />
+            {(rolloutHealth || controlHealth) && (
+              <p className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+                <span
+                  className="relative flex h-2 w-2"
+                  title="Refreshed every 5 seconds while the rollout runs">
+                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75"></span>
+                  <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500"></span>
+                </span>
+                <span>
+                  <span className="font-medium tabular-nums text-foreground">
+                    {(rolloutHealth?.devicesOnUpdate ?? 0).toLocaleString()}
+                  </span>{' '}
+                  devices on this update
+                </span>
+                <span>
+                  <span className="font-medium tabular-nums text-foreground">
+                    {(controlHealth?.devicesOnUpdate ?? 0).toLocaleString()}
+                  </span>{' '}
+                  on the previous one
+                </span>
+                <HealthBadge health={rolloutHealth} />
+              </p>
+            )}
           </div>
+
+          {rolloutUpdateUUIDs.length + controlUpdateUUIDs.length > 0 && (
+            <UpdateHealthHistory
+              from={updates.map(update => update.createdAt).sort()[0]}
+              live
+              series={[
+                {
+                  key: 'candidate',
+                  label: 'Candidate',
+                  updateUUIDs: rolloutUpdateUUIDs,
+                  color: '#10b981',
+                },
+                {
+                  key: 'control',
+                  label: 'Control',
+                  updateUUIDs: controlUpdateUUIDs,
+                  color: '#64748b',
+                },
+              ]}
+            />
+          )}
 
           {canManageRollout && (
             <div className="space-y-4 border-t pt-4">

@@ -239,7 +239,32 @@ ORDER BY u.created_at DESC;
 SELECT u.id, u.update_uuid, u.update_type, u.created_at, u.commit_hash,
        u.platform, u.message, u.rollout_percentage, u.control_update_id,
        u.publish_group, u.branch_id, b.name AS branch_name,
-       rv.version AS runtime_version
+       rv.version AS runtime_version,
+       CASE WHEN
+         -- The newest checked update is the current candidate. During a
+         -- progressive rollout, its explicitly captured control remains
+         -- current for the out-of-bucket cohort too.
+         u.id = (
+           SELECT current_update.id
+           FROM updates current_update
+           WHERE current_update.branch_id = u.branch_id
+             AND current_update.runtime_version_id = u.runtime_version_id
+             AND current_update.platform = u.platform
+             AND current_update.checked_at IS NOT NULL
+           ORDER BY current_update.id DESC
+           LIMIT 1
+         )
+         OR EXISTS (
+           SELECT 1
+           FROM updates candidate
+           WHERE candidate.branch_id = u.branch_id
+             AND candidate.runtime_version_id = u.runtime_version_id
+             AND candidate.platform = u.platform
+             AND candidate.checked_at IS NOT NULL
+             AND candidate.rollout_percentage IS NOT NULL
+             AND candidate.control_update_id = u.id
+         )
+       THEN TRUE ELSE FALSE END AS health_relevant
 FROM updates u
 JOIN branches b ON u.branch_id = b.id
 JOIN runtime_versions rv ON u.runtime_version_id = rv.id
@@ -1135,30 +1160,11 @@ WHERE app_id = $1 AND key = $2;
 -- purpose: FOR UPDATE cannot lock a row that does not exist yet, so two
 -- concurrent first identifies of the same install would both merge against
 -- an empty map and one would silently win. Insert-then-lock serializes them.
--- Returns the number of rows inserted: 1 when this install is brand new, 0
--- when it already existed. The free-tier device cap only needs to run on a
--- genuine new-device insert, so the caller keys the count/eviction off this.
--- name: EnsureDeviceIdentity :execrows
+-- Idempotent device-row creation inside mutate's transaction.
+-- name: EnsureDeviceIdentity :exec
 INSERT INTO device_identity (app_id, eas_client_id)
 VALUES ($1, $2)
 ON CONFLICT (app_id, eas_client_id) DO NOTHING;
-
--- name: CountDevices :one
-SELECT COUNT(*) FROM device_identity WHERE app_id = $1;
-
--- The oldest devices of an app by last activity, excluding one (the install
--- being written, which is the most recent and must never be evicted). Feeds
--- the free-tier eviction: their metadata is read so the per-value stats can be
--- decremented before the rows are deleted.
--- name: OldestDevicesExcluding :many
-SELECT eas_client_id, metadata FROM device_identity
-WHERE app_id = $1 AND eas_client_id <> $2
-ORDER BY last_seen_at ASC, eas_client_id ASC
-LIMIT sqlc.arg('lim')::int;
-
--- name: DeleteDevices :exec
-DELETE FROM device_identity
-WHERE app_id = $1 AND eas_client_id = ANY(sqlc.arg('client_ids')::uuid[]);
 
 -- name: GetDeviceIdentityForUpdate :one
 SELECT * FROM device_identity
@@ -1234,3 +1240,199 @@ WHERE app_id = $1
   )
 ORDER BY last_seen_at DESC, eas_client_id DESC
 LIMIT sqlc.arg('lim')::int;
+
+-- The observe flattener denormalizes the branch onto every ClickHouse row.
+-- Resolved from the update uuid (permanent: an update never changes branch),
+-- NEVER from the channel (a channel can be re-pointed over time). Cached
+-- in-process by the caller, so this runs once per distinct update.
+-- name: GetBranchNameByUpdateUUID :one
+SELECT b.name
+FROM updates u
+INNER JOIN branches b ON u.branch_id = b.id
+WHERE b.app_id = $1 AND u.update_uuid = $2
+LIMIT 1;
+
+-- Passive-contact bump (manifest poll, telemetry batch): refresh last_seen and
+-- opportunistically enrich geo, never touching metadata. 1 row = known device;
+-- 0 = brand new, the caller registers it.
+-- name: TouchDeviceIdentity :execrows
+UPDATE device_identity SET
+    country_code = COALESCE(sqlc.narg('country_code'), country_code),
+    city = COALESCE(sqlc.narg('city'), city),
+    lat = COALESCE(sqlc.narg('lat'), lat),
+    lng = COALESCE(sqlc.narg('lng'), lng),
+    current_update_id = COALESCE(sqlc.narg('current_update_id'), current_update_id),
+    last_seen_at = CURRENT_TIMESTAMP
+WHERE app_id = $1 AND eas_client_id = $2;
+
+-- Registration upsert for the passive path: the registry is uncapped (the
+-- whole fleet is the update-health source of truth). ON CONFLICT absorbs the
+-- race with a concurrent registration of the same device.
+-- name: RegisterDevice :execrows
+INSERT INTO device_identity (app_id, eas_client_id, country_code, city, lat, lng, current_update_id)
+VALUES ($1, $2, sqlc.narg('country_code'), sqlc.narg('city'), sqlc.narg('lat'), sqlc.narg('lng'), sqlc.narg('current_update_id'))
+ON CONFLICT (app_id, eas_client_id) DO UPDATE SET
+    last_seen_at = CURRENT_TIMESTAMP,
+    current_update_id = COALESCE(EXCLUDED.current_update_id, device_identity.current_update_id);
+
+
+-- Records one failure. Capture-once on fatal_error AND failure_type: the
+-- client sends Expo-Fatal-Error exactly once (the poll right after the
+-- crash), so a first non-empty capture is authoritative and sticky header
+-- re-sends never blank or overwrite it; the first recorded source likewise
+-- keeps its type (the health math never reads the type, display does).
+-- name: UpsertDeviceUpdateFailure :exec
+INSERT INTO device_update_failures (app_id, eas_client_id, update_id, failure_type, fatal_error)
+SELECT $1, $2, u.update_uuid, sqlc.arg(failure_type), sqlc.arg(fatal_error)
+FROM updates u
+JOIN branches b ON b.id = u.branch_id
+WHERE b.app_id = $1
+  AND u.update_uuid = $3
+  AND u.checked_at IS NOT NULL
+ON CONFLICT (app_id, eas_client_id, update_id) DO UPDATE SET
+    last_seen_at = CURRENT_TIMESTAMP,
+    fatal_error = CASE
+        WHEN device_update_failures.fatal_error = '' THEN EXCLUDED.fatal_error
+        ELSE device_update_failures.fatal_error
+    END;
+
+-- Instant-T adoption: how many devices currently run this update.
+-- name: CountDevicesOnUpdate :one
+SELECT COUNT(*) FROM device_identity
+WHERE app_id = $1 AND current_update_id = $2;
+
+-- Instant-T health: how many devices this update crashed on at launch.
+-- name: CountUpdateFailures :one
+SELECT COUNT(*) FROM device_update_failures
+WHERE app_id = $1 AND update_id = $2;
+
+-- The fleet's adoption breakdown, biggest cohorts first. NULL update = the
+-- embedded bundle (or a device seen before this feature landed).
+-- name: AdoptionBreakdown :many
+SELECT current_update_id, COUNT(*) AS device_count
+FROM device_identity
+WHERE app_id = $1
+GROUP BY current_update_id
+ORDER BY device_count DESC, current_update_id ASC NULLS LAST;
+
+-- Batch adoption counts for a set of updates: every device CURRENTLY running
+-- each update (the dashboard's "Devices" column).
+-- name: DevicesOnUpdateByIDs :many
+SELECT current_update_id AS update_uuid, COUNT(*) AS device_count
+FROM device_identity
+WHERE app_id = $1
+  AND current_update_id = ANY(sqlc.arg(update_ids)::uuid[])
+GROUP BY current_update_id;
+
+-- Batch failure breakdown for a set of updates. All-time per update: an
+-- update's failures belong to its rollout window by construction (update ids
+-- are never reused), and the health score is only shown for the active one.
+-- still_on_update counts failed devices whose CURRENT update is still the
+-- failed one (runtime_issue devices that did not move on): the overlap
+-- between the failure set and the current-device cohort, which the health
+-- math needs so those devices are neither double-counted as attempts nor
+-- kept in the healthy numerator. A failed device that has since moved to
+-- another update (or rolled back: every update_issue) leaves the overlap by
+-- construction, so the join self-corrects when a device changes update.
+-- name: UpdateFailureBreakdownByIDs :many
+SELECT f.update_id AS update_uuid,
+       COUNT(*) AS failure_count,
+       COUNT(*) FILTER (WHERE f.failure_type = 'runtime_issue') AS runtime_count,
+       COUNT(d.eas_client_id) AS still_on_update
+FROM device_update_failures f
+LEFT JOIN device_identity d
+    ON d.app_id = f.app_id
+   AND d.eas_client_id = f.eas_client_id
+   AND d.current_update_id = f.update_id
+WHERE f.app_id = $1
+  AND f.update_id = ANY(sqlc.arg(update_ids)::uuid[])
+GROUP BY f.update_id;
+
+-- Durable ClickHouse delivery queue. The worker reads through a transaction;
+-- SKIP LOCKED lets several API replicas drain disjoint batches safely.
+-- name: ListDeviceHealthOutbox :many
+SELECT id, event_type, app_id, eas_client_id, update_id, previous_update_id,
+       failure_type, fatal_error, occurred_at
+FROM device_health_outbox
+ORDER BY id
+LIMIT $1
+FOR UPDATE SKIP LOCKED;
+
+-- name: DeleteDeviceHealthOutbox :exec
+DELETE FROM device_health_outbox
+WHERE id = ANY(sqlc.arg('ids')::bigint[]);
+
+-- A deployment with no ClickHouse has no historical-health consumer. Its
+-- uniform no-ClickHouse replicas periodically discard this otherwise
+-- unbounded queue; PostgreSQL instant-T health does not depend on it.
+-- name: DiscardDeviceHealthOutbox :exec
+DELETE FROM device_health_outbox;
+
+-- Absolute current health for every update whose score is meaningful now:
+-- the newest checked update of each branch/runtime/platform, plus the control
+-- still serving an active rollout's out-of-bucket cohort. The ClickHouse
+-- worker samples these rows into one-minute buckets.
+-- name: ListCurrentUpdateHealthSnapshots :many
+WITH latest AS (
+    SELECT DISTINCT ON (u.branch_id, u.runtime_version_id, u.platform)
+           b.app_id,
+           u.branch_id,
+           u.runtime_version_id,
+           u.platform,
+           u.update_uuid,
+           u.rollout_percentage,
+           u.control_update_id
+    FROM updates u
+    JOIN branches b ON b.id = u.branch_id
+    WHERE u.checked_at IS NOT NULL
+    ORDER BY u.branch_id, u.runtime_version_id, u.platform, u.id DESC
+),
+relevant AS (
+    SELECT app_id,
+           update_uuid,
+           CASE WHEN rollout_percentage IS NULL THEN 'current' ELSE 'candidate' END::text AS role
+    FROM latest
+    WHERE update_uuid IS NOT NULL
+
+    UNION ALL
+
+    SELECT l.app_id, control.update_uuid, 'control'::text AS role
+    FROM latest l
+    JOIN updates control
+      ON control.branch_id = l.branch_id
+     AND control.id = l.control_update_id
+    WHERE l.rollout_percentage IS NOT NULL
+      AND control.update_uuid IS NOT NULL
+)
+SELECT r.app_id,
+       r.update_uuid,
+       r.role,
+       COALESCE(adoption.devices_on_update, 0)::bigint AS devices_on_update,
+       (COALESCE(adoption.devices_on_update, 0) - COALESCE(failures.still_on_update, 0))::bigint AS successful_devices,
+       COALESCE(failures.faulty_devices, 0)::bigint AS faulty_devices,
+       COALESCE(failures.update_issues, 0)::bigint AS update_issues,
+       COALESCE(failures.runtime_issues, 0)::bigint AS runtime_issues
+FROM relevant r
+LEFT JOIN LATERAL (
+    SELECT COUNT(*) AS devices_on_update
+    FROM device_identity d
+    WHERE d.app_id = r.app_id
+      AND d.current_update_id = r.update_uuid
+) adoption ON TRUE
+LEFT JOIN LATERAL (
+    SELECT COUNT(*) AS faulty_devices,
+           COUNT(*) FILTER (WHERE f.failure_type = 'update_issue') AS update_issues,
+           COUNT(*) FILTER (WHERE f.failure_type = 'runtime_issue') AS runtime_issues,
+           COUNT(*) FILTER (
+               WHERE EXISTS (
+                   SELECT 1
+                   FROM device_identity d
+                   WHERE d.app_id = f.app_id
+                     AND d.eas_client_id = f.eas_client_id
+                     AND d.current_update_id = f.update_id
+               )
+           ) AS still_on_update
+    FROM device_update_failures f
+    WHERE f.app_id = r.app_id
+      AND f.update_id = r.update_uuid
+) failures ON TRUE;

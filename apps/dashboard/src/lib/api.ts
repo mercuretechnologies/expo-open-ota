@@ -178,6 +178,9 @@ export type UpdateRecord = {
 export type UpdateFeedRecord = UpdateRecord & {
   branch: string;
   runtimeVersion: string;
+  // Current candidate, or the control still serving the out-of-bucket cohort
+  // of an active progressive rollout. Historical updates are false.
+  healthRelevant: boolean;
 };
 
 export type UpdateFeedQuery = {
@@ -206,6 +209,33 @@ export type UpdateRolloutInfo = {
   percentage: number;
   controlUpdateId?: string | null;
   createdAt: string;
+};
+
+// Instant-T health of one update, from the device registry (Postgres only,
+// no ClickHouse needed). A manifest rollback is faulty but no longer current;
+// a JS crash is faulty and still current. successfulDevices removes that
+// overlap so healthPercent remains successes/(successes+faulty).
+export type UpdateHealthRecord = {
+  devicesOnUpdate: number;
+  successfulDevices: number;
+  faultyDevices: number;
+  healthPercent: number | null;
+};
+
+export type UpdateHealthHistoryPoint = {
+  timestamp: string;
+  role: 'current' | 'candidate' | 'control';
+  devicesOnUpdate: number;
+  successfulDevices: number;
+  faultyDevices: number;
+  updateIssues: number;
+  runtimeIssues: number;
+  healthPercent: number | null;
+};
+
+export type UpdateHealthHistoryResponse = {
+  available: boolean;
+  updates: Record<string, UpdateHealthHistoryPoint[]>;
 };
 
 export type UpdateDetailsRecord = {
@@ -882,6 +912,25 @@ export class ApiClient {
     return this.request<UpdateFeedPage>(`${this.appScope()}/updates${suffix}`, {
       method: 'GET',
     });
+  }
+  public async getUpdateHealth(updateUUIDs: string[]) {
+    return this.request<{ updates: Record<string, UpdateHealthRecord> }>(
+      `${this.appScope()}/identity/update-health?ids=${encodeURIComponent(updateUUIDs.join(','))}`,
+      {
+        method: 'GET',
+      }
+    );
+  }
+  public async getUpdateHealthHistory(updateUUIDs: string[], from?: string, to?: string) {
+    const search = new URLSearchParams({ ids: updateUUIDs.join(',') });
+    if (from) search.set('from', from);
+    if (to) search.set('to', to);
+    return this.request<UpdateHealthHistoryResponse>(
+      `${this.appScope()}/observe/update-health/history?${search.toString()}`,
+      {
+        method: 'GET',
+      }
+    );
   }
   public async getUpdateDetails(branch: string, runtimeVersion: string, updateId: string) {
     return this.request<UpdateDetailsRecord>(

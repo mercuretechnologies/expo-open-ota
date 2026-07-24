@@ -26,7 +26,6 @@ import (
 	"expo-open-ota/internal/database/postgres/pgdb"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/require"
 )
@@ -40,7 +39,7 @@ func setupIdentityStore(t *testing.T) (*PostgresIdentityStore, *pgxpool.Pool) {
 		if os.Getenv("CI") != "" {
 			t.Fatal("TEST_DATABASE_URL must be set in CI: these tests cover SQL that unit tests cannot reach")
 		}
-		t.Skip("TEST_DATABASE_URL not set — start a Postgres and set it to run the identity store tests")
+		t.Skip("TEST_DATABASE_URL not set; start a Postgres and set it to run the identity store tests")
 	}
 	t.Setenv("ADMIN_EMAIL", "seed-admin@example.com")
 	t.Setenv("ADMIN_PASSWORD", "Sup3rSecret!")
@@ -49,14 +48,9 @@ func setupIdentityStore(t *testing.T) (*PostgresIdentityStore, *pgxpool.Pool) {
 	pool, err := pgxpool.New(context.Background(), dbURL)
 	require.NoError(t, err)
 	t.Cleanup(pool.Close)
-	// Licensed by default so the free-tier cap is inert; the cap test builds
-	// its own unlicensed store.
 	store := NewPostgresIdentityStore(&database.Engine{Queries: pgdb.New(pool), DB: pool})
-	store.licenseValid = alwaysLicensed
 	return store, pool
 }
-
-func alwaysLicensed() bool { return true }
 
 func seedApp(t *testing.T, pool *pgxpool.Pool) string {
 	t.Helper()
@@ -67,6 +61,29 @@ func seedApp(t *testing.T, pool *pgxpool.Pool) string {
 		_, _ = pool.Exec(context.Background(), "DELETE FROM apps WHERE id = $1", appID)
 	})
 	return appID
+}
+
+func seedPublishedUpdate(t *testing.T, pool *pgxpool.Pool, appID, updateID string) {
+	t.Helper()
+	ctx := context.Background()
+	suffix := updateID[:8]
+	var branchID, runtimeVersionID int64
+	require.NoError(t, pool.QueryRow(ctx,
+		"INSERT INTO branches (app_id, name) VALUES ($1, $2) RETURNING id",
+		appID, "health-"+suffix).Scan(&branchID))
+	require.NoError(t, pool.QueryRow(ctx,
+		"INSERT INTO runtime_versions (app_id, version) VALUES ($1, $2) RETURNING id",
+		appID, "health-"+suffix).Scan(&runtimeVersionID))
+	_, err := pool.Exec(ctx, `
+		INSERT INTO updates
+			(id, update_uuid, branch_id, runtime_version_id, update_type, commit_hash, platform, checked_at)
+		VALUES (1, $1, $2, $3, 0, 'health-test', 'ios', CURRENT_TIMESTAMP)`,
+		updateID, branchID, runtimeVersionID)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), "DELETE FROM branches WHERE id = $1", branchID)
+		_, _ = pool.Exec(context.Background(), "DELETE FROM runtime_versions WHERE id = $1", runtimeVersionID)
+	})
 }
 
 func declareKey(t *testing.T, store *PostgresIdentityStore, appID, key string, valueType ValueType) {
@@ -595,109 +612,326 @@ func uniqueStrings(in []string) []string {
 	return out
 }
 
-// unlicensedStore builds a store with the free-tier cap active at a small
-// limit so the eviction path is testable without seeding a thousand rows.
-func unlicensedStore(pool *pgxpool.Pool, limit int) *PostgresIdentityStore {
-	s := NewPostgresIdentityStore(&database.Engine{Queries: pgdb.New(pool), DB: pool})
-	s.licenseValid = func() bool { return false }
-	s.deviceLimit = limit
-	return s
-}
-
-func TestFreeTierCapEvictsOldest(t *testing.T) {
-	_, pool := setupIdentityStore(t)
+func TestTouchDeviceRegistersAndBumps(t *testing.T) {
+	store, pool := setupIdentityStore(t)
 	appID := seedApp(t, pool)
 	ctx := context.Background()
-	store := unlicensedStore(pool, 3)
-	declareKey(t, store, appID, "tenant", ValueTypeString)
 
-	// Register 3 devices (at the cap). Stagger last_seen via distinct txns.
-	ids := make([]string, 4)
-	for i := 0; i < 3; i++ {
-		ids[i] = uuid.NewString()
-		_, err := store.ApplySet(ctx, appID, ids[i], map[string]any{"tenant": "acme"}, nil)
-		require.NoError(t, err)
-	}
-	count, err := store.engine.Queries.CountDevices(ctx, mustPgUUID(t, appID))
+	// First contact registers the device; the registry is uncapped.
+	deviceID := uuid.NewString()
+	require.NoError(t, store.TouchDevice(ctx, appID, deviceID, nil, nil))
+	created, err := store.GetDevice(ctx, appID, deviceID)
 	require.NoError(t, err)
-	require.Equal(t, int64(3), count)
+	require.NotNil(t, created)
 
-	// A 4th device evicts the oldest (ids[0]); count stays at the cap.
-	ids[3] = uuid.NewString()
-	_, err = store.ApplySet(ctx, appID, ids[3], map[string]any{"tenant": "globex"}, nil)
+	// A later contact bumps last_seen, never touching metadata.
+	require.NoError(t, store.TouchDevice(ctx, appID, deviceID, nil, nil))
+	bumped, err := store.GetDevice(ctx, appID, deviceID)
 	require.NoError(t, err)
-
-	count, err = store.engine.Queries.CountDevices(ctx, mustPgUUID(t, appID))
-	require.NoError(t, err)
-	require.Equal(t, int64(3), count, "cap holds the app at the limit")
-
-	// The oldest is gone, the newest is present.
-	evicted, err := store.GetDevice(ctx, appID, ids[0])
-	require.NoError(t, err)
-	require.Nil(t, evicted, "the oldest device was evicted")
-	newest, err := store.GetDevice(ctx, appID, ids[3])
-	require.NoError(t, err)
-	require.NotNil(t, newest)
-
-	// Value stats followed the eviction: acme went 3 -> 2 (one evicted),
-	// globex is 1. No ghost counts from the evicted device.
-	values, err := store.SearchMetadataValues(ctx, appID, "tenant", "", 10)
-	require.NoError(t, err)
-	require.ElementsMatch(t, []ValueCount{{Value: "acme", DeviceCount: 2}, {Value: "globex", DeviceCount: 1}}, values)
+	require.NotNil(t, bumped)
+	require.False(t, bumped.LastSeenAt.Before(created.LastSeenAt))
+	require.Empty(t, bumped.Metadata)
 }
 
-func TestLicensedStoreHasNoCap(t *testing.T) {
-	baseline, pool := setupIdentityStore(t) // alwaysLicensed
+func TestTouchDeviceGeoCoalesce(t *testing.T) {
+	store, pool := setupIdentityStore(t)
 	appID := seedApp(t, pool)
 	ctx := context.Background()
-	// Same tiny limit, but licensed → cap inert.
-	licensed := NewPostgresIdentityStore(&database.Engine{Queries: pgdb.New(pool), DB: pool})
-	licensed.licenseValid = func() bool { return true }
-	licensed.deviceLimit = 3
-	_ = baseline
 
-	for i := 0; i < 6; i++ {
-		_, err := licensed.ApplySet(ctx, appID, uuid.NewString(), map[string]any{}, nil)
-		require.NoError(t, err)
-	}
-	count, err := licensed.engine.Queries.CountDevices(ctx, mustPgUUID(t, appID))
+	deviceID := uuid.NewString()
+	country := "FR"
+	require.NoError(t, store.TouchDevice(ctx, appID, deviceID, &Geo{CountryCode: &country}, nil))
+
+	// A later contact resolving no geo must not erase the known one.
+	require.NoError(t, store.TouchDevice(ctx, appID, deviceID, nil, nil))
+	device, err := store.GetDevice(ctx, appID, deviceID)
 	require.NoError(t, err)
-	require.Equal(t, int64(6), count, "a valid license lifts the cap")
+	require.NotNil(t, device)
+	require.NotNil(t, device.CountryCode)
+	require.Equal(t, "FR", *device.CountryCode)
 }
 
-// Updates to existing devices must not trigger eviction (only new inserts do).
-func TestFreeTierCapIgnoresUpdates(t *testing.T) {
-	_, pool := setupIdentityStore(t)
+// Two first contacts of the same brand-new device race: both must succeed
+// (the loser lands on RegisterDevice's ON CONFLICT bump) and exactly one row
+// may exist. This is the contract the uncapped registry keeps.
+func TestTouchDeviceConcurrentSameDevice(t *testing.T) {
+	store, pool := setupIdentityStore(t)
 	appID := seedApp(t, pool)
 	ctx := context.Background()
-	store := unlicensedStore(pool, 3)
-	declareKey(t, store, appID, "tenant", ValueTypeString)
+	deviceID := uuid.NewString()
 
-	ids := make([]string, 3)
-	for i := 0; i < 3; i++ {
-		ids[i] = uuid.NewString()
-		_, err := store.ApplySet(ctx, appID, ids[i], map[string]any{"tenant": "acme"}, nil)
-		require.NoError(t, err)
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			require.NoError(t, store.TouchDevice(ctx, appID, deviceID, nil, nil))
+		}()
 	}
-	// Re-identify the OLDEST many times: it stays (updates don't evict), and
-	// no device is dropped.
-	for i := 0; i < 5; i++ {
-		_, err := store.ApplySet(ctx, appID, ids[0], map[string]any{"tenant": "acme"}, nil)
-		require.NoError(t, err)
-	}
-	count, err := store.engine.Queries.CountDevices(ctx, mustPgUUID(t, appID))
-	require.NoError(t, err)
-	require.Equal(t, int64(3), count)
-	for _, id := range ids {
-		d, err := store.GetDevice(ctx, appID, id)
-		require.NoError(t, err)
-		require.NotNil(t, d, "no device evicted on updates")
-	}
+	wg.Wait()
+
+	var rows int
+	require.NoError(t, pool.QueryRow(ctx,
+		"SELECT COUNT(*) FROM device_identity WHERE app_id = $1 AND eas_client_id = $2", appID, deviceID).Scan(&rows))
+	require.Equal(t, 1, rows)
 }
 
-func mustPgUUID(t *testing.T, id string) pgtype.UUID {
-	t.Helper()
-	u, err := toPgUUID(id)
+func TestTouchDeviceTracksCurrentUpdate(t *testing.T) {
+	store, pool := setupIdentityStore(t)
+	appID := seedApp(t, pool)
+	ctx := context.Background()
+	deviceID := uuid.NewString()
+	updateA, updateB := uuid.NewString(), uuid.NewString()
+
+	// Registration carries the running update.
+	require.NoError(t, store.TouchDevice(ctx, appID, deviceID, nil, &updateA))
+	var current *string
+	readCurrent := func() *string {
+		t.Helper()
+		var v *string
+		require.NoError(t, pool.QueryRow(ctx,
+			"SELECT current_update_id::text FROM device_identity WHERE app_id = $1 AND eas_client_id = $2", appID, deviceID).Scan(&v))
+		return v
+	}
+	current = readCurrent()
+	require.NotNil(t, current)
+	require.Equal(t, updateA, *current)
+
+	// A contact that does not know (nil) keeps the known value.
+	require.NoError(t, store.TouchDevice(ctx, appID, deviceID, nil, nil))
+	current = readCurrent()
+	require.NotNil(t, current)
+	require.Equal(t, updateA, *current)
+
+	// A transition overwrites it.
+	require.NoError(t, store.TouchDevice(ctx, appID, deviceID, nil, &updateB))
+	current = readCurrent()
+	require.NotNil(t, current)
+	require.Equal(t, updateB, *current)
+
+	// The history bridge records state transitions, not every contact. The
+	// nil contact above therefore emits nothing.
+	type stateEvent struct {
+		EventType        string
+		UpdateID         string
+		PreviousUpdateID *string
+	}
+	rows, err := pool.Query(ctx, `
+		SELECT event_type, update_id::text, previous_update_id::text
+		FROM device_health_outbox
+		WHERE app_id = $1 AND eas_client_id = $2
+		ORDER BY id`, appID, deviceID)
 	require.NoError(t, err)
-	return u
+	defer rows.Close()
+	var events []stateEvent
+	for rows.Next() {
+		var event stateEvent
+		require.NoError(t, rows.Scan(&event.EventType, &event.UpdateID, &event.PreviousUpdateID))
+		events = append(events, event)
+	}
+	require.NoError(t, rows.Err())
+	require.Equal(t, []stateEvent{
+		{EventType: "first_seen", UpdateID: updateA},
+		{EventType: "switched", UpdateID: updateB, PreviousUpdateID: &updateA},
+	}, events)
+}
+
+func TestRecordUpdateFailuresCaptureOnce(t *testing.T) {
+	store, pool := setupIdentityStore(t)
+	appID := seedApp(t, pool)
+	ctx := context.Background()
+	deviceID := uuid.NewString()
+	failedUpdate := uuid.NewString()
+	seedPublishedUpdate(t, pool, appID, failedUpdate)
+
+	require.NoError(t, store.TouchDevice(ctx, appID, deviceID, nil, nil))
+
+	// The crash poll captures the fatal error...
+	require.NoError(t, store.RecordUpdateFailures(ctx, appID, deviceID, []string{failedUpdate}, "TypeError: boom", FailureTypeUpdate))
+	// ...sticky re-sends carry no error and must not blank it, nor duplicate.
+	require.NoError(t, store.RecordUpdateFailures(ctx, appID, deviceID, []string{failedUpdate}, "", FailureTypeUpdate))
+	// A LATER error must not overwrite the first capture, and neither must a
+	// later source overwrite the recorded type.
+	require.NoError(t, store.RecordUpdateFailures(ctx, appID, deviceID, []string{failedUpdate}, "different error", FailureTypeRuntime))
+	// Forged ids in the list are skipped without failing.
+	require.NoError(t, store.RecordUpdateFailures(ctx, appID, deviceID, []string{"garbage", failedUpdate}, "", FailureTypeUpdate))
+
+	var rows int
+	var fatal, failureType string
+	require.NoError(t, pool.QueryRow(ctx,
+		"SELECT COUNT(*), MAX(fatal_error), MAX(failure_type) FROM device_update_failures WHERE app_id = $1 AND update_id = $2", appID, failedUpdate).Scan(&rows, &fatal, &failureType))
+	require.Equal(t, 1, rows, "one failure row per (device, update), sticky re-sends collapse")
+	require.Equal(t, "TypeError: boom", fatal)
+	require.Equal(t, string(FailureTypeUpdate), failureType)
+
+	var outboxRows int
+	require.NoError(t, pool.QueryRow(ctx, `
+		SELECT COUNT(*)
+		FROM device_health_outbox
+		WHERE app_id = $1
+		  AND eas_client_id = $2
+		  AND update_id = $3
+		  AND event_type = 'failure'`,
+		appID, deviceID, failedUpdate).Scan(&outboxRows))
+	require.Equal(t, 1, outboxRows, "replayed failure headers must emit one historical event")
+}
+
+func TestRecordUpdateFailuresRejectsAnotherAppsUpdate(t *testing.T) {
+	store, pool := setupIdentityStore(t)
+	appID := seedApp(t, pool)
+	otherAppID := seedApp(t, pool)
+	foreignUpdate := uuid.NewString()
+	seedPublishedUpdate(t, pool, otherAppID, foreignUpdate)
+
+	require.NoError(t, store.RecordUpdateFailures(
+		context.Background(), appID, uuid.NewString(), []string{foreignUpdate},
+		"forged", FailureTypeUpdate,
+	))
+
+	var rows int
+	require.NoError(t, pool.QueryRow(context.Background(),
+		"SELECT COUNT(*) FROM device_update_failures WHERE app_id = $1 AND update_id = $2",
+		appID, foreignUpdate).Scan(&rows))
+	require.Zero(t, rows)
+}
+
+func TestHealthSnapshotsKeepActiveRolloutCandidateAndControl(t *testing.T) {
+	store, pool := setupIdentityStore(t)
+	appID := seedApp(t, pool)
+	ctx := context.Background()
+	controlUUID, candidateUUID := uuid.NewString(), uuid.NewString()
+
+	var branchID, runtimeVersionID int64
+	require.NoError(t, pool.QueryRow(ctx,
+		"INSERT INTO branches (app_id, name) VALUES ($1, 'snapshot-rollout') RETURNING id",
+		appID).Scan(&branchID))
+	require.NoError(t, pool.QueryRow(ctx,
+		"INSERT INTO runtime_versions (app_id, version) VALUES ($1, 'snapshot-rollout') RETURNING id",
+		appID).Scan(&runtimeVersionID))
+	_, err := pool.Exec(ctx, `
+		INSERT INTO updates
+			(id, update_uuid, branch_id, runtime_version_id, update_type, commit_hash, platform, checked_at)
+		VALUES
+			(1, $1, $3, $4, 0, 'control', 'ios', CURRENT_TIMESTAMP),
+			(2, $2, $3, $4, 0, 'candidate', 'ios', CURRENT_TIMESTAMP)`,
+		controlUUID, candidateUUID, branchID, runtimeVersionID)
+	require.NoError(t, err)
+	_, err = pool.Exec(ctx, `
+		UPDATE updates
+		SET rollout_percentage = 10, control_update_id = 1
+		WHERE branch_id = $1 AND id = 2`,
+		branchID)
+	require.NoError(t, err)
+
+	require.NoError(t, store.TouchDevice(ctx, appID, uuid.NewString(), nil, &controlUUID))
+	require.NoError(t, store.TouchDevice(ctx, appID, uuid.NewString(), nil, &candidateUUID))
+
+	readRoles := func() map[string]string {
+		t.Helper()
+		rows, err := store.engine.Queries.ListCurrentUpdateHealthSnapshots(ctx)
+		require.NoError(t, err)
+		roles := make(map[string]string)
+		for _, row := range rows {
+			if uuid.UUID(row.AppID.Bytes).String() == appID {
+				roles[uuid.UUID(row.UpdateUuid.Bytes).String()] = row.Role
+				require.EqualValues(t, 1, row.DevicesOnUpdate)
+			}
+		}
+		return roles
+	}
+	require.Equal(t, map[string]string{
+		candidateUUID: "candidate",
+		controlUUID:   "control",
+	}, readRoles())
+
+	// Once the rollout finishes, only its newest update remains relevant.
+	_, err = pool.Exec(ctx, `
+		UPDATE updates
+		SET rollout_percentage = NULL
+		WHERE branch_id = $1 AND id = 2`, branchID)
+	require.NoError(t, err)
+	require.Equal(t, map[string]string{candidateUUID: "current"}, readRoles())
+}
+
+func TestUpdateHealthCounts(t *testing.T) {
+	store, pool := setupIdentityStore(t)
+	appID := seedApp(t, pool)
+	ctx := context.Background()
+	updateA, updateB := uuid.NewString(), uuid.NewString()
+	seedPublishedUpdate(t, pool, appID, updateB)
+
+	// 2 devices on A, 1 on B, 1 on the embedded bundle; B crashed on one.
+	d1, d2, d3, d4 := uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString()
+	require.NoError(t, store.TouchDevice(ctx, appID, d1, nil, &updateA))
+	require.NoError(t, store.TouchDevice(ctx, appID, d2, nil, &updateA))
+	require.NoError(t, store.TouchDevice(ctx, appID, d3, nil, &updateB))
+	require.NoError(t, store.TouchDevice(ctx, appID, d4, nil, nil))
+	require.NoError(t, store.RecordUpdateFailures(ctx, appID, d4, []string{updateB}, "crashed at launch", FailureTypeUpdate))
+
+	appUUID, err := toPgUUID(appID)
+	require.NoError(t, err)
+	updateAUUID, err := toPgUUID(updateA)
+	require.NoError(t, err)
+	updateBUUID, err := toPgUUID(updateB)
+	require.NoError(t, err)
+
+	onA, err := store.engine.CountDevicesOnUpdate(ctx, pgdb.CountDevicesOnUpdateParams{AppID: appUUID, CurrentUpdateID: updateAUUID})
+	require.NoError(t, err)
+	require.EqualValues(t, 2, onA)
+	failuresB, err := store.engine.CountUpdateFailures(ctx, pgdb.CountUpdateFailuresParams{AppID: appUUID, UpdateID: updateBUUID})
+	require.NoError(t, err)
+	require.EqualValues(t, 1, failuresB)
+
+	breakdown, err := store.engine.AdoptionBreakdown(ctx, appUUID)
+	require.NoError(t, err)
+	require.Len(t, breakdown, 3, "A cohort, B cohort, embedded-bundle cohort")
+	require.EqualValues(t, 2, breakdown[0].DeviceCount)
+}
+
+func TestUpdateHealthByIDs(t *testing.T) {
+	store, pool := setupIdentityStore(t)
+	appID := seedApp(t, pool)
+	ctx := context.Background()
+	updateA, updateB, updateGhost := uuid.NewString(), uuid.NewString(), uuid.NewString()
+	seedPublishedUpdate(t, pool, appID, updateB)
+
+	// 2 devices running A this month, 1 running B; B also crashed at launch
+	// on d4 (rolled back, current unknown).
+	d1, d2, d3, d4 := uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString()
+	require.NoError(t, store.TouchDevice(ctx, appID, d1, nil, &updateA))
+	require.NoError(t, store.TouchDevice(ctx, appID, d2, nil, &updateA))
+	require.NoError(t, store.TouchDevice(ctx, appID, d3, nil, &updateB))
+	require.NoError(t, store.TouchDevice(ctx, appID, d4, nil, nil))
+	require.NoError(t, store.RecordUpdateFailures(ctx, appID, d4, []string{updateB}, "boom", FailureTypeUpdate))
+
+	// JS crashes on B: d5 crashed and still runs it (the usual runtime_issue
+	// shape), d6 crashed then moved on to A (the mismatch case the overlap
+	// join must self-correct).
+	d5, d6 := uuid.NewString(), uuid.NewString()
+	require.NoError(t, store.TouchDevice(ctx, appID, d5, nil, &updateB))
+	require.NoError(t, store.RecordUpdateFailures(ctx, appID, d5, []string{updateB}, "TypeError: boom", FailureTypeRuntime))
+	require.NoError(t, store.TouchDevice(ctx, appID, d6, nil, &updateB))
+	require.NoError(t, store.RecordUpdateFailures(ctx, appID, d6, []string{updateB}, "", FailureTypeRuntime))
+	require.NoError(t, store.TouchDevice(ctx, appID, d6, nil, &updateA))
+
+	// Adoption is the TOTAL population on the update: a device last seen a
+	// month ago still runs it and still counts.
+	dOld := uuid.NewString()
+	require.NoError(t, store.TouchDevice(ctx, appID, dOld, nil, &updateA))
+	_, err := pool.Exec(ctx,
+		"UPDATE device_identity SET last_seen_at = date_trunc('month', CURRENT_TIMESTAMP) - INTERVAL '1 day' WHERE app_id = $1 AND eas_client_id = $2",
+		appID, dOld)
+	require.NoError(t, err)
+
+	health, err := store.UpdateHealthByIDs(ctx, appID, []string{updateA, updateB, updateGhost, "not-a-uuid"})
+	require.NoError(t, err)
+	require.EqualValues(t, 4, health[updateA].DevicesOnUpdate, "d1, d2, dOld and the moved-on d6")
+	require.Zero(t, health[updateA].UpdateIssues)
+	require.Zero(t, health[updateA].RuntimeIssues)
+	require.EqualValues(t, 2, health[updateB].DevicesOnUpdate, "d3 and the crashed-but-running d5")
+	require.EqualValues(t, 1, health[updateB].UpdateIssues)
+	require.EqualValues(t, 2, health[updateB].RuntimeIssues)
+	require.EqualValues(t, 1, health[updateB].FailedStillOn, "d5 overlaps; d4 rolled back, d6 moved on")
+	// An update nothing attempted has no entry: zero-valued on read.
+	require.Zero(t, health[updateGhost])
 }

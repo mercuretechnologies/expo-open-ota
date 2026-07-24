@@ -301,3 +301,97 @@ func decodeDeviceCursor(encoded string) (*DeviceCursor, error) {
 	}
 	return &DeviceCursor{LastSeenAt: ts, EASClientID: parts[1]}, nil
 }
+
+// --- Update health (adoption + launch failures per update) ---
+
+// maxHealthUpdateIDs bounds one health request; a branch page shows far
+// fewer updates than this.
+const maxHealthUpdateIDs = 100
+
+type updateHealthResponse struct {
+	DevicesOnUpdate int64 `json:"devicesOnUpdate"`
+	// SuccessfulDevices currently run the update and never reported it as
+	// faulty. Runtime crashes stay on the update, so they are removed here.
+	SuccessfulDevices int64 `json:"successfulDevices"`
+	// FaultyDevices reported either a launch rollback or a JS runtime crash.
+	// The failure store is unique per (device, update), so a device contributes
+	// at most once even when it reports the same crash repeatedly.
+	FaultyDevices int64 `json:"faultyDevices"`
+	// LaunchFailures is the total devices the update failed on, the sum of
+	// the two breakdowns below. Kept for API compatibility; faultyDevices is
+	// the clearer name now that JS runtime crashes also contribute.
+	LaunchFailures int64 `json:"launchFailures"`
+	// UpdateIssues: crash at launch reported by the manifest error-recovery
+	// headers; the device rolled back off the update.
+	UpdateIssues int64 `json:"updateIssues"`
+	// RuntimeIssues: JS crash while running the update, reported by the
+	// documented expo_open_ota_js_crash observe event; the device is
+	// (usually) still running the update.
+	RuntimeIssues int64 `json:"runtimeIssues"`
+	// HealthPercent is healthy/attempts over devices that actually attempted
+	// the update; null when nothing attempted it yet. Failed devices still
+	// counted in devicesOnUpdate (runtime crashes without rollback) are
+	// counted once as attempts and excluded from healthy.
+	HealthPercent *float64 `json:"healthPercent"`
+}
+
+// UpdateHealthHandler serves GET .../identity/update-health?ids=uuid,uuid:
+// the registry-backed instant-T health of a set of updates (the dashboard
+// passes the UUIDs it is displaying). Every id gets an entry, zeroes when
+// nothing was recorded for it.
+func (h *IdentityHandler) UpdateHealthHandler(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.requireService(w)
+	if !ok {
+		return
+	}
+	appID := mux.Vars(r)["APP_ID"]
+	rawIDs := strings.Split(r.URL.Query().Get("ids"), ",")
+	ids := make([]string, 0, len(rawIDs))
+	for _, raw := range rawIDs {
+		if trimmed := strings.TrimSpace(raw); trimmed != "" {
+			ids = append(ids, trimmed)
+		}
+	}
+	if len(ids) == 0 {
+		handlers.RenderError(w, http.StatusBadRequest, "Query parameter 'ids' is required.")
+		return
+	}
+	if len(ids) > maxHealthUpdateIDs {
+		handlers.RenderError(w, http.StatusBadRequest, "Too many update ids in one request.")
+		return
+	}
+
+	health, err := service.UpdateHealthByIDs(r.Context(), appID, ids)
+	if err != nil {
+		renderIdentityServiceError(w, err)
+		return
+	}
+	out := make(map[string]updateHealthResponse, len(ids))
+	for _, id := range ids {
+		parsed, err := uuid.Parse(id)
+		if err != nil {
+			continue // non-UUID input: no entry, never an error
+		}
+		entry := health[parsed.String()]
+		failures := entry.UpdateIssues + entry.RuntimeIssues
+		successes := entry.DevicesOnUpdate - entry.FailedStillOn
+		response := updateHealthResponse{
+			DevicesOnUpdate:   entry.DevicesOnUpdate,
+			SuccessfulDevices: successes,
+			FaultyDevices:     failures,
+			LaunchFailures:    failures,
+			UpdateIssues:      entry.UpdateIssues,
+			RuntimeIssues:     entry.RuntimeIssues,
+		}
+		// A manifest rollback is faulty but no longer current; a JS crash is
+		// both faulty and current. successfulDevices removes that overlap, so
+		// the documented successes/(successes+faulty) formula counts every
+		// device exactly once.
+		if attempts := successes + failures; attempts > 0 {
+			percent := 100 * float64(successes) / float64(attempts)
+			response.HealthPercent = &percent
+		}
+		out[parsed.String()] = response
+	}
+	handlers.RenderJSON(w, http.StatusOK, map[string]any{"updates": out})
+}

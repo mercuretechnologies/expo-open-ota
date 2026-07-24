@@ -1,8 +1,10 @@
 package handlers
 
 import (
+	"context"
 	"errors"
 	"expo-open-ota/config"
+	"expo-open-ota/internal/helpers"
 	"expo-open-ota/internal/services"
 	"expo-open-ota/internal/types"
 	"log"
@@ -12,12 +14,47 @@ import (
 	"github.com/google/uuid"
 )
 
+// DeviceCheckIn is everything one manifest poll tells the device registry:
+// who polled, from where, what it currently runs, and which updates crashed
+// on it. The seam's vocabulary type, MIT-side on purpose (the leaf-vocabulary
+// pattern): the wired EE recorder consumes it without the handler importing
+// any EE package.
+type DeviceCheckIn struct {
+	AppID       string
+	EASClientID string
+	RemoteIP    string
+	// CurrentUpdateID is the update the device is RUNNING (the launched
+	// update: one that crashed at launch never appears here). A device on the
+	// embedded bundle reports the embedded update's OWN id, which no updates
+	// table row matches; absent only on clients that sent no header.
+	CurrentUpdateID string
+	// FailedUpdateIDsRaw is the Expo-Recent-Failed-Update-IDs header verbatim
+	// (a structured-field list of quoted UUIDs); parsing belongs to the
+	// consumer.
+	FailedUpdateIDsRaw string
+	// FatalError is the Expo-Fatal-Error header: the crash detail, sent by
+	// the client exactly once, on the first poll after the crash.
+	FatalError string
+}
+
 type ExpoProtocolHandler struct {
 	protocolService *services.ExpoProtocolService
+	// onDeviceCheckIn, when wired, registers the polling device in the universal
+	// device registry (the Observe feature's). A method-value seam like the
+	// audit recorder: the composition root wires it when Observe is enabled,
+	// and it must never block or fail the manifest path (the wired side runs
+	// its registry write in the background).
+	onDeviceCheckIn func(ctx context.Context, checkIn DeviceCheckIn)
 }
 
 func NewExpoProtocolHandler(ps *services.ExpoProtocolService) *ExpoProtocolHandler {
 	return &ExpoProtocolHandler{protocolService: ps}
+}
+
+// SetOnDeviceCheckIn wires the device check-in recorder; nil (never called) keeps
+// manifest polls side-effect free.
+func (h *ExpoProtocolHandler) SetOnDeviceCheckIn(fn func(ctx context.Context, checkIn DeviceCheckIn)) {
+	h.onDeviceCheckIn = fn
 }
 
 // resolveAppID returns the app a manifest or asset request targets. The
@@ -87,6 +124,25 @@ func (h *ExpoProtocolHandler) HandleManifest(w http.ResponseWriter, r *http.Requ
 		CurrentUpdateID:       r.Header.Get("expo-current-update-id"),
 		ExpoFatalError:        r.Header.Get("expo-fatal-error"),
 		RecentFailedUpdateIDs: r.Header.Get("Expo-Recent-Failed-Update-Ids"),
+	}
+
+	// Every poll is a device check-in: the registry (when wired) sees it
+	// before the manifest resolution, whose outcome is irrelevant to "this
+	// device exists and is alive". The check-in carries the update-health
+	// signals the same headers already delivered.
+	if h.onDeviceCheckIn != nil && params.ClientID != "" {
+		remoteIP := ""
+		if clientIP := helpers.ClientIP(r); clientIP.IsValid() {
+			remoteIP = clientIP.String()
+		}
+		h.onDeviceCheckIn(r.Context(), DeviceCheckIn{
+			AppID:              appId,
+			EASClientID:        params.ClientID,
+			RemoteIP:           remoteIP,
+			CurrentUpdateID:    params.CurrentUpdateID,
+			FailedUpdateIDsRaw: params.RecentFailedUpdateIDs,
+			FatalError:         params.ExpoFatalError,
+		})
 	}
 
 	result, err := h.protocolService.ResolveManifestBundle(r.Context(), params)

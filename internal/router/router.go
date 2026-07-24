@@ -256,13 +256,19 @@ func NewRouter(container *AppContainer) *mux.Router {
 	appAuthSubrouter.Handle("/branches/{BRANCH}/protection", requirePermission(rbac.PermBranchProtect)(http.HandlerFunc(container.ApiKeyRestrictionHandler.SetBranchProtectionHandler))).Methods(http.MethodPut)
 	// Device identity (ee/identity). Reads stay open to any app viewer; shaping
 	// the allowlist needs the identity:manage permission (admins bypass it).
-	// Free up to 1000 devices/MAU without a license, enterprise beyond (the
-	// freemium gate + eviction cap land in a later batch, in identity.Service).
 	appAuthSubrouter.HandleFunc("/identity/schema", container.IdentityHandler.GetSchemaHandler).Methods(http.MethodGet)
 	appAuthSubrouter.Handle("/identity/schema/{KEY}", requirePermission(rbac.PermIdentityManage)(http.HandlerFunc(container.IdentityHandler.UpsertSchemaKeyHandler))).Methods(http.MethodPut)
 	appAuthSubrouter.Handle("/identity/schema/{KEY}", requirePermission(rbac.PermIdentityManage)(http.HandlerFunc(container.IdentityHandler.DeleteSchemaKeyHandler))).Methods(http.MethodDelete)
 	appAuthSubrouter.HandleFunc("/identity/values", container.IdentityHandler.SearchValuesHandler).Methods(http.MethodGet)
 	appAuthSubrouter.HandleFunc("/identity/devices", container.IdentityHandler.ListDevicesHandler).Methods(http.MethodGet)
 	appAuthSubrouter.HandleFunc("/identity/devices/{EAS_CLIENT_ID}", container.IdentityHandler.GetDeviceHandler).Methods(http.MethodGet)
+	// Instant-T adoption and launch health per update, straight from the
+	// device registry (Postgres only, works without ClickHouse): feeds the
+	// updates table's MAU column and the rollout card's health score.
+	appAuthSubrouter.HandleFunc("/identity/update-health", container.IdentityHandler.UpdateHealthHandler).Methods(http.MethodGet)
+	// Historical series is projected into ClickHouse. The endpoint stays
+	// present without ClickHouse and reports available=false so the dashboard
+	// can hide the graph while instant-T health keeps working.
+	appAuthSubrouter.HandleFunc("/observe/update-health/history", container.ObserveHealthHandler.GetUpdateHealthHistoryHandler).Methods(http.MethodGet)
 	return r
 }

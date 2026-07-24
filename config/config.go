@@ -30,6 +30,13 @@ func IsDBMode() bool {
 	return GetDBURL() != ""
 }
 
+// GetClickHouseURL returns the ClickHouse DSN the Observe feature persists
+// telemetry through (e.g. clickhouse://user:password@host:9000/database).
+// Empty means Observe (identity included) is not enabled.
+func GetClickHouseURL() string {
+	return GetEnv("CLICKHOUSE_URL")
+}
+
 func ValidateMasterKey() error {
 	awsKeyId := GetEnv("AWSSM_DB_KEYS_MASTER_KEY_SECRET_ID")
 	localKey := GetEnv("DB_KEYS_MASTER_KEY_B64")

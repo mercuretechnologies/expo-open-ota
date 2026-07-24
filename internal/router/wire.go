@@ -11,7 +11,9 @@ import (
 	"expo-open-ota/ee/rbac"
 	"expo-open-ota/ee/sso"
 	"expo-open-ota/internal/bucket"
+	"expo-open-ota/internal/cache"
 	"expo-open-ota/internal/database"
+	"expo-open-ota/internal/database/clickhouse"
 	"expo-open-ota/internal/database/postgres"
 	"expo-open-ota/internal/database/postgres/migrations"
 	"expo-open-ota/internal/handlers"
@@ -47,6 +49,7 @@ type AppContainer struct {
 	AuditHandler             *audit.AuditHandler
 	UserRepo                 services.UserRepository
 	ObserveIngestHandler     *observe.IngestHandler
+	ObserveHealthHandler     *observe.HealthHistoryHandler
 	IdentityHandler          *identity.IdentityHandler
 }
 
@@ -91,11 +94,25 @@ func InitDependencies(ctx context.Context) (*AppContainer, func()) {
 	// The audit trail (ee/audit) as well: nil keeps its recorder a no-op, so
 	// stateless deployments never collect an event.
 	var auditRepo audit.AuditRepository
-	// Device identity (ee/identity) lives in the database; nil makes the
-	// observe ingestion acknowledge-and-drop and the dashboard handler answer
-	// 400, so stateless deployments never block on it. The service owns the
-	// store; the ingest route and the dashboard handler both go through it.
+	// Device identity (ee/identity) is the Postgres device registry: wired
+	// in every DB-mode deployment (no ClickHouse required), it powers the
+	// identity dashboard and the update-health display. nil only in
+	// stateless mode, where the observe ingestion acknowledge-and-drops and
+	// the dashboard handler answers 400. The service owns the store; the
+	// ingest route and the dashboard handler both go through it.
 	var identityService *identity.Service
+	// The ClickHouse side of Observe: telemetry rows and their branch
+	// enrichment. Declared as interfaces and only assigned inside the
+	// ClickHouse block, so the no-ClickHouse path hands the handler true
+	// nils, never a typed-nil interface.
+	var telemetrySink observe.TelemetrySink
+	var branchResolver observe.BranchResolver
+	// Historical health is optional and ClickHouse-backed. Its handler is
+	// always wired so no-ClickHouse deployments can report available=false.
+	var healthHistory *observe.HealthHistory
+	// Records device check-ins into the universal registry, debounced; nil
+	// only in stateless mode, where polls and ingestion are side-effect free.
+	var checkInRecorder *observe.CheckInRecorder
 
 	cleanup := func() {}
 	dbUrl := config.GetDBURL()
@@ -130,7 +147,10 @@ func InitDependencies(ctx context.Context) (*AppContainer, func()) {
 		auditRepo = audit.NewPostgresAuditStore(dbEngine)
 		branchRepo = store.NewPostgresBranchStore(dbEngine)
 		channelRepo = store.NewPostgresChannelStore(dbEngine)
-		updateRepo = store.NewPostgresUpdateStore(dbEngine)
+		// Concrete (not the services.UpdateRepository interface): the observe
+		// branch resolver borrows its Postgres-only lookup as a method value.
+		pgUpdateStore := store.NewPostgresUpdateStore(dbEngine)
+		updateRepo = pgUpdateStore
 		rolloutRepo = store.NewPostgresRolloutStore(dbEngine)
 
 		// GeoIP enrichment is optional: without a configured GeoLite2 City
@@ -143,13 +163,54 @@ func InitDependencies(ctx context.Context) (*AppContainer, func()) {
 				log.Fatalf("🚨 [IDENTITY] %v", err)
 			}
 			geoResolver = resolver
-			dbCleanup := cleanup
+			prevCleanup := cleanup
 			cleanup = func() {
 				resolver.Close()
-				dbCleanup()
+				prevCleanup()
 			}
 		}
+		// The device registry (ee/identity) is Postgres-only and runs in
+		// EVERY DB-mode deployment: it powers the identity dashboard AND the
+		// update-health display (adoption/MAU, launch failures), which must
+		// work with no ClickHouse and no observe SDK.
 		identityService = identity.NewService(identity.NewPostgresIdentityStore(dbEngine), geoResolver)
+		checkInRecorder = observe.NewCheckInRecorder(identityService, cache.GetCache())
+
+		// ClickHouse gates ONLY the telemetry pipeline (the metrics/logs
+		// fact tables). A configured-but-broken URL fails the boot loudly
+		// instead of silently disabling a feature the operator asked for.
+		if chUrl := config.GetClickHouseURL(); chUrl != "" {
+			chEngine, err := clickhouse.NewClickHouseEngine(ctx, chUrl)
+			if err != nil {
+				log.Fatalf("🚨 [CLICKHOUSE] %v", err)
+			}
+			prevCleanup := cleanup
+			cleanup = func() {
+				chEngine.Close()
+				prevCleanup()
+			}
+			clickhouse.RunDBMigrations(chUrl, dbUrl)
+			telemetrySink = observe.NewClickHouseTelemetrySink(chEngine)
+			branchResolver = observe.NewBranchResolver(cache.GetCache(), pgUpdateStore.GetBranchNameByUpdateUUID)
+			healthHistory = observe.NewHealthHistory(dbEngine, chEngine)
+			stopHealthHistory := healthHistory.Start(ctx)
+			cleanupWithClickHouse := cleanup
+			cleanup = func() {
+				stopHealthHistory()
+				cleanupWithClickHouse()
+			}
+		} else {
+			// Not a Fatal: deployments without ClickHouse keep booting, the
+			// registry and update health work regardless; only the
+			// metrics/logs ingestion is off.
+			log.Println("⚙️  [OBSERVE] CLICKHOUSE_URL is not set; telemetry ingestion (metrics/logs) stays disabled")
+			stopHealthOutboxDiscarder := observe.StartHealthOutboxDiscarder(ctx, dbEngine)
+			cleanupWithPostgres := cleanup
+			cleanup = func() {
+				stopHealthOutboxDiscarder()
+				cleanupWithPostgres()
+			}
+		}
 	} else {
 		log.Println("⚙️  [STATELESS] Initializing Stateless Mode (Flat-Env Mode)...")
 		if err := config.LoadAppsFromFlatEnv(); err != nil {
@@ -226,7 +287,7 @@ func InitDependencies(ctx context.Context) (*AppContainer, func()) {
 	rolloutService := services.NewRolloutService(rolloutRepo, channelRepo, updateRepo, deploymentService)
 	rolloutService.SetOnAuditEvent(auditService.Record)
 
-	return &AppContainer{
+	container := &AppContainer{
 		AuthHandler:              dashhandlers.NewAuthHandler(dashboardAuthService),
 		DashboardAuthService:     dashboardAuthService,
 		CliAuthService:           cliAuthService,
@@ -250,7 +311,17 @@ func InitDependencies(ctx context.Context) (*AppContainer, func()) {
 		UploadHandler:            handlers.NewUploadHandler(cliAuthService, deploymentService),
 		UsersHandler:             dashhandlers.NewUsersHandler(userService),
 		UserRepo:                 userRepo,
-		ObserveIngestHandler:     observe.NewIngestHandler(identityService),
+		ObserveIngestHandler:     observe.NewIngestHandler(identityService, telemetrySink, branchResolver, checkInRecorder),
+		ObserveHealthHandler:     observe.NewHealthHistoryHandler(healthHistory),
 		IdentityHandler:          identity.NewIdentityHandler(identityService),
-	}, cleanup
+	}
+
+	// Every manifest poll registers the polling device in the universal
+	// device registry (background, debounced); the community fallback is
+	// simply "not wired".
+	if checkInRecorder != nil {
+		container.ExpoProtocolHandler.SetOnDeviceCheckIn(checkInRecorder.Record)
+	}
+
+	return container, cleanup
 }

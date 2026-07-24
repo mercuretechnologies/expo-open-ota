@@ -6,8 +6,10 @@ package observe
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"expo-open-ota/ee/identity"
+	"expo-open-ota/internal/handlers"
 	"expo-open-ota/internal/helpers"
 	"io"
 	"log"
@@ -54,18 +56,66 @@ type IngestHandler struct {
 	// mode (no control plane): identity ops are then acknowledged and dropped,
 	// like every other record, so devices never accumulate a backlog.
 	identityService *identity.Service
+	// telemetry persists the flattened non-identity records in ClickHouse.
+	// nil when no ClickHouse is configured: telemetry is then acknowledged,
+	// counted and dropped.
+	telemetry TelemetrySink
+	// branches denormalizes update_id -> branch onto every row; nil leaves
+	// the branch column empty.
+	branches BranchResolver
+	// checkIns records every ingesting device into the universal registry,
+	// debounced; nil (stateless mode) leaves telemetry unregistered.
+	checkIns *CheckInRecorder
 }
 
-func NewIngestHandler(identityService *identity.Service) *IngestHandler {
-	return &IngestHandler{identityService: identityService}
+func NewIngestHandler(identityService *identity.Service, telemetry TelemetrySink, branches BranchResolver, checkIns *CheckInRecorder) *IngestHandler {
+	return &IngestHandler{identityService: identityService, telemetry: telemetry, branches: branches, checkIns: checkIns}
+}
+
+// recordCheckIns registers each distinct device of a batch (one, in practice: a
+// batch is a single device's backlog) into the registry, debounced by the
+// recorder's cache. Telemetry knows the device's running update (the
+// expo.app.updates.id resource attribute, flattened onto every row), so the
+// check-in carries it: devices that rarely poll the manifest still keep their
+// adoption state fresh. Per device, the NEWEST row wins: a backlog flush
+// leads with pre-update sessions carrying the OLD update id, and taking the
+// first row would regress the recorded current right after a release.
+func recordCheckIns[R any](ctx context.Context, checkIns *CheckInRecorder, appID string, remoteIP string, rows []R, clientID func(R) string, updateID func(R) string, timestamp func(R) time.Time) {
+	if checkIns == nil || len(rows) == 0 {
+		return
+	}
+	newest := make(map[string]int, 1)
+	for i, row := range rows {
+		device := clientID(row)
+		best, seen := newest[device]
+		if !seen || timestamp(row).After(timestamp(rows[best])) {
+			newest[device] = i
+		}
+	}
+	for device, i := range newest {
+		checkIns.Record(ctx, handlers.DeviceCheckIn{
+			AppID:           appID,
+			EASClientID:     device,
+			RemoteIP:        remoteIP,
+			CurrentUpdateID: updateID(rows[i]),
+		})
+	}
+}
+
+// resolveBranch fills MetricRow/LogRow.Branch; the resolver caches, so the
+// per-row call is a map hit for every row after the first of an update.
+func (h *IngestHandler) resolveBranch(ctx context.Context, appID, updateID string) string {
+	if h.branches == nil {
+		return ""
+	}
+	return h.branches.BranchName(ctx, appID, updateID)
 }
 
 // HandleLogs ingests POST /observe/{APP_ID}/{projectId}/v1/logs. Rate
-// limiting and app-existence run in middleware ahead of this handler. Today
-// the only consumer is identity; telemetry records are acknowledged and
-// dropped. When the ClickHouse path lands, its dispatch slots in right after
-// the identity split, behind the enterprise license gate (identity stays
-// free).
+// limiting and app-existence run in middleware ahead of this handler. The
+// pipeline: identity ops ($set/$set_once/$unset) are applied first, then the
+// telemetry records are flattened and inserted into ClickHouse, with each
+// ingesting device registered in the universal registry (debounced).
 func (h *IngestHandler) HandleLogs(w http.ResponseWriter, r *http.Request) {
 	// A panic must not turn into gorilla's 500: 500 destroys the batch on the
 	// device, 503 preserves it for a retry.
@@ -100,37 +150,147 @@ func (h *IngestHandler) HandleLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if h.identityService == nil {
-		observeBatch(resultAccepted)
-		w.WriteHeader(http.StatusNoContent)
+	appID := mux.Vars(r)["APP_ID"]
+
+	if h.identityService != nil {
+		remoteIP := ""
+		if clientIP := helpers.ClientIP(r); clientIP.IsValid() {
+			remoteIP = clientIP.String()
+		}
+		requests := identityRequestsFromBatch(batch, appID, remoteIP)
+		for _, req := range identity.CoalesceRequests(requests) {
+			applyContext, cancelApply := context.WithTimeout(r.Context(), identityApplyTimeout)
+			_, err := h.identityService.Apply(applyContext, req)
+			cancelApply()
+			if err != nil {
+				// Store errors are transient (pool exhausted, database down):
+				// 503 keeps the batch on the device for a retry. Re-applying the
+				// already-committed prefix on that retry is idempotent ($set
+				// merges, $unset ignores absent keys), so no double effects.
+				log.Printf("observe: identity apply failed: %v", err)
+				observeBatch(resultUnavailable)
+				w.WriteHeader(http.StatusServiceUnavailable)
+				return
+			}
+		}
+	}
+
+	// The telemetry path runs after the identity split: rows are the
+	// non-identity records; each ingesting device is also registered in the
+	// universal registry (debounced). On insert failure, 503 preserves the
+	// batch; the identity re-apply on that retry is idempotent, and the
+	// identical re-flattened rows carry the same content_hash for query-time
+	// dedup.
+	rows := FlattenLogs(appID, batch, time.Now().UTC())
+	// JS crash reports are projected into the failure registry before the
+	// telemetry insert: like a failed identity apply, a failed projection
+	// answers 503 so the device re-sends the batch (re-recording is
+	// idempotent, the upsert dedups).
+	if err := h.recordJSCrashFailures(r.Context(), appID, rows); err != nil {
+		log.Printf("observe: recording js crash failures failed: %v", err)
+		observeBatch(resultUnavailable)
+		w.WriteHeader(http.StatusServiceUnavailable)
 		return
 	}
-
-	appID := mux.Vars(r)["APP_ID"]
-	remoteIP := ""
-	if clientIP := helpers.ClientIP(r); clientIP.IsValid() {
-		remoteIP = clientIP.String()
+	// Check-ins ride every log batch, sink or not: a no-ClickHouse deployment
+	// still keeps its registry (and update health) fresh from telemetry.
+	{
+		remoteIP := ""
+		if clientIP := helpers.ClientIP(r); clientIP.IsValid() {
+			remoteIP = clientIP.String()
+		}
+		recordCheckIns(r.Context(), h.checkIns, appID, remoteIP, rows,
+			func(row LogRow) string { return row.EASClientID },
+			func(row LogRow) string { return row.UpdateID },
+			func(row LogRow) time.Time { return row.Timestamp })
 	}
-
-	requests := identityRequestsFromBatch(batch, appID, remoteIP)
-	for _, req := range identity.CoalesceRequests(requests) {
-		applyContext, cancelApply := context.WithTimeout(r.Context(), identityApplyTimeout)
-		_, err := h.identityService.Apply(applyContext, req)
-		cancelApply()
-		if err != nil {
-			// Store errors are transient (pool exhausted, database down):
-			// 503 keeps the batch on the device for a retry. Re-applying the
-			// already-committed prefix on that retry is idempotent ($set
-			// merges, $unset ignores absent keys), so no double effects.
-			log.Printf("observe: identity apply failed: %v", err)
-			observeBatch(resultUnavailable)
-			w.WriteHeader(http.StatusServiceUnavailable)
-			return
+	if h.telemetry == nil {
+		observeRecordsDropped(reasonTelemetry, len(rows))
+	} else {
+		if len(rows) > 0 {
+			for i := range rows {
+				rows[i].Branch = h.resolveBranch(r.Context(), appID, rows[i].UpdateID)
+			}
+			if err := h.telemetry.InsertLogs(r.Context(), rows); err != nil {
+				log.Printf("observe: clickhouse logs insert failed: %v", err)
+				observeBatch(resultUnavailable)
+				w.WriteHeader(http.StatusServiceUnavailable)
+				return
+			}
 		}
 	}
 
 	observeBatch(resultAccepted)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// JSCrashEventName is the documented log-event convention for reporting a JS
+// runtime crash into update health. expo-updates only ever reports
+// launch-level failures (and on the new architecture no JS throw can fail a
+// launch at all), so a JS crash while running an update is invisible to the
+// manifest path; apps report it explicitly from their error boundary:
+//
+//	Observe.logEvent('expo_open_ota_js_crash', { attributes: { message } });
+//	Observe.dispatchEvents();
+//
+// The resource attributes of such a record carry the running (= crashing)
+// update id, projected into device_update_failures as a runtime_issue. The
+// device keeps running the update (no rollback), unlike the manifest path.
+const JSCrashEventName = "expo_open_ota_js_crash"
+
+// recordJSCrashFailures projects expo_open_ota_js_crash rows into the
+// failure registry, deduped per (device, update) within the batch (the
+// upsert dedups across batches, so a crash-per-session device still counts
+// once). Rows that cannot be attributed are skipped: a forged device id is
+// meaningless and a crash of the embedded bundle (zero-uuid sentinel) is not
+// an OTA update's failure. The rows also flow to ClickHouse unchanged: this
+// is a projection, not a diversion.
+func (h *IngestHandler) recordJSCrashFailures(ctx context.Context, appID string, rows []LogRow) error {
+	if h.identityService == nil {
+		return nil
+	}
+	type deviceUpdate struct{ device, update string }
+	var seen map[deviceUpdate]bool
+	for _, row := range rows {
+		if row.EventName != JSCrashEventName {
+			continue
+		}
+		if _, err := uuid.Parse(row.EASClientID); err != nil {
+			observeRecordsDropped(reasonForgedClientID, 1)
+			continue
+		}
+		if row.UpdateID == ZeroUpdateID {
+			continue
+		}
+		key := deviceUpdate{device: row.EASClientID, update: row.UpdateID}
+		if seen[key] {
+			continue
+		}
+		if seen == nil {
+			seen = make(map[deviceUpdate]bool, 1)
+		}
+		seen[key] = true
+		if err := h.identityService.RecordUpdateFailures(ctx, appID, row.EASClientID, []string{row.UpdateID}, jsCrashMessage(row.Attributes), identity.FailureTypeRuntime); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// jsCrashMessage pulls the conventional `message` attribute out of the row's
+// leftover-attributes JSON for the fatal_error column; absent, non-string or
+// unparseable yields "" and the capture-once upsert leaves the column open
+// for a later capture.
+func jsCrashMessage(attributes string) string {
+	if attributes == "" {
+		return ""
+	}
+	var attrs map[string]any
+	if err := json.Unmarshal([]byte(attributes), &attrs); err != nil {
+		return ""
+	}
+	message, _ := attrs["message"].(string)
+	return message
 }
 
 // identityRequestsFromBatch turns a decoded logs batch into the identity
@@ -151,7 +311,9 @@ func identityRequestsFromBatch(batch LogBatch, appID, remoteIP string) []identit
 		for _, record := range resource.Records {
 			eventName, _ := record.Attributes[EventNameKey].(string)
 			if !identity.IsIdentityOp(eventName) {
-				observeRecordsDropped(reasonTelemetry, 1) // ClickHouse path, later.
+				// Telemetry, not identity: the ClickHouse path picks these up
+				// after the identity split (and counts them dropped when no
+				// sink is configured).
 				continue
 			}
 			if req, ok := identity.RequestFromRecord(appID, clientID, identity.Op(eventName), record.Attributes, remoteIP); ok {
@@ -162,14 +324,74 @@ func identityRequestsFromBatch(batch LogBatch, appID, remoteIP string) []identit
 	return requests
 }
 
-// HandleMetrics reserves POST /observe/{APP_ID}/{projectId}/v1/metrics.
-// Metrics are acknowledged and dropped until the ClickHouse path lands: for
-// the SDK, 204 and 404 destroy the batch identically, but the registered
-// route keeps operator logs quiet and the URL shape final. Rate limiting runs
-// in middleware ahead of this handler.
+// HandleMetrics ingests POST /observe/{APP_ID}/{projectId}/v1/metrics: same
+// response contract and same pipeline as HandleLogs minus the identity split
+// (identity ops only ever arrive on /v1/logs). Without a sink it stays the
+// pre-ClickHouse acknowledge-and-drop, skipping even the decode. Rate
+// limiting runs in middleware ahead of this handler.
 func (h *IngestHandler) HandleMetrics(w http.ResponseWriter, r *http.Request) {
-	// Drain within the same cap so keep-alive connections stay reusable.
-	_, _ = io.Copy(io.Discard, http.MaxBytesReader(w, r.Body, maxLogsBodyBytes))
+	defer func() {
+		if rec := recover(); rec != nil {
+			log.Printf("observe: recovered panic in metrics ingestion: %v", rec)
+			observeBatch(resultUnavailable)
+			w.WriteHeader(http.StatusServiceUnavailable)
+		}
+	}()
+
+	if h.telemetry == nil {
+		// Drain within the same cap so keep-alive connections stay reusable.
+		// Deliberately no decode and therefore no check-ins on this path:
+		// every expo-updates device polls the manifest anyway (the seam
+		// registers it there), so decoding metrics just to register would be
+		// pure cost for a deployment that dropped the data.
+		_, _ = io.Copy(io.Discard, http.MaxBytesReader(w, r.Body, maxLogsBodyBytes))
+		observeBatch(resultAccepted)
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxLogsBodyBytes))
+	if err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			observeBatch(resultTooLarge)
+			w.WriteHeader(http.StatusRequestEntityTooLarge)
+			return
+		}
+		observeBatch(resultUnavailable)
+		w.WriteHeader(http.StatusServiceUnavailable)
+		return
+	}
+
+	batch, err := DecodeMetrics(body)
+	if err != nil {
+		observeBatch(resultBadRequest)
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	appID := mux.Vars(r)["APP_ID"]
+	remoteIP := ""
+	if clientIP := helpers.ClientIP(r); clientIP.IsValid() {
+		remoteIP = clientIP.String()
+	}
+	rows := FlattenMetrics(appID, batch, time.Now().UTC())
+	recordCheckIns(r.Context(), h.checkIns, appID, remoteIP, rows,
+		func(row MetricRow) string { return row.EASClientID },
+		func(row MetricRow) string { return row.UpdateID },
+		func(row MetricRow) time.Time { return row.Timestamp })
+	if len(rows) > 0 {
+		for i := range rows {
+			rows[i].Branch = h.resolveBranch(r.Context(), appID, rows[i].UpdateID)
+		}
+		if err := h.telemetry.InsertMetrics(r.Context(), rows); err != nil {
+			log.Printf("observe: clickhouse metrics insert failed: %v", err)
+			observeBatch(resultUnavailable)
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+	}
+
 	observeBatch(resultAccepted)
 	w.WriteHeader(http.StatusNoContent)
 }

@@ -39,13 +39,34 @@ type IdentityMutator interface {
 	ApplySet(ctx context.Context, appID string, easClientID string, raw map[string]any, geo *Geo) (ApplyResult, error)
 	ApplySetOnce(ctx context.Context, appID string, easClientID string, raw map[string]any, geo *Geo) (ApplyResult, error)
 	ApplyUnset(ctx context.Context, appID string, easClientID string, keys []string, geo *Geo) (ApplyResult, error)
+	// TouchDevice registers a passive contact (manifest poll, telemetry
+	// batch): bump-or-register, uncapped, the whole fleet is the registry.
+	// currentUpdateID nil = this contact does not know, keep the known value.
+	TouchDevice(ctx context.Context, appID string, easClientID string, geo *Geo, currentUpdateID *string) error
+	// RecordUpdateFailures stores failures per (device, update), fatal_error
+	// and failure_type captured once.
+	RecordUpdateFailures(ctx context.Context, appID string, easClientID string, updateIDs []string, fatalError string, failureType FailureType) error
 }
+
+// FailureType tags where a device_update_failures row came from, which is
+// also what it means for the device's current update:
+//
+//	FailureTypeUpdate   manifest error-recovery headers: crash at launch,
+//	                    the device ROLLED BACK off the update.
+//	FailureTypeRuntime  the expo_open_ota_js_crash observe event: a JS crash
+//	                    while running the update, which expo-updates never
+//	                    reports; the device KEEPS RUNNING the update.
+type FailureType string
+
+const (
+	FailureTypeUpdate  FailureType = "update_issue"
+	FailureTypeRuntime FailureType = "runtime_issue"
+)
 
 // Store is the full data surface the service needs: the ingest write path plus
 // the dashboard read/CRUD queries. *PostgresIdentityStore implements it. The
-// service is the single owner of the store, so both the ingest route and the
-// dashboard handler go through it — which is also where license gating will
-// sit (one gate for the whole feature).
+// service is the single owner of the store: both the ingest route and the
+// dashboard handler go through it.
 type Store interface {
 	IdentityMutator
 	GetSchema(ctx context.Context, appID string) (Schema, error)
@@ -54,6 +75,7 @@ type Store interface {
 	SearchMetadataValues(ctx context.Context, appID string, key string, search string, limit int) ([]ValueCount, error)
 	ListDevices(ctx context.Context, appID string, filter *MetadataFilter, limit int, cursor *DeviceCursor) ([]Device, *DeviceCursor, error)
 	GetDevice(ctx context.Context, appID string, easClientID string) (*Device, error)
+	UpdateHealthByIDs(ctx context.Context, appID string, updateIDs []string) (map[string]UpdateHealth, error)
 }
 
 // Service owns the store and the geo resolver. The ingest route calls Apply;
@@ -70,8 +92,7 @@ func NewService(store Store, geo GeoResolver) *Service {
 	return &Service{store: store, geo: geo}
 }
 
-// Dashboard read/CRUD surface. Thin delegations today; the license gate will
-// live here in the enterprise batch so it covers ingest and dashboard alike.
+// Dashboard read/CRUD surface: thin delegations, the store owns semantics.
 
 func (s *Service) GetSchema(ctx context.Context, appID string) (Schema, error) {
 	return s.store.GetSchema(ctx, appID)
@@ -95,6 +116,31 @@ func (s *Service) ListDevices(ctx context.Context, appID string, filter *Metadat
 
 func (s *Service) GetDevice(ctx context.Context, appID string, easClientID string) (*Device, error) {
 	return s.store.GetDevice(ctx, appID, easClientID)
+}
+
+// UpdateHealthByIDs serves the dashboard's update-health display: MAU and
+// launch failures per update, straight from the Postgres registry.
+func (s *Service) UpdateHealthByIDs(ctx context.Context, appID string, updateIDs []string) (map[string]UpdateHealth, error) {
+	return s.store.UpdateHealthByIDs(ctx, appID, updateIDs)
+}
+
+// TouchDevice is Apply's passive sibling: every contact a device makes with
+// the server registers it (metadata untouched), so device_identity is the
+// universal device registry and the identity ops only layer metadata on top.
+// The geo enrichment rides along exactly as on Apply.
+func (s *Service) TouchDevice(ctx context.Context, appID string, easClientID string, remoteIP string, currentUpdateID *string) error {
+	var geo *Geo
+	if s.geo != nil && remoteIP != "" {
+		geo = s.geo.Resolve(remoteIP)
+	}
+	return s.store.TouchDevice(ctx, appID, easClientID, geo, currentUpdateID)
+}
+
+// RecordUpdateFailures is the failure sink for both sources (manifest error
+// recovery, expo_open_ota_js_crash events): failures land in Postgres so
+// update health works with no ClickHouse and no SDK.
+func (s *Service) RecordUpdateFailures(ctx context.Context, appID string, easClientID string, updateIDs []string, fatalError string, failureType FailureType) error {
+	return s.store.RecordUpdateFailures(ctx, appID, easClientID, updateIDs, fatalError, failureType)
 }
 
 // Request is one identity operation extracted from a log event.

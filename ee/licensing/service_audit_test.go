@@ -17,7 +17,7 @@ import (
 
 // The recorder mirrors audit.AuditService.Record's license gate (an event
 // emitted after the gate closed is dropped) with a LOCAL func rather than the
-// real AuditService — this package must not import ee/audit, which imports
+// real AuditService: this package must not import ee/audit, which imports
 // ee/licensing back (the gate lives in EE code by design), so pulling the real
 // service in here would be an import cycle. The behavior under test is
 // licensing's own ordering (emit BEFORE Deactivate), and the local gate

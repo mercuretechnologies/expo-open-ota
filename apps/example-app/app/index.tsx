@@ -11,15 +11,15 @@ import {
 import * as Updates from 'expo-updates'
 import { ThemedText } from '@/components/ThemedText'
 import { ThemedView } from '@/components/ThemedView'
-import Constants from 'expo-constants/src/Constants'
+import Constants from 'expo-constants'
 import { useState, useEffect } from 'react'
 import { UpdatesLogViewer } from '@/components/LogViewer'
 
+
+
 export default function HomeScreen() {
   const [loading, load] = useState<boolean>(false)
-
   const [logs, setLogs] = useState<Updates.UpdatesLogEntry[]>([])
-
   useEffect(() => {
     const fetchLogs = async () => {
       try {
@@ -31,7 +31,15 @@ export default function HomeScreen() {
     }
 
     fetchLogs()
+    randomCrash()
   }, [])
+
+  const randomCrash = () => {
+    // Random throw an error 50% of time
+    if (Math.random() < 0.5) {
+      throw new Error('Random crash!')
+    }
+  }
 
   const checkUpdates = async () => {
     if (__DEV__ || loading || Platform.OS === 'web') {
@@ -50,6 +58,7 @@ export default function HomeScreen() {
       } else if (update.isRollBackToEmbedded) {
         setLogs(logEntries)
         load(true)
+
         await Updates.reloadAsync()
         // add alert on rollback
         load(false)
@@ -79,7 +88,7 @@ export default function HomeScreen() {
           { cancelable: false },
         )
       }
-    } catch (e) {
+    } catch {
       load(false)
     }
   }
@@ -100,7 +109,7 @@ export default function HomeScreen() {
     <SafeAreaView style={styles.safeAreaView}>
       <ScrollView contentContainerStyle={styles.scrollView}>
         <ThemedView style={styles.titleContainer}>
-          <ThemedText type="title">Current update</ThemedText>
+          <ThemedText type="title">Current update:</ThemedText>
         </ThemedView>
         <ThemedView style={styles.informations}>
           <ThemedText>Update ID: {Updates.updateId}</ThemedText>

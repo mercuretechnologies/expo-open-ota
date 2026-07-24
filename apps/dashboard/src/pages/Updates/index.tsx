@@ -1,5 +1,5 @@
 import { Fragment, ReactNode, useEffect, useMemo, useRef, useState } from 'react';
-import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
+import { useInfiniteQuery, useQueries, useQuery } from '@tanstack/react-query';
 import {
   ChevronDown,
   ChevronRight,
@@ -13,7 +13,7 @@ import {
   SlidersHorizontal,
   X,
 } from 'lucide-react';
-import { Link, useSearchParams } from 'react-router';
+import { useSearchParams } from 'react-router';
 import { api, UpdateFeedRecord } from '@/lib/api';
 import { useSelectedApp } from '@/lib/SelectedAppContext';
 import { useAppPermission } from '@/ee/lib/PermissionsContext';
@@ -41,6 +41,8 @@ import {
 } from '@/pages/Updates/components/UpdateRolloutManagerSheet';
 import apple from '@/assets/apple.svg';
 import android from '@/assets/android.svg';
+import { HealthBadge } from '@/pages/Updates/components/HealthBadge';
+import { aggregateUpdateHealth } from '@/pages/Updates/components/updateHealth';
 
 type FeedGroup = {
   key: string;
@@ -62,6 +64,9 @@ type FeedFilters = Record<FeedFilterKey, string>;
 type DebouncedFilterKey = 'uuid' | 'groupId' | 'commitHash';
 
 const filterDebounceMs = 300;
+const healthBatchSize = 100;
+const isUuid = (value: string) =>
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
 
 const FilterField = ({ label, children }: { label: string; children: ReactNode }) => (
   <label className="min-w-0 space-y-1.5">
@@ -147,14 +152,11 @@ const CommitLabel = ({ value }: { value: string }) => (
   </span>
 );
 
-const BranchLink = ({ branch }: { branch: string }) => (
-  <Link
-    to={`/branches/${encodeURIComponent(branch)}`}
-    onClick={event => event.stopPropagation()}
-    className="inline-flex max-w-full items-center gap-1.5 font-medium text-foreground transition-colors hover:text-link">
+const BranchLabel = ({ branch }: { branch: string }) => (
+  <span className="inline-flex max-w-full items-center gap-1.5 font-medium text-foreground">
     <GitBranch className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
     <span className="truncate">{branch}</span>
-  </Link>
+  </span>
 );
 
 export const Updates = () => {
@@ -247,6 +249,34 @@ export const Updates = () => {
   });
 
   const updates = useMemo(() => query.data?.pages.flatMap(page => page.items) ?? [], [query.data]);
+  const healthIdBatches = useMemo(() => {
+    const updateUUIDs = Array.from(
+      new Set(
+        updates
+          .filter(update => update.healthRelevant)
+          .map(update => update.updateUUID)
+          .filter(isUuid)
+      )
+    );
+    const batches: string[][] = [];
+    for (let index = 0; index < updateUUIDs.length; index += healthBatchSize) {
+      batches.push(updateUUIDs.slice(index, index + healthBatchSize));
+    }
+    return batches;
+  }, [updates]);
+  const healthQueries = useQueries({
+    queries: healthIdBatches.map(updateUUIDs => ({
+      queryKey: ['update-health', 'feed', selectedAppId, updateUUIDs.join(',')],
+      queryFn: () => api.getUpdateHealth(updateUUIDs),
+      enabled: !!selectedAppId,
+      refetchInterval: 30_000,
+    })),
+  });
+  const healthByUuid = Object.assign(
+    {},
+    ...healthQueries.map(healthQuery => healthQuery.data?.updates ?? {})
+  );
+  const healthError = healthQueries.find(healthQuery => healthQuery.error)?.error;
   const branchOptions = useMemo(
     () =>
       (branchesQuery.data ?? [])
@@ -377,6 +407,7 @@ export const Updates = () => {
         canManageRollout={canManageUpdateRollout}
       />
       {!!query.error && <ApiError error={query.error} />}
+      {!!healthError && <ApiError error={healthError} />}
 
       <section className="mb-5 overflow-hidden rounded-lg border bg-card shadow-card">
         <div className="flex flex-col gap-2.5 p-3 xl:flex-row xl:flex-wrap xl:items-center 2xl:flex-nowrap">
@@ -561,22 +592,24 @@ export const Updates = () => {
       )}
 
       <div className="overflow-hidden rounded-lg border bg-card shadow-card">
-        <Table className="min-w-[1050px] table-fixed">
+        <Table className="min-w-[1250px] table-fixed">
           <TableHeader>
             <TableRow>
-              <TableHead className="w-[38%]">Update</TableHead>
-              <TableHead className="w-[13%]">Branch</TableHead>
-              <TableHead className="w-[14%]">Runtime</TableHead>
-              <TableHead className="w-[9%]">Platform</TableHead>
-              <TableHead className="w-[11%]">Commit</TableHead>
-              <TableHead className="w-[15%]">Published</TableHead>
+              <TableHead className="w-[30%]">Update</TableHead>
+              <TableHead className="w-[11%]">Branch</TableHead>
+              <TableHead className="w-[12%]">Runtime</TableHead>
+              <TableHead className="w-[7%]">Platform</TableHead>
+              <TableHead className="w-[8%] text-right">Devices</TableHead>
+              <TableHead className="w-[9%]">Health</TableHead>
+              <TableHead className="w-[9%]">Commit</TableHead>
+              <TableHead className="w-[14%]">Published</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {query.isLoading &&
               Array.from({ length: 8 }).map((_, index) => (
                 <TableRow key={index}>
-                  {Array.from({ length: 6 }).map((__, cell) => (
+                  {Array.from({ length: 8 }).map((__, cell) => (
                     <TableCell key={cell}>
                       <Skeleton className="h-4 w-full" />
                     </TableCell>
@@ -592,6 +625,11 @@ export const Updates = () => {
                 const rolloutPercentage = group.updates.find(
                   update => update.rolloutPercentage != null
                 )?.rolloutPercentage;
+                const groupHealth = aggregateUpdateHealth(
+                  group.updates
+                    .filter(update => update.healthRelevant)
+                    .map(update => healthByUuid[update.updateUUID])
+                );
                 return (
                   <Fragment key={group.key}>
                     <TableRow
@@ -638,7 +676,7 @@ export const Updates = () => {
                         </div>
                       </TableCell>
                       <TableCell>
-                        <BranchLink branch={primary.branch} />
+                        <BranchLabel branch={primary.branch} />
                       </TableCell>
                       <TableCell className="min-w-0">
                         <RuntimeLabel value={primary.runtimeVersion} />
@@ -649,6 +687,12 @@ export const Updates = () => {
                             <PlatformIcon key={value} platform={value} />
                           ))}
                         </div>
+                      </TableCell>
+                      <TableCell className="text-right font-medium tabular-nums">
+                        {groupHealth ? groupHealth.devicesOnUpdate.toLocaleString() : '—'}
+                      </TableCell>
+                      <TableCell>
+                        <HealthBadge health={groupHealth} />
                       </TableCell>
                       <TableCell>
                         <CommitLabel value={primary.commitHash} />
@@ -684,13 +728,25 @@ export const Updates = () => {
                             </div>
                           </TableCell>
                           <TableCell>
-                            <BranchLink branch={update.branch} />
+                            <BranchLabel branch={update.branch} />
                           </TableCell>
                           <TableCell className="min-w-0">
                             <RuntimeLabel value={update.runtimeVersion} />
                           </TableCell>
                           <TableCell>
                             <PlatformIcon platform={update.platform} />
+                          </TableCell>
+                          <TableCell className="text-right font-medium tabular-nums">
+                            {update.healthRelevant && healthByUuid[update.updateUUID]
+                              ? healthByUuid[update.updateUUID].devicesOnUpdate.toLocaleString()
+                              : '—'}
+                          </TableCell>
+                          <TableCell>
+                            {update.healthRelevant ? (
+                              <HealthBadge health={healthByUuid[update.updateUUID]} />
+                            ) : (
+                              <span className="text-muted-foreground/60">—</span>
+                            )}
                           </TableCell>
                           <TableCell>
                             <CommitLabel value={update.commitHash} />
@@ -705,7 +761,7 @@ export const Updates = () => {
               })}
             {!query.isLoading && groups.length === 0 && (
               <TableRow>
-                <TableCell colSpan={6} className="h-28 text-center text-muted-foreground">
+                <TableCell colSpan={8} className="h-28 text-center text-muted-foreground">
                   {hasFilters ? 'No updates match these filters.' : 'No updates published yet.'}
                 </TableCell>
               </TableRow>

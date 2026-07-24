@@ -13,6 +13,7 @@ import { useAppPermission } from '@/ee/lib/PermissionsContext';
 import { TimestampCell } from '@/components/ui/timestamp-cell';
 import { UpdatesBreadcrumb } from '@/pages/Updates/components/UpdatesBreadcrumb';
 import { UpdateRolloutCard } from '@/pages/Updates/components/UpdateRolloutCard';
+import { aggregateUpdateHealth } from '@/pages/Updates/components/updateHealth';
 
 export const UpdatesTable = ({
   branch,
@@ -43,17 +44,61 @@ export const UpdatesTable = ({
   const activeRollout = rolloutQuery.data?.active ? rolloutQuery.data.updates : [];
   const controlIds = new Set(activeRollout.map(u => u.controlUpdateId).filter(Boolean));
 
+  // Update health (adoption + launch failures) comes from the device
+  // registry, uncached server-side. It only feeds the rollout card here (the
+  // per-update health display belongs to the dedicated Observe section), so
+  // it is fetched, and polled fast, only while a rollout is live. Rollback
+  // rows carry a literal "Rollback to embedded" instead of a UUID: they have
+  // no health and must not reach the endpoint. The server caps one request
+  // at 100 ids.
+  const isUuid = (value: string) =>
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
+  const updateUUIDs = [...(data ?? [])]
+    .filter(u => isUuid(u.updateUUID))
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+    .slice(0, 100)
+    .map(u => u.updateUUID);
+  const healthQuery = useQuery({
+    queryKey: ['update-health', selectedAppId, branch, runtimeVersion, updateUUIDs.join(',')],
+    queryFn: () => api.getUpdateHealth(updateUUIDs),
+    enabled:
+      !!selectedAppId &&
+      CONTROL_PLANE_ENABLED &&
+      updateUUIDs.length > 0 &&
+      activeRollout.length > 0,
+    refetchInterval: 5_000,
+  });
+  const healthByUuid = healthQuery.data?.updates;
+
+  // A rollout spans one row per platform, each a DISTINCT update: aggregate
+  // the raw cohorts across the rollout set (and the control set) so an
+  // iOS-only crash storm cannot hide behind a healthy Android row.
+  const byNumericId = new Map((data ?? []).map(u => [u.updateId, u]));
+  const rolloutUuids = activeRollout
+    .map(r => byNumericId.get(r.updateId)?.updateUUID)
+    .filter((uuid): uuid is string => !!uuid && isUuid(uuid));
+  const controlUuids = activeRollout
+    .map(r => (r.controlUpdateId ? byNumericId.get(r.controlUpdateId)?.updateUUID : undefined))
+    .filter((uuid): uuid is string => !!uuid && isUuid(uuid));
+  const rolloutHealth = aggregateUpdateHealth(rolloutUuids.map(uuid => healthByUuid?.[uuid]));
+  const controlHealth = aggregateUpdateHealth(controlUuids.map(uuid => healthByUuid?.[uuid]));
+
   return (
     <div className="w-full flex-1">
       {showBreadcrumb && <UpdatesBreadcrumb branch={branch} runtimeVersion={runtimeVersion} />}
       {!!error && <ApiError error={error} />}
       {!!rolloutQuery.error && <ApiError error={rolloutQuery.error} />}
+      {!!healthQuery.error && <ApiError error={healthQuery.error} />}
       {CONTROL_PLANE_ENABLED && activeRollout.length > 0 && (
         <UpdateRolloutCard
           branch={branch}
           runtimeVersion={runtimeVersion}
           updates={activeRollout}
           canManageRollout={canManageUpdateRollout}
+          rolloutHealth={rolloutHealth}
+          controlHealth={controlHealth}
+          rolloutUpdateUUIDs={rolloutUuids}
+          controlUpdateUUIDs={controlUuids}
         />
       )}
       <UpdateDetailsSheet ref={sheetRef} branch={branch} runtimeVersion={runtimeVersion} />
