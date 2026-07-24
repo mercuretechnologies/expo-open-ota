@@ -222,6 +222,22 @@ export type UpdateHealthRecord = {
   healthPercent: number | null;
 };
 
+export type UpdateHealthHistoryPoint = {
+  timestamp: string;
+  role: 'current' | 'candidate' | 'control';
+  devicesOnUpdate: number;
+  successfulDevices: number;
+  faultyDevices: number;
+  updateIssues: number;
+  runtimeIssues: number;
+  healthPercent: number | null;
+};
+
+export type UpdateHealthHistoryResponse = {
+  available: boolean;
+  updates: Record<string, UpdateHealthHistoryPoint[]>;
+};
+
 export type UpdateDetailsRecord = {
   updateUUID: string;
   createdAt: string;
@@ -900,6 +916,17 @@ export class ApiClient {
   public async getUpdateHealth(updateUUIDs: string[]) {
     return this.request<{ updates: Record<string, UpdateHealthRecord> }>(
       `${this.appScope()}/identity/update-health?ids=${encodeURIComponent(updateUUIDs.join(','))}`,
+      {
+        method: 'GET',
+      }
+    );
+  }
+  public async getUpdateHealthHistory(updateUUIDs: string[], from?: string, to?: string) {
+    const search = new URLSearchParams({ ids: updateUUIDs.join(',') });
+    if (from) search.set('from', from);
+    if (to) search.set('to', to);
+    return this.request<UpdateHealthHistoryResponse>(
+      `${this.appScope()}/identity/update-health/history?${search.toString()}`,
       {
         method: 'GET',
       }

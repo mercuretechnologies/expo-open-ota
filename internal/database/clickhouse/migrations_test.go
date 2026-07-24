@@ -35,7 +35,12 @@ func TestRunDBMigrations(t *testing.T) {
 	require.NoError(t, err)
 	defer engine.Close()
 
-	for _, table := range []string{"observe_metrics", "observe_logs"} {
+	for _, table := range []string{
+		"observe_metrics",
+		"observe_logs",
+		"device_health_events",
+		"update_health_snapshots",
+	} {
 		var exists uint64
 		require.NoError(t, engine.Conn.QueryRow(ctx,
 			"SELECT count() FROM system.tables WHERE database = currentDatabase() AND name = ?", table,
@@ -75,7 +80,15 @@ func TestConcurrentMigratorsApplyOnce(t *testing.T) {
 
 	// Back to a virgin schema so "first ever apply" is what races. Wholesale
 	// resets on the shared test database are house style (see pgtest).
-	for _, table := range []string{"goose_db_version", "observe_metrics", "observe_logs", "device_current_update", "update_crashes"} {
+	for _, table := range []string{
+		"goose_db_version",
+		"observe_metrics",
+		"observe_logs",
+		"device_current_update",
+		"update_crashes",
+		"device_health_events",
+		"update_health_snapshots",
+	} {
 		require.NoError(t, engine.Conn.Exec(ctx, "DROP TABLE IF EXISTS "+table))
 	}
 

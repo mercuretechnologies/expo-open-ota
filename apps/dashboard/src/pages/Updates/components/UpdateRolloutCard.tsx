@@ -17,6 +17,7 @@ import {
 } from '@/components/ui/dialog';
 import { RolloutBar } from '@/components/rollout/RolloutBar';
 import { HealthBadge } from '@/pages/Updates/components/HealthBadge';
+import { UpdateHealthHistory } from '@/pages/Updates/components/UpdateHealthHistory';
 
 // Renders the active per-update rollout for a (branch, runtime version). The
 // controls (progress forward, finish, or revert) only show when the account
@@ -30,6 +31,8 @@ export const UpdateRolloutCard = ({
   canManageRollout,
   rolloutHealth,
   controlHealth,
+  rolloutUpdateUUIDs = [],
+  controlUpdateUUIDs = [],
 }: {
   branch: string;
   runtimeVersion: string;
@@ -39,6 +42,8 @@ export const UpdateRolloutCard = ({
   // control update devices fall back to; undefined while loading.
   rolloutHealth?: UpdateHealthRecord;
   controlHealth?: UpdateHealthRecord;
+  rolloutUpdateUUIDs?: string[];
+  controlUpdateUUIDs?: string[];
 }) => {
   const { selectedAppId } = useSelectedApp();
   const { toast } = useToast();
@@ -153,7 +158,9 @@ export const UpdateRolloutCard = ({
             <RolloutBar value={percentage} />
             {(rolloutHealth || controlHealth) && (
               <p className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
-                <span className="relative flex h-2 w-2" title="Refreshed every 5 seconds while the rollout runs">
+                <span
+                  className="relative flex h-2 w-2"
+                  title="Refreshed every 5 seconds while the rollout runs">
                   <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75"></span>
                   <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500"></span>
                 </span>
@@ -173,6 +180,27 @@ export const UpdateRolloutCard = ({
               </p>
             )}
           </div>
+
+          {rolloutUpdateUUIDs.length + controlUpdateUUIDs.length > 0 && (
+            <UpdateHealthHistory
+              from={updates.map(update => update.createdAt).sort()[0]}
+              live
+              series={[
+                {
+                  key: 'candidate',
+                  label: 'Candidate',
+                  updateUUIDs: rolloutUpdateUUIDs,
+                  color: '#10b981',
+                },
+                {
+                  key: 'control',
+                  label: 'Control',
+                  updateUUIDs: controlUpdateUUIDs,
+                  color: '#64748b',
+                },
+              ]}
+            />
+          )}
 
           {canManageRollout && (
             <div className="space-y-4 border-t pt-4">

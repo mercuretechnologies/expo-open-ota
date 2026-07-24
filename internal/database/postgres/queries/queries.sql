@@ -1347,3 +1347,92 @@ LEFT JOIN device_identity d
 WHERE f.app_id = $1
   AND f.update_id = ANY(sqlc.arg(update_ids)::uuid[])
 GROUP BY f.update_id;
+
+-- Durable ClickHouse delivery queue. The worker reads through a transaction;
+-- SKIP LOCKED lets several API replicas drain disjoint batches safely.
+-- name: ListDeviceHealthOutbox :many
+SELECT id, event_type, app_id, eas_client_id, update_id, previous_update_id,
+       failure_type, fatal_error, occurred_at
+FROM device_health_outbox
+ORDER BY id
+LIMIT $1
+FOR UPDATE SKIP LOCKED;
+
+-- name: DeleteDeviceHealthOutbox :exec
+DELETE FROM device_health_outbox
+WHERE id = ANY(sqlc.arg('ids')::bigint[]);
+
+-- A deployment with no ClickHouse has no historical-health consumer. Its
+-- uniform no-ClickHouse replicas periodically discard this otherwise
+-- unbounded queue; PostgreSQL instant-T health does not depend on it.
+-- name: DiscardDeviceHealthOutbox :exec
+DELETE FROM device_health_outbox;
+
+-- Absolute current health for every update whose score is meaningful now:
+-- the newest checked update of each branch/runtime/platform, plus the control
+-- still serving an active rollout's out-of-bucket cohort. The ClickHouse
+-- worker samples these rows into one-minute buckets.
+-- name: ListCurrentUpdateHealthSnapshots :many
+WITH latest AS (
+    SELECT DISTINCT ON (u.branch_id, u.runtime_version_id, u.platform)
+           b.app_id,
+           u.branch_id,
+           u.runtime_version_id,
+           u.platform,
+           u.update_uuid,
+           u.rollout_percentage,
+           u.control_update_id
+    FROM updates u
+    JOIN branches b ON b.id = u.branch_id
+    WHERE u.checked_at IS NOT NULL
+    ORDER BY u.branch_id, u.runtime_version_id, u.platform, u.id DESC
+),
+relevant AS (
+    SELECT app_id,
+           update_uuid,
+           CASE WHEN rollout_percentage IS NULL THEN 'current' ELSE 'candidate' END::text AS role
+    FROM latest
+    WHERE update_uuid IS NOT NULL
+
+    UNION ALL
+
+    SELECT l.app_id, control.update_uuid, 'control'::text AS role
+    FROM latest l
+    JOIN updates control
+      ON control.branch_id = l.branch_id
+     AND control.id = l.control_update_id
+    WHERE l.rollout_percentage IS NOT NULL
+      AND control.update_uuid IS NOT NULL
+)
+SELECT r.app_id,
+       r.update_uuid,
+       r.role,
+       COALESCE(adoption.devices_on_update, 0)::bigint AS devices_on_update,
+       (COALESCE(adoption.devices_on_update, 0) - COALESCE(failures.still_on_update, 0))::bigint AS successful_devices,
+       COALESCE(failures.faulty_devices, 0)::bigint AS faulty_devices,
+       COALESCE(failures.update_issues, 0)::bigint AS update_issues,
+       COALESCE(failures.runtime_issues, 0)::bigint AS runtime_issues
+FROM relevant r
+LEFT JOIN LATERAL (
+    SELECT COUNT(*) AS devices_on_update
+    FROM device_identity d
+    WHERE d.app_id = r.app_id
+      AND d.current_update_id = r.update_uuid
+) adoption ON TRUE
+LEFT JOIN LATERAL (
+    SELECT COUNT(*) AS faulty_devices,
+           COUNT(*) FILTER (WHERE f.failure_type = 'update_issue') AS update_issues,
+           COUNT(*) FILTER (WHERE f.failure_type = 'runtime_issue') AS runtime_issues,
+           COUNT(*) FILTER (
+               WHERE EXISTS (
+                   SELECT 1
+                   FROM device_identity d
+                   WHERE d.app_id = f.app_id
+                     AND d.eas_client_id = f.eas_client_id
+                     AND d.current_update_id = f.update_id
+               )
+           ) AS still_on_update
+    FROM device_update_failures f
+    WHERE f.app_id = r.app_id
+      AND f.update_id = r.update_uuid
+) failures ON TRUE;

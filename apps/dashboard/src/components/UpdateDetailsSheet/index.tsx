@@ -17,6 +17,7 @@ import { useSelectedApp } from '@/lib/SelectedAppContext';
 import { formatTimestamp } from '@/lib/utils';
 import { RolloutBar } from '@/components/rollout/RolloutBar';
 import { Check, ChevronDown, ChevronUp, Copy, Package, Split, Undo2 } from 'lucide-react';
+import { UpdateHealthHistory } from '@/pages/Updates/components/UpdateHealthHistory';
 
 interface Update {
   updateUUID: string;
@@ -82,6 +83,8 @@ const MonoValue = ({ value }: { value: string }) => (
 
 const platformLabel = (platform: string) =>
   platform === 'ios' ? 'iOS' : platform === 'android' ? 'Android' : platform;
+const isUuid = (value: string) =>
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
 
 const UpdateDetailsBody = ({
   update,
@@ -195,6 +198,21 @@ const UpdateDetailsBody = ({
               </p>
             )}
           </div>
+        )}
+
+        {isUuid(data.updateUUID) && (
+          <UpdateHealthHistory
+            from={data.createdAt}
+            live={rolloutActive}
+            series={[
+              {
+                key: 'update',
+                label: platformLabel(data.platform),
+                updateUUIDs: [data.updateUUID],
+                color: '#2563eb',
+              },
+            ]}
+          />
         )}
 
         <DetailSection title="Deployment">

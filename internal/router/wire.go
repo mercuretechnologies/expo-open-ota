@@ -49,6 +49,7 @@ type AppContainer struct {
 	AuditHandler             *audit.AuditHandler
 	UserRepo                 services.UserRepository
 	ObserveIngestHandler     *observe.IngestHandler
+	ObserveHealthHandler     *observe.HealthHistoryHandler
 	IdentityHandler          *identity.IdentityHandler
 }
 
@@ -106,6 +107,9 @@ func InitDependencies(ctx context.Context) (*AppContainer, func()) {
 	// nils, never a typed-nil interface.
 	var telemetrySink observe.TelemetrySink
 	var branchResolver observe.BranchResolver
+	// Historical health is optional and ClickHouse-backed. Its handler is
+	// always wired so no-ClickHouse deployments can report available=false.
+	var healthHistory *observe.HealthHistory
 	// Records device check-ins into the universal registry, debounced; nil
 	// only in stateless mode, where polls and ingestion are side-effect free.
 	var checkInRecorder *observe.CheckInRecorder
@@ -188,11 +192,24 @@ func InitDependencies(ctx context.Context) (*AppContainer, func()) {
 			clickhouse.RunDBMigrations(chUrl, dbUrl)
 			telemetrySink = observe.NewClickHouseTelemetrySink(chEngine)
 			branchResolver = observe.NewBranchResolver(cache.GetCache(), pgUpdateStore.GetBranchNameByUpdateUUID)
+			healthHistory = observe.NewHealthHistory(dbEngine, chEngine)
+			stopHealthHistory := healthHistory.Start(ctx)
+			cleanupWithClickHouse := cleanup
+			cleanup = func() {
+				stopHealthHistory()
+				cleanupWithClickHouse()
+			}
 		} else {
 			// Not a Fatal: deployments without ClickHouse keep booting, the
 			// registry and update health work regardless; only the
 			// metrics/logs ingestion is off.
 			log.Println("⚙️  [OBSERVE] CLICKHOUSE_URL is not set; telemetry ingestion (metrics/logs) stays disabled")
+			stopHealthOutboxDiscarder := observe.StartHealthOutboxDiscarder(ctx, dbEngine)
+			cleanupWithPostgres := cleanup
+			cleanup = func() {
+				stopHealthOutboxDiscarder()
+				cleanupWithPostgres()
+			}
 		}
 	} else {
 		log.Println("⚙️  [STATELESS] Initializing Stateless Mode (Flat-Env Mode)...")
@@ -295,6 +312,7 @@ func InitDependencies(ctx context.Context) (*AppContainer, func()) {
 		UsersHandler:             dashhandlers.NewUsersHandler(userService),
 		UserRepo:                 userRepo,
 		ObserveIngestHandler:     observe.NewIngestHandler(identityService, telemetrySink, branchResolver, checkInRecorder),
+		ObserveHealthHandler:     observe.NewHealthHistoryHandler(healthHistory),
 		IdentityHandler:          identity.NewIdentityHandler(identityService),
 	}
 

@@ -99,7 +99,7 @@ export default function HomeScreen() {
     <SafeAreaView style={styles.safeAreaView}>
       <ScrollView contentContainerStyle={styles.scrollView}>
         <ThemedView style={styles.titleContainer}>
-          <ThemedText type="title">Current update</ThemedText>
+          <ThemedText type="title">Current update:</ThemedText>
         </ThemedView>
         <ThemedView style={styles.informations}>
           <ThemedText>Update ID: {Updates.updateId}</ThemedText>

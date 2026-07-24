@@ -266,5 +266,9 @@ func NewRouter(container *AppContainer) *mux.Router {
 	// device registry (Postgres only, works without ClickHouse): feeds the
 	// updates table's MAU column and the rollout card's health score.
 	appAuthSubrouter.HandleFunc("/identity/update-health", container.IdentityHandler.UpdateHealthHandler).Methods(http.MethodGet)
+	// Historical series is projected into ClickHouse. The endpoint stays
+	// present without ClickHouse and reports available=false so the dashboard
+	// can hide the graph while instant-T health keeps working.
+	appAuthSubrouter.HandleFunc("/identity/update-health/history", container.ObserveHealthHandler.GetUpdateHealthHistoryHandler).Methods(http.MethodGet)
 	return r
 }

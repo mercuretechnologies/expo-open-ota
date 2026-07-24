@@ -84,6 +84,18 @@ type ChannelRollout struct {
 	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
 }
 
+type DeviceHealthOutbox struct {
+	ID               int64              `json:"id"`
+	EventType        string             `json:"event_type"`
+	AppID            pgtype.UUID        `json:"app_id"`
+	EasClientID      pgtype.UUID        `json:"eas_client_id"`
+	UpdateID         pgtype.UUID        `json:"update_id"`
+	PreviousUpdateID pgtype.UUID        `json:"previous_update_id"`
+	FailureType      *string            `json:"failure_type"`
+	FatalError       string             `json:"fatal_error"`
+	OccurredAt       pgtype.Timestamptz `json:"occurred_at"`
+}
+
 type DeviceIdentity struct {
 	AppID           pgtype.UUID        `json:"app_id"`
 	EasClientID     pgtype.UUID        `json:"eas_client_id"`

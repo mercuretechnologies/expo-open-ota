@@ -90,3 +90,48 @@ func TestClickHouseTelemetrySinkRoundTrip(t *testing.T) {
 	assert.EqualValues(t, 2*len(logRows), total)
 	assert.EqualValues(t, len(logRows), distinct)
 }
+
+func TestHealthHistoryRoundTripUsesLatestSnapshotInMinute(t *testing.T) {
+	chURL := os.Getenv("TEST_CLICKHOUSE_URL")
+	pgURL := os.Getenv("TEST_DATABASE_URL")
+	if chURL == "" || pgURL == "" {
+		t.Skip("TEST_CLICKHOUSE_URL and TEST_DATABASE_URL not both set; skipping health history test")
+	}
+	clickhouse.RunDBMigrations(chURL, pgURL)
+
+	ctx := context.Background()
+	engine, err := clickhouse.NewClickHouseEngine(ctx, chURL)
+	require.NoError(t, err)
+	defer engine.Close()
+
+	appID, updateID, emptyUpdateID := uuid.NewString(), uuid.NewString(), uuid.NewString()
+	bucket := time.Now().UTC().Truncate(time.Minute)
+	batch, err := engine.Conn.PrepareBatch(ctx, `INSERT INTO update_health_snapshots
+		(app_id, update_id, bucket, captured_at, role, devices_on_update,
+		 successful_devices, faulty_devices, update_issues, runtime_issues)`)
+	require.NoError(t, err)
+	require.NoError(t, batch.Append(
+		appID, updateID, bucket, bucket.Add(time.Second), "candidate",
+		uint64(10), uint64(9), uint64(1), uint64(1), uint64(0),
+	))
+	require.NoError(t, batch.Append(
+		appID, updateID, bucket, bucket.Add(2*time.Second), "candidate",
+		uint64(20), uint64(18), uint64(2), uint64(1), uint64(1),
+	))
+	require.NoError(t, batch.Send())
+
+	history := NewHealthHistory(nil, engine)
+	points, err := history.Read(
+		ctx,
+		appID,
+		[]string{updateID, emptyUpdateID},
+		bucket.Add(-time.Minute),
+		bucket.Add(time.Minute),
+	)
+	require.NoError(t, err)
+	require.Len(t, points[updateID], 1)
+	require.Empty(t, points[emptyUpdateID])
+	assert.EqualValues(t, 20, points[updateID][0].DevicesOnUpdate)
+	require.NotNil(t, points[updateID][0].HealthPercent)
+	assert.InDelta(t, 90, *points[updateID][0].HealthPercent, 0.001)
+}

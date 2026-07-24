@@ -708,6 +708,32 @@ func TestTouchDeviceTracksCurrentUpdate(t *testing.T) {
 	current = readCurrent()
 	require.NotNil(t, current)
 	require.Equal(t, updateB, *current)
+
+	// The history bridge records state transitions, not every contact. The
+	// nil contact above therefore emits nothing.
+	type stateEvent struct {
+		EventType        string
+		UpdateID         string
+		PreviousUpdateID *string
+	}
+	rows, err := pool.Query(ctx, `
+		SELECT event_type, update_id::text, previous_update_id::text
+		FROM device_health_outbox
+		WHERE app_id = $1 AND eas_client_id = $2
+		ORDER BY id`, appID, deviceID)
+	require.NoError(t, err)
+	defer rows.Close()
+	var events []stateEvent
+	for rows.Next() {
+		var event stateEvent
+		require.NoError(t, rows.Scan(&event.EventType, &event.UpdateID, &event.PreviousUpdateID))
+		events = append(events, event)
+	}
+	require.NoError(t, rows.Err())
+	require.Equal(t, []stateEvent{
+		{EventType: "first_seen", UpdateID: updateA},
+		{EventType: "switched", UpdateID: updateB, PreviousUpdateID: &updateA},
+	}, events)
 }
 
 func TestRecordUpdateFailuresCaptureOnce(t *testing.T) {
@@ -737,6 +763,17 @@ func TestRecordUpdateFailuresCaptureOnce(t *testing.T) {
 	require.Equal(t, 1, rows, "one failure row per (device, update), sticky re-sends collapse")
 	require.Equal(t, "TypeError: boom", fatal)
 	require.Equal(t, string(FailureTypeUpdate), failureType)
+
+	var outboxRows int
+	require.NoError(t, pool.QueryRow(ctx, `
+		SELECT COUNT(*)
+		FROM device_health_outbox
+		WHERE app_id = $1
+		  AND eas_client_id = $2
+		  AND update_id = $3
+		  AND event_type = 'failure'`,
+		appID, deviceID, failedUpdate).Scan(&outboxRows))
+	require.Equal(t, 1, outboxRows, "replayed failure headers must emit one historical event")
 }
 
 func TestRecordUpdateFailuresRejectsAnotherAppsUpdate(t *testing.T) {
@@ -756,6 +793,64 @@ func TestRecordUpdateFailuresRejectsAnotherAppsUpdate(t *testing.T) {
 		"SELECT COUNT(*) FROM device_update_failures WHERE app_id = $1 AND update_id = $2",
 		appID, foreignUpdate).Scan(&rows))
 	require.Zero(t, rows)
+}
+
+func TestHealthSnapshotsKeepActiveRolloutCandidateAndControl(t *testing.T) {
+	store, pool := setupIdentityStore(t)
+	appID := seedApp(t, pool)
+	ctx := context.Background()
+	controlUUID, candidateUUID := uuid.NewString(), uuid.NewString()
+
+	var branchID, runtimeVersionID int64
+	require.NoError(t, pool.QueryRow(ctx,
+		"INSERT INTO branches (app_id, name) VALUES ($1, 'snapshot-rollout') RETURNING id",
+		appID).Scan(&branchID))
+	require.NoError(t, pool.QueryRow(ctx,
+		"INSERT INTO runtime_versions (app_id, version) VALUES ($1, 'snapshot-rollout') RETURNING id",
+		appID).Scan(&runtimeVersionID))
+	_, err := pool.Exec(ctx, `
+		INSERT INTO updates
+			(id, update_uuid, branch_id, runtime_version_id, update_type, commit_hash, platform, checked_at)
+		VALUES
+			(1, $1, $3, $4, 0, 'control', 'ios', CURRENT_TIMESTAMP),
+			(2, $2, $3, $4, 0, 'candidate', 'ios', CURRENT_TIMESTAMP)`,
+		controlUUID, candidateUUID, branchID, runtimeVersionID)
+	require.NoError(t, err)
+	_, err = pool.Exec(ctx, `
+		UPDATE updates
+		SET rollout_percentage = 10, control_update_id = 1
+		WHERE branch_id = $1 AND id = 2`,
+		branchID)
+	require.NoError(t, err)
+
+	require.NoError(t, store.TouchDevice(ctx, appID, uuid.NewString(), nil, &controlUUID))
+	require.NoError(t, store.TouchDevice(ctx, appID, uuid.NewString(), nil, &candidateUUID))
+
+	readRoles := func() map[string]string {
+		t.Helper()
+		rows, err := store.engine.Queries.ListCurrentUpdateHealthSnapshots(ctx)
+		require.NoError(t, err)
+		roles := make(map[string]string)
+		for _, row := range rows {
+			if uuid.UUID(row.AppID.Bytes).String() == appID {
+				roles[uuid.UUID(row.UpdateUuid.Bytes).String()] = row.Role
+				require.EqualValues(t, 1, row.DevicesOnUpdate)
+			}
+		}
+		return roles
+	}
+	require.Equal(t, map[string]string{
+		candidateUUID: "candidate",
+		controlUUID:   "control",
+	}, readRoles())
+
+	// Once the rollout finishes, only its newest update remains relevant.
+	_, err = pool.Exec(ctx, `
+		UPDATE updates
+		SET rollout_percentage = NULL
+		WHERE branch_id = $1 AND id = 2`, branchID)
+	require.NoError(t, err)
+	require.Equal(t, map[string]string{candidateUUID: "current"}, readRoles())
 }
 
 func TestUpdateHealthCounts(t *testing.T) {

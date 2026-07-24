@@ -97,6 +97,8 @@ export const UpdatesTable = ({
           canManageRollout={canManageUpdateRollout}
           rolloutHealth={rolloutHealth}
           controlHealth={controlHealth}
+          rolloutUpdateUUIDs={rolloutUuids}
+          controlUpdateUUIDs={controlUuids}
         />
       )}
       <UpdateDetailsSheet ref={sheetRef} branch={branch} runtimeVersion={runtimeVersion} />
