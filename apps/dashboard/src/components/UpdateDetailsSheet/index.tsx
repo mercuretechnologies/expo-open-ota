@@ -99,7 +99,7 @@ const UpdateDetailsBody = ({
   // different branches would collide in the cache and show mixed data.
   const { data, isLoading, error } = useQuery({
     queryKey: ['update-details', selectedAppId, branch, runtimeVersion, update.updateId],
-    enabled: !!update.updateId && !!selectedAppId,
+    enabled: !!update.updateId && !!selectedAppId && !!branch && !!runtimeVersion,
     queryFn: () => api.getUpdateDetails(branch, runtimeVersion, update.updateId),
   });
 

@@ -2,6 +2,7 @@ import { useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import { useSelectedApp } from '@/lib/SelectedAppContext';
+import { toBranchStatus } from '@/lib/branch-status';
 
 export const useBranchCurrentStatus = (branchName?: string | null) => {
   const { selectedAppId } = useSelectedApp();
@@ -32,10 +33,11 @@ export const useBranchCurrentStatus = (branchName?: string | null) => {
     const currentUpdate = currentRollout ?? updatesByRecency[0];
 
     if (!currentUpdate) return undefined;
-    return {
-      label: currentRollout ? ('Current rollout' as const) : ('Current update' as const),
-      commitHash: currentUpdate.commitHash.slice(0, 8),
-      percentage: currentRollout?.rolloutPercentage ?? undefined,
-    };
-  }, [updatesQuery.data]);
+    return toBranchStatus({
+      runtimeVersion: latestRuntime?.runtimeVersion ?? '',
+      commitHash: currentUpdate.commitHash,
+      createdAt: currentUpdate.createdAt,
+      rolloutPercentage: currentUpdate.rolloutPercentage,
+    });
+  }, [latestRuntime?.runtimeVersion, updatesQuery.data]);
 };

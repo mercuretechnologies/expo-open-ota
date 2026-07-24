@@ -51,7 +51,7 @@ const NavLink = ({
     <Link
       to={to}
       onClick={e => {
-        if (isActive) e.preventDefault();
+        if (pathname === to) e.preventDefault();
         onNavigate?.();
       }}
       className={clsx(

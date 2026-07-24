@@ -370,20 +370,6 @@ func (s *PostgresUpdateStore) GetUpdateFeed(ctx context.Context, appId string, q
 		if row.UpdateType == int32(types.NormalUpdate) {
 			if row.UpdateUuid.Valid {
 				updateUUID = row.UpdateUuid.String()
-			} else {
-				metadata, metadataErr := update2.GetMetadata(types.Update{
-					Branch:         row.BranchName,
-					RuntimeVersion: row.RuntimeVersion,
-					UpdateId:       strconv.FormatInt(row.ID, 10),
-					CreatedAt:      time.Duration(row.CreatedAt.Time.UnixNano()),
-					AppId:          appId,
-				})
-				if metadataErr != nil && !errors.Is(metadataErr, update2.ErrUpdateMetadataMissing) {
-					// Dropping the row here would shrink the page below the
-					// handler's limit+1 sentinel and silently end pagination.
-					return nil, fmt.Errorf("failed to resolve metadata for update ID %d: %w", row.ID, metadataErr)
-				}
-				updateUUID = crypto.ConvertSHA256HashToUUID(metadata.ID)
 			}
 		} else if row.UpdateType != int32(types.Rollback) {
 			return nil, fmt.Errorf("unknown update type %d for update ID %d", row.UpdateType, row.ID)

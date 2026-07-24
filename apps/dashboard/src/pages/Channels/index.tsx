@@ -319,6 +319,20 @@ export const Channels = () => {
     [CONTROL_PLANE_ENABLED, canDeleteChannel, navigate]
   );
 
+  const deleteDialog = CONTROL_PLANE_ENABLED && canDeleteChannel && (
+    <DeleteDialog
+      isOpen={!!channelToDelete}
+      onClose={() => setChannelToDelete(null)}
+      onConfirm={deleteChannel}
+      isDeleting={deleting}
+      title="Delete channel"
+      resourceName={channelToDelete?.releaseChannelName}
+      descriptionText="Builds configured with this channel will stop receiving updates. This cannot be undone."
+      confirmButtonText="Delete channel"
+      isDeletingButtonText="Deleting..."
+    />
+  );
+
   if (channelName) {
     const decodedChannel = decodeURIComponent(channelName);
     return (
@@ -375,6 +389,7 @@ export const Channels = () => {
                     className="w-full"
                     currentBranch={selectedChannel.branchId ?? ''}
                     loading={mappingMutation.isPending}
+                    disabled={mappingMutation.isPending}
                     onChange={branchId => void remap(branchId)}
                   />
                 </div>
@@ -432,19 +447,7 @@ export const Channels = () => {
             />
           </>
         )}
-        {CONTROL_PLANE_ENABLED && canDeleteChannel && (
-          <DeleteDialog
-            isOpen={!!channelToDelete}
-            onClose={() => setChannelToDelete(null)}
-            onConfirm={deleteChannel}
-            isDeleting={deleting}
-            title="Delete channel"
-            resourceName={channelToDelete?.releaseChannelName}
-            descriptionText="Builds configured with this channel will stop receiving updates. This cannot be undone."
-            confirmButtonText="Delete channel"
-            isDeletingButtonText="Deleting..."
-          />
-        )}
+        {deleteDialog}
       </div>
     );
   }
@@ -493,19 +496,7 @@ export const Channels = () => {
           }}
         />
       )}
-      {CONTROL_PLANE_ENABLED && canDeleteChannel && (
-        <DeleteDialog
-          isOpen={!!channelToDelete}
-          onClose={() => setChannelToDelete(null)}
-          onConfirm={deleteChannel}
-          isDeleting={deleting}
-          title="Delete channel"
-          resourceName={channelToDelete?.releaseChannelName}
-          descriptionText="Builds configured with this channel will stop receiving updates. This cannot be undone."
-          confirmButtonText="Delete channel"
-          isDeletingButtonText="Deleting..."
-        />
-      )}
+      {deleteDialog}
     </div>
   );
 };

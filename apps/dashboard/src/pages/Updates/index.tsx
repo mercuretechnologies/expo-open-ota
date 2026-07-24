@@ -1,4 +1,4 @@
-import { Fragment, ReactNode, useMemo, useRef, useState } from 'react';
+import { Fragment, ReactNode, useEffect, useMemo, useRef, useState } from 'react';
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
 import {
   ChevronDown,
@@ -59,6 +59,9 @@ type FeedFilterKey =
   | 'to';
 
 type FeedFilters = Record<FeedFilterKey, string>;
+type DebouncedFilterKey = 'uuid' | 'groupId' | 'commitHash';
+
+const filterDebounceMs = 300;
 
 const FilterField = ({ label, children }: { label: string; children: ReactNode }) => (
   <label className="min-w-0 space-y-1.5">
@@ -172,6 +175,43 @@ export const Updates = () => {
     from: searchParams.get('from') ?? '',
     to: searchParams.get('to') ?? '',
   };
+  const [textFilterDrafts, setTextFilterDrafts] = useState<Record<DebouncedFilterKey, string>>({
+    uuid: filters.uuid,
+    groupId: filters.groupId,
+    commitHash: filters.commitHash,
+  });
+  const filterTimers = useRef<Partial<Record<DebouncedFilterKey, ReturnType<typeof setTimeout>>>>(
+    {}
+  );
+
+  useEffect(() => {
+    const timer = filterTimers.current.uuid;
+    if (timer) clearTimeout(timer);
+    delete filterTimers.current.uuid;
+    setTextFilterDrafts(current => ({ ...current, uuid: filters.uuid }));
+  }, [filters.uuid]);
+
+  useEffect(() => {
+    const timer = filterTimers.current.groupId;
+    if (timer) clearTimeout(timer);
+    delete filterTimers.current.groupId;
+    setTextFilterDrafts(current => ({ ...current, groupId: filters.groupId }));
+  }, [filters.groupId]);
+
+  useEffect(() => {
+    const timer = filterTimers.current.commitHash;
+    if (timer) clearTimeout(timer);
+    delete filterTimers.current.commitHash;
+    setTextFilterDrafts(current => ({ ...current, commitHash: filters.commitHash }));
+  }, [filters.commitHash]);
+
+  useEffect(
+    () => () => {
+      Object.values(filterTimers.current).forEach(clearTimeout);
+    },
+    []
+  );
+
   const filterKey = [
     filters.branch,
     filters.runtimeVersion,
@@ -229,15 +269,42 @@ export const Updates = () => {
     [runtimeVersionsQuery.data]
   );
 
-  const setFilters = (values: Partial<FeedFilters>) => {
-    const next = new URLSearchParams(searchParams);
-    for (const [key, value] of Object.entries(values)) {
-      if (value) next.set(key, value);
-      else next.delete(key);
-    }
-    setSearchParams(next, { replace: true });
-  };
+  const setFilters = (values: Partial<FeedFilters>) =>
+    setSearchParams(
+      current => {
+        const next = new URLSearchParams(current);
+        for (const [key, value] of Object.entries(values)) {
+          if (value) next.set(key, value);
+          else next.delete(key);
+        }
+        return next;
+      },
+      { replace: true }
+    );
   const setFilter = (key: FeedFilterKey, value: string) => setFilters({ [key]: value });
+  const cancelPendingFilter = (key: DebouncedFilterKey) => {
+    const timer = filterTimers.current[key];
+    if (timer) clearTimeout(timer);
+    delete filterTimers.current[key];
+  };
+  const setDebouncedFilter = (key: DebouncedFilterKey, value: string) => {
+    setTextFilterDrafts(current => ({ ...current, [key]: value }));
+    cancelPendingFilter(key);
+    filterTimers.current[key] = setTimeout(() => {
+      delete filterTimers.current[key];
+      setFilter(key, value);
+    }, filterDebounceMs);
+  };
+  const clearTextFilter = (key: DebouncedFilterKey) => {
+    cancelPendingFilter(key);
+    setTextFilterDrafts(current => ({ ...current, [key]: '' }));
+    setFilter(key, '');
+  };
+  const clearAllFilters = () => {
+    (Object.keys(filterTimers.current) as DebouncedFilterKey[]).forEach(cancelPendingFilter);
+    setTextFilterDrafts({ uuid: '', groupId: '', commitHash: '' });
+    setSearchParams({}, { replace: true });
+  };
 
   const groups = useMemo(() => {
     const byKey = new Map<string, FeedGroup>();
@@ -316,13 +383,13 @@ export const Updates = () => {
           <div className="w-full xl:w-[22rem] xl:shrink-0">
             <ClearableInput
               aria-label="Filter by update UUID"
-              placeholder="Find an update by ID"
+              placeholder="Find an update by UUID"
               autoComplete="off"
               spellCheck={false}
               data-1p-ignore="true"
-              value={filters.uuid}
-              onValueChange={value => setFilter('uuid', value)}
-              onClear={() => setFilter('uuid', '')}
+              value={textFilterDrafts.uuid}
+              onValueChange={value => setDebouncedFilter('uuid', value)}
+              onClear={() => clearTextFilter('uuid')}
               icon={<Search className="h-4 w-4" />}
             />
           </div>
@@ -385,18 +452,18 @@ export const Updates = () => {
                     <ClearableInput
                       aria-label="Filter by publish group ID"
                       placeholder="Group ID"
-                      value={filters.groupId}
-                      onValueChange={value => setFilter('groupId', value)}
-                      onClear={() => setFilter('groupId', '')}
+                      value={textFilterDrafts.groupId}
+                      onValueChange={value => setDebouncedFilter('groupId', value)}
+                      onClear={() => clearTextFilter('groupId')}
                     />
                   </FilterField>
                   <FilterField label="Commit hash">
                     <ClearableInput
                       aria-label="Filter by commit hash"
                       placeholder="Commit hash"
-                      value={filters.commitHash}
-                      onValueChange={value => setFilter('commitHash', value)}
-                      onClear={() => setFilter('commitHash', '')}
+                      value={textFilterDrafts.commitHash}
+                      onValueChange={value => setDebouncedFilter('commitHash', value)}
+                      onClear={() => clearTextFilter('commitHash')}
                     />
                   </FilterField>
                   <FilterField label="Published from">
@@ -421,10 +488,7 @@ export const Updates = () => {
               </PopoverContent>
             </Popover>
             {hasFilters && (
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => setSearchParams({}, { replace: true })}>
+              <Button variant="ghost" size="sm" onClick={clearAllFilters}>
                 Clear all
               </Button>
             )}
