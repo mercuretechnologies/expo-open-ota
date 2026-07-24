@@ -310,8 +310,16 @@ const maxHealthUpdateIDs = 100
 
 type updateHealthResponse struct {
 	DevicesOnUpdate int64 `json:"devicesOnUpdate"`
+	// SuccessfulDevices currently run the update and never reported it as
+	// faulty. Runtime crashes stay on the update, so they are removed here.
+	SuccessfulDevices int64 `json:"successfulDevices"`
+	// FaultyDevices reported either a launch rollback or a JS runtime crash.
+	// The failure store is unique per (device, update), so a device contributes
+	// at most once even when it reports the same crash repeatedly.
+	FaultyDevices int64 `json:"faultyDevices"`
 	// LaunchFailures is the total devices the update failed on, the sum of
-	// the two breakdowns below.
+	// the two breakdowns below. Kept for API compatibility; faultyDevices is
+	// the clearer name now that JS runtime crashes also contribute.
 	LaunchFailures int64 `json:"launchFailures"`
 	// UpdateIssues: crash at launch reported by the manifest error-recovery
 	// headers; the device rolled back off the update.
@@ -366,19 +374,21 @@ func (h *IdentityHandler) UpdateHealthHandler(w http.ResponseWriter, r *http.Req
 		}
 		entry := health[parsed.String()]
 		failures := entry.UpdateIssues + entry.RuntimeIssues
+		successes := entry.DevicesOnUpdate - entry.FailedStillOn
 		response := updateHealthResponse{
-			DevicesOnUpdate: entry.DevicesOnUpdate,
-			LaunchFailures:  failures,
-			UpdateIssues:    entry.UpdateIssues,
-			RuntimeIssues:   entry.RuntimeIssues,
+			DevicesOnUpdate:   entry.DevicesOnUpdate,
+			SuccessfulDevices: successes,
+			FaultyDevices:     failures,
+			LaunchFailures:    failures,
+			UpdateIssues:      entry.UpdateIssues,
+			RuntimeIssues:     entry.RuntimeIssues,
 		}
-		// Every device is counted exactly once: the failure set and the
-		// current-device cohort overlap on FailedStillOn (devices that
-		// crashed but kept running the update), so attempts is the size of
-		// their union and healthy the current devices that never failed.
-		if attempts := entry.DevicesOnUpdate + failures - entry.FailedStillOn; attempts > 0 {
-			healthy := entry.DevicesOnUpdate - entry.FailedStillOn
-			percent := 100 * float64(healthy) / float64(attempts)
+		// A manifest rollback is faulty but no longer current; a JS crash is
+		// both faulty and current. successfulDevices removes that overlap, so
+		// the documented successes/(successes+faulty) formula counts every
+		// device exactly once.
+		if attempts := successes + failures; attempts > 0 {
+			percent := 100 * float64(successes) / float64(attempts)
 			response.HealthPercent = &percent
 		}
 		out[parsed.String()] = response

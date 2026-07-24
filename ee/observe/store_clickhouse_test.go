@@ -7,7 +7,6 @@ package observe
 import (
 	"context"
 	"expo-open-ota/internal/database/clickhouse"
-	"expo-open-ota/internal/database/postgres/pgtest"
 	"os"
 	"testing"
 	"time"
@@ -16,10 +15,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-// The ClickHouse migration lock lives on TEST_DATABASE_URL, so this package
-// follows the pgtest serialization convention like every package touching it.
-func TestMain(m *testing.M) { os.Exit(pgtest.RunSerialized(m)) }
 
 // Needs real servers, like the clickhouse package's migration test: set
 // TEST_CLICKHOUSE_URL and TEST_DATABASE_URL (the migration lock is a Postgres

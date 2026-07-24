@@ -148,6 +148,23 @@ func TestRecordRecordsFailures(t *testing.T) {
 	assert.EqualValues(t, 1, store.calls.Load())
 }
 
+func TestRecordFailureWithoutCurrentDoesNotAssignFailedUpdate(t *testing.T) {
+	store := &fakeTouchStore{}
+	localCache := cache.NewLocalCache()
+	recorder := NewCheckInRecorder(identity.NewService(store, nil), localCache)
+
+	// After expo-updates rolls back, the failed id is only a failure signal.
+	// If the poll does not carry expo-current-update-id, it must not be
+	// inferred as the device's current update.
+	recorder.Record(context.Background(), checkInWith("", `"`+testUpdateB+`"`, "launch failed"))
+	waitRecorded(t, localCache, 1, store)
+
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	require.Nil(t, store.lastCurrent)
+	require.Equal(t, [][]string{{testUpdateB}}, store.failedRecorded)
+}
+
 func TestRecordErrorCooldown(t *testing.T) {
 	store := &fakeTouchStore{}
 	store.failing.Store(true)

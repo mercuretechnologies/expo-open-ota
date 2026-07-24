@@ -209,13 +209,13 @@ export type UpdateRolloutInfo = {
 };
 
 // Instant-T health of one update, from the device registry (Postgres only,
-// no ClickHouse needed): every device currently running it, and the devices
-// it crashed on at launch. healthPercent is successes/(successes+failures)
-// over devices that actually attempted the update, null until anything
-// attempted it.
+// no ClickHouse needed). A manifest rollback is faulty but no longer current;
+// a JS crash is faulty and still current. successfulDevices removes that
+// overlap so healthPercent remains successes/(successes+faulty).
 export type UpdateHealthRecord = {
   devicesOnUpdate: number;
-  launchFailures: number;
+  successfulDevices: number;
+  faultyDevices: number;
   healthPercent: number | null;
 };
 

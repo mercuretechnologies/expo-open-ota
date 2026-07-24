@@ -289,11 +289,13 @@ func TestUpdateHealthHandler(t *testing.T) {
 	require.Equal(t, http.StatusOK, rec.Code)
 	var body struct {
 		Updates map[string]struct {
-			DevicesOnUpdate int64    `json:"devicesOnUpdate"`
-			LaunchFailures  int64    `json:"launchFailures"`
-			UpdateIssues    int64    `json:"updateIssues"`
-			RuntimeIssues   int64    `json:"runtimeIssues"`
-			HealthPercent   *float64 `json:"healthPercent"`
+			DevicesOnUpdate   int64    `json:"devicesOnUpdate"`
+			SuccessfulDevices int64    `json:"successfulDevices"`
+			FaultyDevices     int64    `json:"faultyDevices"`
+			LaunchFailures    int64    `json:"launchFailures"`
+			UpdateIssues      int64    `json:"updateIssues"`
+			RuntimeIssues     int64    `json:"runtimeIssues"`
+			HealthPercent     *float64 `json:"healthPercent"`
 		} `json:"updates"`
 	}
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
@@ -301,12 +303,16 @@ func TestUpdateHealthHandler(t *testing.T) {
 	require.Len(t, body.Updates, 4)
 	require.NotNil(t, body.Updates[healthy].HealthPercent)
 	require.InDelta(t, 99.0, *body.Updates[healthy].HealthPercent, 0.001)
+	require.EqualValues(t, 99, body.Updates[healthy].SuccessfulDevices)
+	require.EqualValues(t, 1, body.Updates[healthy].FaultyDevices)
 	require.EqualValues(t, 1, body.Updates[healthy].UpdateIssues)
 	require.EqualValues(t, 1, body.Updates[healthy].LaunchFailures)
 	// Runtime failures overlap the current cohort: still-running crashers
 	// count once as attempts and drop out of healthy.
 	require.EqualValues(t, 3, body.Updates[crashy].RuntimeIssues)
 	require.EqualValues(t, 3, body.Updates[crashy].LaunchFailures)
+	require.EqualValues(t, 8, body.Updates[crashy].SuccessfulDevices)
+	require.EqualValues(t, 3, body.Updates[crashy].FaultyDevices)
 	require.NotNil(t, body.Updates[crashy].HealthPercent)
 	require.InDelta(t, 100.0*8.0/11.0, *body.Updates[crashy].HealthPercent, 0.001)
 	// Zero successes with failures is a hard 0%, the broken-update red badge.

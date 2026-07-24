@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
-import { api, UpdateHealthRecord, UpdateRecord } from '@/lib/api.ts';
+import { api, UpdateRecord } from '@/lib/api.ts';
 import { ApiError } from '@/components/APIError';
 import { DataTable } from '@/components/DataTable';
 import { Badge } from '@/components/ui/badge.tsx';
@@ -13,6 +13,7 @@ import { useAppPermission } from '@/ee/lib/PermissionsContext';
 import { TimestampCell } from '@/components/ui/timestamp-cell';
 import { UpdatesBreadcrumb } from '@/pages/Updates/components/UpdatesBreadcrumb';
 import { UpdateRolloutCard } from '@/pages/Updates/components/UpdateRolloutCard';
+import { aggregateUpdateHealth } from '@/pages/Updates/components/updateHealth';
 
 export const UpdatesTable = ({
   branch,
@@ -70,31 +71,17 @@ export const UpdatesTable = ({
   const healthByUuid = healthQuery.data?.updates;
 
   // A rollout spans one row per platform, each a DISTINCT update: aggregate
-  // devices and failures across the whole rollout set (and the control set)
-  // so an iOS-only crash storm cannot hide behind a healthy Android row.
+  // the raw cohorts across the rollout set (and the control set) so an
+  // iOS-only crash storm cannot hide behind a healthy Android row.
   const byNumericId = new Map((data ?? []).map(u => [u.updateId, u]));
-  const aggregateHealth = (uuids: string[]): UpdateHealthRecord | undefined => {
-    const entries = uuids
-      .map(uuid => healthByUuid?.[uuid])
-      .filter((entry): entry is UpdateHealthRecord => !!entry);
-    if (entries.length === 0) return undefined;
-    const devicesOnUpdate = entries.reduce((sum, e) => sum + e.devicesOnUpdate, 0);
-    const launchFailures = entries.reduce((sum, e) => sum + e.launchFailures, 0);
-    const attempts = devicesOnUpdate + launchFailures;
-    return {
-      devicesOnUpdate,
-      launchFailures,
-      healthPercent: attempts > 0 ? (100 * devicesOnUpdate) / attempts : null,
-    };
-  };
   const rolloutUuids = activeRollout
     .map(r => byNumericId.get(r.updateId)?.updateUUID)
     .filter((uuid): uuid is string => !!uuid && isUuid(uuid));
   const controlUuids = activeRollout
     .map(r => (r.controlUpdateId ? byNumericId.get(r.controlUpdateId)?.updateUUID : undefined))
     .filter((uuid): uuid is string => !!uuid && isUuid(uuid));
-  const rolloutHealth = aggregateHealth(rolloutUuids);
-  const controlHealth = aggregateHealth(controlUuids);
+  const rolloutHealth = aggregateUpdateHealth(rolloutUuids.map(uuid => healthByUuid?.[uuid]));
+  const controlHealth = aggregateUpdateHealth(controlUuids.map(uuid => healthByUuid?.[uuid]));
 
   return (
     <div className="w-full flex-1">
