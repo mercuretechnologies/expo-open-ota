@@ -2642,47 +2642,6 @@ func (q *Queries) IsBranchProtected(ctx context.Context, arg IsBranchProtectedPa
 	return protected, err
 }
 
-const launchFailuresByUpdate = `-- name: LaunchFailuresByUpdate :many
-SELECT update_id AS update_uuid, COUNT(*) AS device_count
-FROM device_update_failures
-WHERE app_id = $1
-  AND update_id = ANY($2::uuid[])
-GROUP BY update_id
-`
-
-type LaunchFailuresByUpdateParams struct {
-	AppID     pgtype.UUID   `json:"app_id"`
-	UpdateIds []pgtype.UUID `json:"update_ids"`
-}
-
-type LaunchFailuresByUpdateRow struct {
-	UpdateUuid  pgtype.UUID `json:"update_uuid"`
-	DeviceCount int64       `json:"device_count"`
-}
-
-// Batch launch-failure counts for a set of updates. All-time per update: an
-// update's failures belong to its rollout window by construction (update ids
-// are never reused), and the health score is only shown for the active one.
-func (q *Queries) LaunchFailuresByUpdate(ctx context.Context, arg LaunchFailuresByUpdateParams) ([]LaunchFailuresByUpdateRow, error) {
-	rows, err := q.db.Query(ctx, launchFailuresByUpdate, arg.AppID, arg.UpdateIds)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []LaunchFailuresByUpdateRow
-	for rows.Next() {
-		var i LaunchFailuresByUpdateRow
-		if err := rows.Scan(&i.UpdateUuid, &i.DeviceCount); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const listAccessibleAppIDs = `-- name: ListAccessibleAppIDs :many
 SELECT app_id FROM user_app_grants
 WHERE user_id = $1
@@ -3775,6 +3734,68 @@ func (q *Queries) UpdateDeviceIdentity(ctx context.Context, arg UpdateDeviceIden
 	return i, err
 }
 
+const updateFailureBreakdownByIDs = `-- name: UpdateFailureBreakdownByIDs :many
+SELECT f.update_id AS update_uuid,
+       COUNT(*) AS failure_count,
+       COUNT(*) FILTER (WHERE f.failure_type = 'runtime_issue') AS runtime_count,
+       COUNT(d.eas_client_id) AS still_on_update
+FROM device_update_failures f
+LEFT JOIN device_identity d
+    ON d.app_id = f.app_id
+   AND d.eas_client_id = f.eas_client_id
+   AND d.current_update_id = f.update_id
+WHERE f.app_id = $1
+  AND f.update_id = ANY($2::uuid[])
+GROUP BY f.update_id
+`
+
+type UpdateFailureBreakdownByIDsParams struct {
+	AppID     pgtype.UUID   `json:"app_id"`
+	UpdateIds []pgtype.UUID `json:"update_ids"`
+}
+
+type UpdateFailureBreakdownByIDsRow struct {
+	UpdateUuid    pgtype.UUID `json:"update_uuid"`
+	FailureCount  int64       `json:"failure_count"`
+	RuntimeCount  int64       `json:"runtime_count"`
+	StillOnUpdate int64       `json:"still_on_update"`
+}
+
+// Batch failure breakdown for a set of updates. All-time per update: an
+// update's failures belong to its rollout window by construction (update ids
+// are never reused), and the health score is only shown for the active one.
+// still_on_update counts failed devices whose CURRENT update is still the
+// failed one (runtime_issue devices that did not move on): the overlap
+// between the failure set and the current-device cohort, which the health
+// math needs so those devices are neither double-counted as attempts nor
+// kept in the healthy numerator. A failed device that has since moved to
+// another update (or rolled back: every update_issue) leaves the overlap by
+// construction, so the join self-corrects when a device changes update.
+func (q *Queries) UpdateFailureBreakdownByIDs(ctx context.Context, arg UpdateFailureBreakdownByIDsParams) ([]UpdateFailureBreakdownByIDsRow, error) {
+	rows, err := q.db.Query(ctx, updateFailureBreakdownByIDs, arg.AppID, arg.UpdateIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []UpdateFailureBreakdownByIDsRow
+	for rows.Next() {
+		var i UpdateFailureBreakdownByIDsRow
+		if err := rows.Scan(
+			&i.UpdateUuid,
+			&i.FailureCount,
+			&i.RuntimeCount,
+			&i.StillOnUpdate,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const updateRole = `-- name: UpdateRole :execresult
 UPDATE roles
 SET name = $2, permissions = $3, updated_at = CURRENT_TIMESTAMP
@@ -3856,8 +3877,8 @@ func (q *Queries) UpdateUserPasswordByID(ctx context.Context, arg UpdateUserPass
 }
 
 const upsertDeviceUpdateFailure = `-- name: UpsertDeviceUpdateFailure :exec
-INSERT INTO device_update_failures (app_id, eas_client_id, update_id, fatal_error)
-VALUES ($1, $2, $3, $4)
+INSERT INTO device_update_failures (app_id, eas_client_id, update_id, failure_type, fatal_error)
+VALUES ($1, $2, $3, $4, $5)
 ON CONFLICT (app_id, eas_client_id, update_id) DO UPDATE SET
     last_seen_at = CURRENT_TIMESTAMP,
     fatal_error = CASE
@@ -3870,18 +3891,21 @@ type UpsertDeviceUpdateFailureParams struct {
 	AppID       pgtype.UUID `json:"app_id"`
 	EasClientID pgtype.UUID `json:"eas_client_id"`
 	UpdateID    pgtype.UUID `json:"update_id"`
+	FailureType string      `json:"failure_type"`
 	FatalError  string      `json:"fatal_error"`
 }
 
-// Records one launch failure. Capture-once on fatal_error: the client sends
-// Expo-Fatal-Error exactly once (the poll right after the crash), so a first
-// non-empty capture is authoritative and sticky header re-sends never blank
-// or overwrite it.
+// Records one failure. Capture-once on fatal_error AND failure_type: the
+// client sends Expo-Fatal-Error exactly once (the poll right after the
+// crash), so a first non-empty capture is authoritative and sticky header
+// re-sends never blank or overwrite it; the first recorded source likewise
+// keeps its type (the health math never reads the type, display does).
 func (q *Queries) UpsertDeviceUpdateFailure(ctx context.Context, arg UpsertDeviceUpdateFailureParams) error {
 	_, err := q.db.Exec(ctx, upsertDeviceUpdateFailure,
 		arg.AppID,
 		arg.EasClientID,
 		arg.UpdateID,
+		arg.FailureType,
 		arg.FatalError,
 	)
 	return err

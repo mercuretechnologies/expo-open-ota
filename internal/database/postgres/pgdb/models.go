@@ -101,6 +101,7 @@ type DeviceUpdateFailure struct {
 	AppID       pgtype.UUID        `json:"app_id"`
 	EasClientID pgtype.UUID        `json:"eas_client_id"`
 	UpdateID    pgtype.UUID        `json:"update_id"`
+	FailureType string             `json:"failure_type"`
 	FatalError  string             `json:"fatal_error"`
 	FirstSeenAt pgtype.Timestamptz `json:"first_seen_at"`
 	LastSeenAt  pgtype.Timestamptz `json:"last_seen_at"`

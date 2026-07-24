@@ -534,14 +534,15 @@ func (s *PostgresIdentityStore) TouchDevice(ctx context.Context, appID string, e
 	return nil
 }
 
-// RecordUpdateFailures stores launch failures reported by the manifest
-// error-recovery headers, one row per (device, update). fatalError applies to
-// every listed update whose error is still unrecorded: the client sends it
-// once, on the poll where the freshly-crashed update first appears, and the
-// capture-once SQL keeps sticky re-sends from blanking it. With several ids
-// in one poll (rare) the error could stick to an older failure whose capture
-// was missed; acceptable, the crash FACT is always exact.
-func (s *PostgresIdentityStore) RecordUpdateFailures(ctx context.Context, appID string, easClientID string, updateIDs []string, fatalError string) error {
+// RecordUpdateFailures stores failures, one row per (device, update).
+// fatalError applies to every listed update whose error is still unrecorded:
+// the manifest client sends it once, on the poll where the freshly-crashed
+// update first appears, and the capture-once SQL keeps sticky re-sends from
+// blanking it. With several ids in one poll (rare) the error could stick to
+// an older failure whose capture was missed; acceptable, the crash FACT is
+// always exact. failureType is capture-once too: the first source to record
+// a (device, update) failure names it.
+func (s *PostgresIdentityStore) RecordUpdateFailures(ctx context.Context, appID string, easClientID string, updateIDs []string, fatalError string, failureType FailureType) error {
 	appUUID, err := toPgUUID(appID)
 	if err != nil {
 		return err
@@ -559,6 +560,7 @@ func (s *PostgresIdentityStore) RecordUpdateFailures(ctx context.Context, appID 
 			AppID:       appUUID,
 			EasClientID: clientUUID,
 			UpdateID:    updateUUID,
+			FailureType: string(failureType),
 			FatalError:  fatalError,
 		}); err != nil {
 			return fmt.Errorf("recording update failure: %w", err)
@@ -567,15 +569,25 @@ func (s *PostgresIdentityStore) RecordUpdateFailures(ctx context.Context, appID 
 	return nil
 }
 
-// UpdateHealth is one update's instant-T adoption and launch health, from
-// the registry alone: no ClickHouse, no SDK. DevicesOnUpdate counts every
-// device currently RUNNING the update; LaunchFailures counts devices it
-// crashed on at launch. The health ratio successes/(successes+failures) is
-// meaningful for the ACTIVE update: past updates bleed successes to their
-// successor while failures stay, so the dashboard only scores the newest one.
+// UpdateHealth is one update's instant-T adoption and health, from the
+// registry alone: no ClickHouse required on the read path. DevicesOnUpdate
+// counts every device currently RUNNING the update. UpdateIssues and
+// RuntimeIssues split the devices it failed on by source (launch crash with
+// rollback vs JS crash while running); FailedStillOn is the overlap between
+// the failure set and DevicesOnUpdate (failed devices whose current update
+// is still this one), which is what keeps the two sets addable:
+//
+//	attempts = DevicesOnUpdate + (UpdateIssues + RuntimeIssues - FailedStillOn)
+//	healthy  = DevicesOnUpdate - FailedStillOn
+//
+// The ratio healthy/attempts is meaningful for the ACTIVE update: past
+// updates bleed successes to their successor while failures stay, so the
+// dashboard only scores the newest one.
 type UpdateHealth struct {
 	DevicesOnUpdate int64
-	LaunchFailures  int64
+	UpdateIssues    int64
+	RuntimeIssues   int64
+	FailedStillOn   int64
 }
 
 // UpdateHealthByIDs returns health per update uuid; updates absent from the
@@ -608,14 +620,16 @@ func (s *PostgresIdentityStore) UpdateHealthByIDs(ctx context.Context, appID str
 		health[key] = entry
 	}
 
-	failures, err := s.engine.LaunchFailuresByUpdate(ctx, pgdb.LaunchFailuresByUpdateParams{AppID: appUUID, UpdateIds: ids})
+	failures, err := s.engine.UpdateFailureBreakdownByIDs(ctx, pgdb.UpdateFailureBreakdownByIDsParams{AppID: appUUID, UpdateIds: ids})
 	if err != nil {
-		return nil, fmt.Errorf("counting launch failures: %w", err)
+		return nil, fmt.Errorf("counting update failures: %w", err)
 	}
 	for _, row := range failures {
 		key := uuid.UUID(row.UpdateUuid.Bytes).String()
 		entry := health[key]
-		entry.LaunchFailures = row.DeviceCount
+		entry.UpdateIssues = row.FailureCount - row.RuntimeCount
+		entry.RuntimeIssues = row.RuntimeCount
+		entry.FailedStillOn = row.StillOnUpdate
 		health[key] = entry
 	}
 	return health, nil

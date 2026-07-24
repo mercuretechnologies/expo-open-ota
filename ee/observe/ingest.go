@@ -6,6 +6,7 @@ package observe
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"expo-open-ota/ee/identity"
 	"expo-open-ota/internal/handlers"
@@ -181,6 +182,16 @@ func (h *IngestHandler) HandleLogs(w http.ResponseWriter, r *http.Request) {
 	// identical re-flattened rows carry the same content_hash for query-time
 	// dedup.
 	rows := FlattenLogs(appID, batch, time.Now().UTC())
+	// JS crash reports are projected into the failure registry before the
+	// telemetry insert: like a failed identity apply, a failed projection
+	// answers 503 so the device re-sends the batch (re-recording is
+	// idempotent, the upsert dedups).
+	if err := h.recordJSCrashFailures(r.Context(), appID, rows); err != nil {
+		log.Printf("observe: recording js crash failures failed: %v", err)
+		observeBatch(resultUnavailable)
+		w.WriteHeader(http.StatusServiceUnavailable)
+		return
+	}
 	// Check-ins ride every log batch, sink or not: a no-ClickHouse deployment
 	// still keeps its registry (and update health) fresh from telemetry.
 	{
@@ -211,6 +222,75 @@ func (h *IngestHandler) HandleLogs(w http.ResponseWriter, r *http.Request) {
 
 	observeBatch(resultAccepted)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// JSCrashEventName is the documented log-event convention for reporting a JS
+// runtime crash into update health. expo-updates only ever reports
+// launch-level failures (and on the new architecture no JS throw can fail a
+// launch at all), so a JS crash while running an update is invisible to the
+// manifest path; apps report it explicitly from their error boundary:
+//
+//	Observe.logEvent('expo_open_ota_js_crash', { attributes: { message } });
+//	Observe.dispatchEvents();
+//
+// The resource attributes of such a record carry the running (= crashing)
+// update id, projected into device_update_failures as a runtime_issue. The
+// device keeps running the update (no rollback), unlike the manifest path.
+const JSCrashEventName = "expo_open_ota_js_crash"
+
+// recordJSCrashFailures projects expo_open_ota_js_crash rows into the
+// failure registry, deduped per (device, update) within the batch (the
+// upsert dedups across batches, so a crash-per-session device still counts
+// once). Rows that cannot be attributed are skipped: a forged device id is
+// meaningless and a crash of the embedded bundle (zero-uuid sentinel) is not
+// an OTA update's failure. The rows also flow to ClickHouse unchanged: this
+// is a projection, not a diversion.
+func (h *IngestHandler) recordJSCrashFailures(ctx context.Context, appID string, rows []LogRow) error {
+	if h.identityService == nil {
+		return nil
+	}
+	type deviceUpdate struct{ device, update string }
+	var seen map[deviceUpdate]bool
+	for _, row := range rows {
+		if row.EventName != JSCrashEventName {
+			continue
+		}
+		if _, err := uuid.Parse(row.EASClientID); err != nil {
+			observeRecordsDropped(reasonForgedClientID, 1)
+			continue
+		}
+		if row.UpdateID == ZeroUpdateID {
+			continue
+		}
+		key := deviceUpdate{device: row.EASClientID, update: row.UpdateID}
+		if seen[key] {
+			continue
+		}
+		if seen == nil {
+			seen = make(map[deviceUpdate]bool, 1)
+		}
+		seen[key] = true
+		if err := h.identityService.RecordUpdateFailures(ctx, appID, row.EASClientID, []string{row.UpdateID}, jsCrashMessage(row.Attributes), identity.FailureTypeRuntime); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// jsCrashMessage pulls the conventional `message` attribute out of the row's
+// leftover-attributes JSON for the fatal_error column; absent, non-string or
+// unparseable yields "" and the capture-once upsert leaves the column open
+// for a later capture.
+func jsCrashMessage(attributes string) string {
+	if attributes == "" {
+		return ""
+	}
+	var attrs map[string]any
+	if err := json.Unmarshal([]byte(attributes), &attrs); err != nil {
+		return ""
+	}
+	message, _ := attrs["message"].(string)
+	return message
 }
 
 // identityRequestsFromBatch turns a decoded logs batch into the identity

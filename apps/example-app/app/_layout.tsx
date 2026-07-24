@@ -1,4 +1,4 @@
-import Observe, { ObserveRoot, useObserve } from 'expo-observe';
+import { Observe, ObserveRoot, useObserve } from 'expo-observe';
 import { DarkTheme, DefaultTheme, ThemeProvider } from 'expo-router/react-navigation';
 import { useFonts } from 'expo-font';
 import { Stack } from 'expo-router';
@@ -19,14 +19,18 @@ function RootLayout() {
     SpaceMono: require('../assets/fonts/SpaceMono-Regular.ttf'),
   });
   const { markInteractive } = useObserve();
-  Observe.logEvent('app_started');
+
+  useEffect(() => {
+    // Once per JS session, not once per render.
+    Observe.logEvent('app_started');
+  }, []);
 
   useEffect(() => {
     if (loaded) {
       SplashScreen.hideAsync();
       markInteractive()
     }
-  }, [loaded]);
+  }, [loaded, markInteractive]);
 
   if (!loaded) {
     return null;

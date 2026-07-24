@@ -39,16 +39,33 @@ func serveIngest(handler *IngestHandler, method, path string, body []byte) *http
 	return recorder
 }
 
+type recordedFailure struct {
+	device      string
+	updateIDs   []string
+	fatal       string
+	failureType identity.FailureType
+}
+
 type recordingMutator struct {
 	// The embedded Store supplies the dashboard query methods (never called on
-	// the ingest path) so the fake satisfies identity.Store; only the three
-	// write methods below are exercised.
+	// the ingest path) so the fake satisfies identity.Store; only the write
+	// methods below are exercised.
 	identity.Store
-	sets   []map[string]any
-	unsets [][]string
-	fail   bool
+	sets         []map[string]any
+	unsets       [][]string
+	failures     []recordedFailure
+	fail         bool
+	failFailures bool
 	// hadDeadline proves the HTTP handler bounds each store operation.
 	hadDeadline bool
+}
+
+func (m *recordingMutator) RecordUpdateFailures(_ context.Context, _ string, easClientID string, updateIDs []string, fatalError string, failureType identity.FailureType) error {
+	if m.failFailures {
+		return fmt.Errorf("database is down")
+	}
+	m.failures = append(m.failures, recordedFailure{device: easClientID, updateIDs: updateIDs, fatal: fatalError, failureType: failureType})
+	return nil
 }
 
 func (m *recordingMutator) ApplySet(ctx context.Context, _ string, _ string, raw map[string]any, _ *identity.Geo) (identity.ApplyResult, error) {
@@ -136,6 +153,105 @@ func TestHandleLogsResponseContract(t *testing.T) {
 
 	t.Run("metrics stub acknowledges and drops", func(t *testing.T) {
 		recorder := serveIngest(NewIngestHandler(nil, nil, nil, nil), http.MethodPost, "/observe/app-1/p/v1/metrics", []byte(`{"resourceMetrics":[]}`))
+		require.Equal(t, http.StatusNoContent, recorder.Code)
+	})
+}
+
+// jsCrashLogsFixture: one device on a real update sends the documented
+// expo_open_ota_js_crash event twice in one backlog (a crash per session),
+// once with the conventional message attribute and once bare; a second
+// device carries no update id (embedded bundle).
+const jsCrashLogsFixture = `{
+  "resourceLogs": [
+    {
+      "resource": {
+        "attributes": [
+          { "key": "expo.eas_client.id", "value": { "stringValue": "8b9c1fe0-93b3-4b3a-8c1d-2f4a5e6b7c8d" } },
+          { "key": "expo.app.updates.id", "value": { "stringValue": "B16FA250-1B5F-42E9-A012-3F4A5E6B7C8D" } }
+        ]
+      },
+      "scopeLogs": [
+        {
+          "scope": { "name": "expo-observe", "version": "56.0.16" },
+          "logRecords": [
+            {
+              "timeUnixNano": 1767960489000000000,
+              "severityNumber": 17,
+              "severityText": "ERROR",
+              "body": { "stringValue": "" },
+              "attributes": [
+                { "key": "session.id", "value": { "stringValue": "aaaa-1111" } },
+                { "key": "event.name", "value": { "stringValue": "expo_open_ota_js_crash" } },
+                { "key": "message", "value": { "stringValue": "TypeError: undefined is not a function" } }
+              ]
+            },
+            {
+              "timeUnixNano": 1767960490000000000,
+              "severityNumber": 17,
+              "severityText": "ERROR",
+              "body": { "stringValue": "" },
+              "attributes": [
+                { "key": "session.id", "value": { "stringValue": "bbbb-2222" } },
+                { "key": "event.name", "value": { "stringValue": "expo_open_ota_js_crash" } }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "resource": {
+        "attributes": [
+          { "key": "expo.eas_client.id", "value": { "stringValue": "7a6b5c4d-3e2f-4a0b-9c8d-7e6f5a4b3c2d" } }
+        ]
+      },
+      "scopeLogs": [
+        {
+          "scope": { "name": "expo-observe", "version": "56.0.16" },
+          "logRecords": [
+            {
+              "timeUnixNano": 1767960489000000000,
+              "severityNumber": 17,
+              "severityText": "ERROR",
+              "body": { "stringValue": "" },
+              "attributes": [
+                { "key": "event.name", "value": { "stringValue": "expo_open_ota_js_crash" } },
+                { "key": "message", "value": { "stringValue": "embedded bundle crash" } }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}`
+
+func TestHandleLogsJSCrashProjection(t *testing.T) {
+	t.Run("crash events land as runtime failures, deduped per device+update", func(t *testing.T) {
+		mutator := &recordingMutator{}
+		handler := NewIngestHandler(identity.NewService(mutator, nil), nil, nil, nil)
+		recorder := serveIngest(handler, http.MethodPost, logsPath, []byte(jsCrashLogsFixture))
+		require.Equal(t, http.StatusNoContent, recorder.Code)
+		// One call: the same (device, update) pair collapses, the
+		// embedded-bundle device is skipped (no update to blame).
+		require.Len(t, mutator.failures, 1)
+		failure := mutator.failures[0]
+		require.Equal(t, "8b9c1fe0-93b3-4b3a-8c1d-2f4a5e6b7c8d", failure.device)
+		// The raw uppercase wire id was normalized by the flatten pass.
+		require.Equal(t, []string{"b16fa250-1b5f-42e9-a012-3f4a5e6b7c8d"}, failure.updateIDs)
+		require.Equal(t, "TypeError: undefined is not a function", failure.fatal)
+		require.Equal(t, identity.FailureTypeRuntime, failure.failureType)
+	})
+
+	t.Run("failure-store outage is a retryable 503", func(t *testing.T) {
+		mutator := &recordingMutator{failFailures: true}
+		handler := NewIngestHandler(identity.NewService(mutator, nil), nil, nil, nil)
+		recorder := serveIngest(handler, http.MethodPost, logsPath, []byte(jsCrashLogsFixture))
+		require.Equal(t, http.StatusServiceUnavailable, recorder.Code)
+	})
+
+	t.Run("nil identity service skips the projection", func(t *testing.T) {
+		recorder := serveIngest(NewIngestHandler(nil, nil, nil, nil), http.MethodPost, logsPath, []byte(jsCrashLogsFixture))
 		require.Equal(t, http.StatusNoContent, recorder.Code)
 	})
 }

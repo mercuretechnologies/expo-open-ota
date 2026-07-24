@@ -1251,13 +1251,14 @@ ON CONFLICT (app_id, eas_client_id) DO UPDATE SET
     current_update_id = COALESCE(EXCLUDED.current_update_id, device_identity.current_update_id);
 
 
--- Records one launch failure. Capture-once on fatal_error: the client sends
--- Expo-Fatal-Error exactly once (the poll right after the crash), so a first
--- non-empty capture is authoritative and sticky header re-sends never blank
--- or overwrite it.
+-- Records one failure. Capture-once on fatal_error AND failure_type: the
+-- client sends Expo-Fatal-Error exactly once (the poll right after the
+-- crash), so a first non-empty capture is authoritative and sticky header
+-- re-sends never blank or overwrite it; the first recorded source likewise
+-- keeps its type (the health math never reads the type, display does).
 -- name: UpsertDeviceUpdateFailure :exec
-INSERT INTO device_update_failures (app_id, eas_client_id, update_id, fatal_error)
-VALUES ($1, $2, $3, sqlc.arg(fatal_error))
+INSERT INTO device_update_failures (app_id, eas_client_id, update_id, failure_type, fatal_error)
+VALUES ($1, $2, $3, sqlc.arg(failure_type), sqlc.arg(fatal_error))
 ON CONFLICT (app_id, eas_client_id, update_id) DO UPDATE SET
     last_seen_at = CURRENT_TIMESTAMP,
     fatal_error = CASE
@@ -1293,12 +1294,26 @@ WHERE app_id = $1
   AND current_update_id = ANY(sqlc.arg(update_ids)::uuid[])
 GROUP BY current_update_id;
 
--- Batch launch-failure counts for a set of updates. All-time per update: an
+-- Batch failure breakdown for a set of updates. All-time per update: an
 -- update's failures belong to its rollout window by construction (update ids
 -- are never reused), and the health score is only shown for the active one.
--- name: LaunchFailuresByUpdate :many
-SELECT update_id AS update_uuid, COUNT(*) AS device_count
-FROM device_update_failures
-WHERE app_id = $1
-  AND update_id = ANY(sqlc.arg(update_ids)::uuid[])
-GROUP BY update_id;
+-- still_on_update counts failed devices whose CURRENT update is still the
+-- failed one (runtime_issue devices that did not move on): the overlap
+-- between the failure set and the current-device cohort, which the health
+-- math needs so those devices are neither double-counted as attempts nor
+-- kept in the healthy numerator. A failed device that has since moved to
+-- another update (or rolled back: every update_issue) leaves the overlap by
+-- construction, so the join self-corrects when a device changes update.
+-- name: UpdateFailureBreakdownByIDs :many
+SELECT f.update_id AS update_uuid,
+       COUNT(*) AS failure_count,
+       COUNT(*) FILTER (WHERE f.failure_type = 'runtime_issue') AS runtime_count,
+       COUNT(d.eas_client_id) AS still_on_update
+FROM device_update_failures f
+LEFT JOIN device_identity d
+    ON d.app_id = f.app_id
+   AND d.eas_client_id = f.eas_client_id
+   AND d.current_update_id = f.update_id
+WHERE f.app_id = $1
+  AND f.update_id = ANY(sqlc.arg(update_ids)::uuid[])
+GROUP BY f.update_id;

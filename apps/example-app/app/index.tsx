@@ -79,7 +79,7 @@ export default function HomeScreen() {
           { cancelable: false },
         )
       }
-    } catch (e) {
+    } catch {
       load(false)
     }
   }

@@ -211,7 +211,7 @@ func (r *CheckInRecorder) record(ctx context.Context, checkIn handlers.DeviceChe
 		if fatal == "" {
 			fatal = r.cache.Get(stash)
 		}
-		if err := r.identity.RecordUpdateFailures(ctx, checkIn.AppID, checkIn.EASClientID, state.failedUpdateIDs, fatal); err != nil {
+		if err := r.identity.RecordUpdateFailures(ctx, checkIn.AppID, checkIn.EASClientID, state.failedUpdateIDs, fatal, identity.FailureTypeUpdate); err != nil {
 			if state.fatalError != "" {
 				stashTTL := fatalStashTTLSeconds
 				_ = r.cache.Set(stash, state.fatalError, &stashTTL)

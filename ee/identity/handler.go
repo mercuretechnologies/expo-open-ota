@@ -310,9 +310,20 @@ const maxHealthUpdateIDs = 100
 
 type updateHealthResponse struct {
 	DevicesOnUpdate int64 `json:"devicesOnUpdate"`
-	LaunchFailures  int64 `json:"launchFailures"`
-	// HealthPercent is successes/(successes+failures) over devices that
-	// actually attempted the update; null when nothing attempted it yet.
+	// LaunchFailures is the total devices the update failed on, the sum of
+	// the two breakdowns below.
+	LaunchFailures int64 `json:"launchFailures"`
+	// UpdateIssues: crash at launch reported by the manifest error-recovery
+	// headers; the device rolled back off the update.
+	UpdateIssues int64 `json:"updateIssues"`
+	// RuntimeIssues: JS crash while running the update, reported by the
+	// documented expo_open_ota_js_crash observe event; the device is
+	// (usually) still running the update.
+	RuntimeIssues int64 `json:"runtimeIssues"`
+	// HealthPercent is healthy/attempts over devices that actually attempted
+	// the update; null when nothing attempted it yet. Failed devices still
+	// counted in devicesOnUpdate (runtime crashes without rollback) are
+	// counted once as attempts and excluded from healthy.
 	HealthPercent *float64 `json:"healthPercent"`
 }
 
@@ -354,12 +365,20 @@ func (h *IdentityHandler) UpdateHealthHandler(w http.ResponseWriter, r *http.Req
 			continue // non-UUID input: no entry, never an error
 		}
 		entry := health[parsed.String()]
+		failures := entry.UpdateIssues + entry.RuntimeIssues
 		response := updateHealthResponse{
 			DevicesOnUpdate: entry.DevicesOnUpdate,
-			LaunchFailures:  entry.LaunchFailures,
+			LaunchFailures:  failures,
+			UpdateIssues:    entry.UpdateIssues,
+			RuntimeIssues:   entry.RuntimeIssues,
 		}
-		if attempts := entry.DevicesOnUpdate + entry.LaunchFailures; attempts > 0 {
-			percent := 100 * float64(entry.DevicesOnUpdate) / float64(attempts)
+		// Every device is counted exactly once: the failure set and the
+		// current-device cohort overlap on FailedStillOn (devices that
+		// crashed but kept running the update), so attempts is the size of
+		// their union and healthy the current devices that never failed.
+		if attempts := entry.DevicesOnUpdate + failures - entry.FailedStillOn; attempts > 0 {
+			healthy := entry.DevicesOnUpdate - entry.FailedStillOn
+			percent := 100 * float64(healthy) / float64(attempts)
 			response.HealthPercent = &percent
 		}
 		out[parsed.String()] = response

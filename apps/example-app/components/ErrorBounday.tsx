@@ -1,5 +1,5 @@
 import { Component, ErrorInfo, ReactNode } from 'react';
-import Observe from 'expo-observe'
+import { Observe } from 'expo-observe';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 
 interface Props {
@@ -22,12 +22,12 @@ class ErrorBoundary extends Component<Props, State> {
   }
 
   public componentDidCatch(error: Error, errorInfo: ErrorInfo) {
-    Observe.logEvent("expo_open_ota_js_crash", {
+    Observe.logEvent('expo_open_ota_js_crash', {
       attributes: {
-        message: "crash"
-      }
-    })
-    Observe.dispatchEvents()
+        message: error.message,
+      },
+    });
+    Observe.dispatchEvents();
     console.error('Uncaught error:', error, errorInfo);
   }
 

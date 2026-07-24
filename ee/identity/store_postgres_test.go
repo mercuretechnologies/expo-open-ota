@@ -697,20 +697,22 @@ func TestRecordUpdateFailuresCaptureOnce(t *testing.T) {
 	require.NoError(t, store.TouchDevice(ctx, appID, deviceID, nil, nil))
 
 	// The crash poll captures the fatal error...
-	require.NoError(t, store.RecordUpdateFailures(ctx, appID, deviceID, []string{failedUpdate}, "TypeError: boom"))
+	require.NoError(t, store.RecordUpdateFailures(ctx, appID, deviceID, []string{failedUpdate}, "TypeError: boom", FailureTypeUpdate))
 	// ...sticky re-sends carry no error and must not blank it, nor duplicate.
-	require.NoError(t, store.RecordUpdateFailures(ctx, appID, deviceID, []string{failedUpdate}, ""))
-	// A LATER error must not overwrite the first capture either.
-	require.NoError(t, store.RecordUpdateFailures(ctx, appID, deviceID, []string{failedUpdate}, "different error"))
+	require.NoError(t, store.RecordUpdateFailures(ctx, appID, deviceID, []string{failedUpdate}, "", FailureTypeUpdate))
+	// A LATER error must not overwrite the first capture, and neither must a
+	// later source overwrite the recorded type.
+	require.NoError(t, store.RecordUpdateFailures(ctx, appID, deviceID, []string{failedUpdate}, "different error", FailureTypeRuntime))
 	// Forged ids in the list are skipped without failing.
-	require.NoError(t, store.RecordUpdateFailures(ctx, appID, deviceID, []string{"garbage", failedUpdate}, ""))
+	require.NoError(t, store.RecordUpdateFailures(ctx, appID, deviceID, []string{"garbage", failedUpdate}, "", FailureTypeUpdate))
 
 	var rows int
-	var fatal string
+	var fatal, failureType string
 	require.NoError(t, pool.QueryRow(ctx,
-		"SELECT COUNT(*), MAX(fatal_error) FROM device_update_failures WHERE app_id = $1 AND update_id = $2", appID, failedUpdate).Scan(&rows, &fatal))
+		"SELECT COUNT(*), MAX(fatal_error), MAX(failure_type) FROM device_update_failures WHERE app_id = $1 AND update_id = $2", appID, failedUpdate).Scan(&rows, &fatal, &failureType))
 	require.Equal(t, 1, rows, "one failure row per (device, update), sticky re-sends collapse")
 	require.Equal(t, "TypeError: boom", fatal)
+	require.Equal(t, string(FailureTypeUpdate), failureType)
 }
 
 func TestUpdateHealthCounts(t *testing.T) {
@@ -725,7 +727,7 @@ func TestUpdateHealthCounts(t *testing.T) {
 	require.NoError(t, store.TouchDevice(ctx, appID, d2, nil, &updateA))
 	require.NoError(t, store.TouchDevice(ctx, appID, d3, nil, &updateB))
 	require.NoError(t, store.TouchDevice(ctx, appID, d4, nil, nil))
-	require.NoError(t, store.RecordUpdateFailures(ctx, appID, d4, []string{updateB}, "crashed at launch"))
+	require.NoError(t, store.RecordUpdateFailures(ctx, appID, d4, []string{updateB}, "crashed at launch", FailureTypeUpdate))
 
 	appUUID, err := toPgUUID(appID)
 	require.NoError(t, err)
@@ -753,13 +755,24 @@ func TestUpdateHealthByIDs(t *testing.T) {
 	ctx := context.Background()
 	updateA, updateB, updateGhost := uuid.NewString(), uuid.NewString(), uuid.NewString()
 
-	// 2 devices running A this month, 1 running B; B also crashed on another.
+	// 2 devices running A this month, 1 running B; B also crashed at launch
+	// on d4 (rolled back, current unknown).
 	d1, d2, d3, d4 := uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString()
 	require.NoError(t, store.TouchDevice(ctx, appID, d1, nil, &updateA))
 	require.NoError(t, store.TouchDevice(ctx, appID, d2, nil, &updateA))
 	require.NoError(t, store.TouchDevice(ctx, appID, d3, nil, &updateB))
 	require.NoError(t, store.TouchDevice(ctx, appID, d4, nil, nil))
-	require.NoError(t, store.RecordUpdateFailures(ctx, appID, d4, []string{updateB}, "boom"))
+	require.NoError(t, store.RecordUpdateFailures(ctx, appID, d4, []string{updateB}, "boom", FailureTypeUpdate))
+
+	// JS crashes on B: d5 crashed and still runs it (the usual runtime_issue
+	// shape), d6 crashed then moved on to A (the mismatch case the overlap
+	// join must self-correct).
+	d5, d6 := uuid.NewString(), uuid.NewString()
+	require.NoError(t, store.TouchDevice(ctx, appID, d5, nil, &updateB))
+	require.NoError(t, store.RecordUpdateFailures(ctx, appID, d5, []string{updateB}, "TypeError: boom", FailureTypeRuntime))
+	require.NoError(t, store.TouchDevice(ctx, appID, d6, nil, &updateB))
+	require.NoError(t, store.RecordUpdateFailures(ctx, appID, d6, []string{updateB}, "", FailureTypeRuntime))
+	require.NoError(t, store.TouchDevice(ctx, appID, d6, nil, &updateA))
 
 	// Adoption is the TOTAL population on the update: a device last seen a
 	// month ago still runs it and still counts.
@@ -772,10 +785,13 @@ func TestUpdateHealthByIDs(t *testing.T) {
 
 	health, err := store.UpdateHealthByIDs(ctx, appID, []string{updateA, updateB, updateGhost, "not-a-uuid"})
 	require.NoError(t, err)
-	require.EqualValues(t, 3, health[updateA].DevicesOnUpdate)
-	require.EqualValues(t, 0, health[updateA].LaunchFailures)
-	require.EqualValues(t, 1, health[updateB].DevicesOnUpdate)
-	require.EqualValues(t, 1, health[updateB].LaunchFailures)
+	require.EqualValues(t, 4, health[updateA].DevicesOnUpdate, "d1, d2, dOld and the moved-on d6")
+	require.Zero(t, health[updateA].UpdateIssues)
+	require.Zero(t, health[updateA].RuntimeIssues)
+	require.EqualValues(t, 2, health[updateB].DevicesOnUpdate, "d3 and the crashed-but-running d5")
+	require.EqualValues(t, 1, health[updateB].UpdateIssues)
+	require.EqualValues(t, 2, health[updateB].RuntimeIssues)
+	require.EqualValues(t, 1, health[updateB].FailedStillOn, "d5 overlaps; d4 rolled back, d6 moved on")
 	// An update nothing attempted has no entry: zero-valued on read.
 	require.Zero(t, health[updateGhost])
 }

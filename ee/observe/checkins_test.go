@@ -31,6 +31,7 @@ type fakeTouchStore struct {
 	lastCurrent    *string
 	failedRecorded [][]string
 	lastFatal      string
+	lastType       identity.FailureType
 }
 
 func (f *fakeTouchStore) TouchDevice(_ context.Context, _ string, _ string, _ *identity.Geo, currentUpdateID *string) error {
@@ -44,13 +45,14 @@ func (f *fakeTouchStore) TouchDevice(_ context.Context, _ string, _ string, _ *i
 	return nil
 }
 
-func (f *fakeTouchStore) RecordUpdateFailures(_ context.Context, _ string, _ string, updateIDs []string, fatalError string) error {
+func (f *fakeTouchStore) RecordUpdateFailures(_ context.Context, _ string, _ string, updateIDs []string, fatalError string, failureType identity.FailureType) error {
 	if f.failFailures.Load() {
 		return errors.New("failures write refused")
 	}
 	f.mu.Lock()
 	f.failedRecorded = append(f.failedRecorded, updateIDs)
 	f.lastFatal = fatalError
+	f.lastType = failureType
 	f.mu.Unlock()
 	return nil
 }
@@ -141,6 +143,7 @@ func TestRecordRecordsFailures(t *testing.T) {
 	store.mu.Lock()
 	assert.Equal(t, []string{testUpdateB}, store.failedRecorded[0])
 	assert.Equal(t, "TypeError: undefined is not a function", store.lastFatal)
+	assert.Equal(t, identity.FailureTypeUpdate, store.lastType)
 	store.mu.Unlock()
 	assert.EqualValues(t, 1, store.calls.Load())
 }

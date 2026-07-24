@@ -43,10 +43,25 @@ type IdentityMutator interface {
 	// batch): bump-or-register, uncapped, the whole fleet is the registry.
 	// currentUpdateID nil = this contact does not know, keep the known value.
 	TouchDevice(ctx context.Context, appID string, easClientID string, geo *Geo, currentUpdateID *string) error
-	// RecordUpdateFailures stores manifest-reported launch failures per
-	// (device, update), fatal_error captured once.
-	RecordUpdateFailures(ctx context.Context, appID string, easClientID string, updateIDs []string, fatalError string) error
+	// RecordUpdateFailures stores failures per (device, update), fatal_error
+	// and failure_type captured once.
+	RecordUpdateFailures(ctx context.Context, appID string, easClientID string, updateIDs []string, fatalError string, failureType FailureType) error
 }
+
+// FailureType tags where a device_update_failures row came from, which is
+// also what it means for the device's current update:
+//
+//	FailureTypeUpdate   manifest error-recovery headers: crash at launch,
+//	                    the device ROLLED BACK off the update.
+//	FailureTypeRuntime  the expo_open_ota_js_crash observe event: a JS crash
+//	                    while running the update, which expo-updates never
+//	                    reports; the device KEEPS RUNNING the update.
+type FailureType string
+
+const (
+	FailureTypeUpdate  FailureType = "update_issue"
+	FailureTypeRuntime FailureType = "runtime_issue"
+)
 
 // Store is the full data surface the service needs: the ingest write path plus
 // the dashboard read/CRUD queries. *PostgresIdentityStore implements it. The
@@ -121,10 +136,11 @@ func (s *Service) TouchDevice(ctx context.Context, appID string, easClientID str
 	return s.store.TouchDevice(ctx, appID, easClientID, geo, currentUpdateID)
 }
 
-// RecordUpdateFailures is the manifest error-recovery sink: launch crashes
-// land in Postgres so update health works with no ClickHouse and no SDK.
-func (s *Service) RecordUpdateFailures(ctx context.Context, appID string, easClientID string, updateIDs []string, fatalError string) error {
-	return s.store.RecordUpdateFailures(ctx, appID, easClientID, updateIDs, fatalError)
+// RecordUpdateFailures is the failure sink for both sources (manifest error
+// recovery, expo_open_ota_js_crash events): failures land in Postgres so
+// update health works with no ClickHouse and no SDK.
+func (s *Service) RecordUpdateFailures(ctx context.Context, appID string, easClientID string, updateIDs []string, fatalError string, failureType FailureType) error {
+	return s.store.RecordUpdateFailures(ctx, appID, easClientID, updateIDs, fatalError, failureType)
 }
 
 // Request is one identity operation extracted from a log event.
