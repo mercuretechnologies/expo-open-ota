@@ -385,6 +385,7 @@ func (s *PostgresUpdateStore) GetUpdateFeed(ctx context.Context, appId string, q
 			},
 			Branch:         row.BranchName,
 			RuntimeVersion: row.RuntimeVersion,
+			HealthRelevant: row.HealthRelevant,
 			BranchID:       row.BranchID,
 			FeedCreatedAt:  row.CreatedAt.Time,
 		}

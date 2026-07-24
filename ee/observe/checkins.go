@@ -228,17 +228,21 @@ func (r *CheckInRecorder) record(ctx context.Context, checkIn handlers.DeviceChe
 	return r.identity.TouchDevice(ctx, checkIn.AppID, checkIn.EASClientID, checkIn.RemoteIP, currentUpdate)
 }
 
+const maxFailedUpdateIDsPerCheckIn = 5
+
 // ParseFailedUpdateIDs reads the Expo-Recent-Failed-Update-IDs header: a
 // structured-field list of quoted lowercase UUIDs (`"id1", "id2"`, RFC 8941
 // serialization of expo-updates' StringList). Hand-parsed: values are plain
 // quoted strings with no parameters, and tolerance matters more than spec
 // completeness on an unauthenticated header. Anything that does not parse as
-// a UUID is dropped; output is canonical lowercase.
+// a UUID is dropped; output is canonical lowercase, deduplicated and capped so
+// one unauthenticated manifest poll cannot fan out into unbounded SQL writes.
 func ParseFailedUpdateIDs(raw string) []string {
 	if raw == "" {
 		return nil
 	}
-	var ids []string
+	ids := make([]string, 0, maxFailedUpdateIDsPerCheckIn)
+	seen := make(map[string]struct{}, maxFailedUpdateIDsPerCheckIn)
 	for _, part := range strings.Split(raw, ",") {
 		part = strings.TrimSpace(part)
 		part = strings.Trim(part, `"`)
@@ -246,7 +250,18 @@ func ParseFailedUpdateIDs(raw string) []string {
 		if err != nil {
 			continue
 		}
-		ids = append(ids, parsed.String())
+		id := parsed.String()
+		if _, duplicate := seen[id]; duplicate {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+		if len(ids) == maxFailedUpdateIDsPerCheckIn {
+			break
+		}
+	}
+	if len(ids) == 0 {
+		return nil
 	}
 	return ids
 }

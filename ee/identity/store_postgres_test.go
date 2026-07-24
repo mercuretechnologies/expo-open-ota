@@ -63,6 +63,29 @@ func seedApp(t *testing.T, pool *pgxpool.Pool) string {
 	return appID
 }
 
+func seedPublishedUpdate(t *testing.T, pool *pgxpool.Pool, appID, updateID string) {
+	t.Helper()
+	ctx := context.Background()
+	suffix := updateID[:8]
+	var branchID, runtimeVersionID int64
+	require.NoError(t, pool.QueryRow(ctx,
+		"INSERT INTO branches (app_id, name) VALUES ($1, $2) RETURNING id",
+		appID, "health-"+suffix).Scan(&branchID))
+	require.NoError(t, pool.QueryRow(ctx,
+		"INSERT INTO runtime_versions (app_id, version) VALUES ($1, $2) RETURNING id",
+		appID, "health-"+suffix).Scan(&runtimeVersionID))
+	_, err := pool.Exec(ctx, `
+		INSERT INTO updates
+			(id, update_uuid, branch_id, runtime_version_id, update_type, commit_hash, platform, checked_at)
+		VALUES (1, $1, $2, $3, 0, 'health-test', 'ios', CURRENT_TIMESTAMP)`,
+		updateID, branchID, runtimeVersionID)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), "DELETE FROM branches WHERE id = $1", branchID)
+		_, _ = pool.Exec(context.Background(), "DELETE FROM runtime_versions WHERE id = $1", runtimeVersionID)
+	})
+}
+
 func declareKey(t *testing.T, store *PostgresIdentityStore, appID, key string, valueType ValueType) {
 	t.Helper()
 	_, err := store.UpsertSchemaKey(context.Background(), appID, KeySpec{Key: key, Type: valueType, MaxLength: DefaultMaxLength})
@@ -693,6 +716,7 @@ func TestRecordUpdateFailuresCaptureOnce(t *testing.T) {
 	ctx := context.Background()
 	deviceID := uuid.NewString()
 	failedUpdate := uuid.NewString()
+	seedPublishedUpdate(t, pool, appID, failedUpdate)
 
 	require.NoError(t, store.TouchDevice(ctx, appID, deviceID, nil, nil))
 
@@ -715,11 +739,31 @@ func TestRecordUpdateFailuresCaptureOnce(t *testing.T) {
 	require.Equal(t, string(FailureTypeUpdate), failureType)
 }
 
+func TestRecordUpdateFailuresRejectsAnotherAppsUpdate(t *testing.T) {
+	store, pool := setupIdentityStore(t)
+	appID := seedApp(t, pool)
+	otherAppID := seedApp(t, pool)
+	foreignUpdate := uuid.NewString()
+	seedPublishedUpdate(t, pool, otherAppID, foreignUpdate)
+
+	require.NoError(t, store.RecordUpdateFailures(
+		context.Background(), appID, uuid.NewString(), []string{foreignUpdate},
+		"forged", FailureTypeUpdate,
+	))
+
+	var rows int
+	require.NoError(t, pool.QueryRow(context.Background(),
+		"SELECT COUNT(*) FROM device_update_failures WHERE app_id = $1 AND update_id = $2",
+		appID, foreignUpdate).Scan(&rows))
+	require.Zero(t, rows)
+}
+
 func TestUpdateHealthCounts(t *testing.T) {
 	store, pool := setupIdentityStore(t)
 	appID := seedApp(t, pool)
 	ctx := context.Background()
 	updateA, updateB := uuid.NewString(), uuid.NewString()
+	seedPublishedUpdate(t, pool, appID, updateB)
 
 	// 2 devices on A, 1 on B, 1 on the embedded bundle; B crashed on one.
 	d1, d2, d3, d4 := uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString()
@@ -754,6 +798,7 @@ func TestUpdateHealthByIDs(t *testing.T) {
 	appID := seedApp(t, pool)
 	ctx := context.Background()
 	updateA, updateB, updateGhost := uuid.NewString(), uuid.NewString(), uuid.NewString()
+	seedPublishedUpdate(t, pool, appID, updateB)
 
 	// 2 devices running A this month, 1 running B; B also crashed at launch
 	// on d4 (rolled back, current unknown).

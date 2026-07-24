@@ -559,7 +559,7 @@ func (s *PostgresIdentityStore) RecordUpdateFailures(ctx context.Context, appID 
 		if err := s.engine.UpsertDeviceUpdateFailure(ctx, pgdb.UpsertDeviceUpdateFailureParams{
 			AppID:       appUUID,
 			EasClientID: clientUUID,
-			UpdateID:    updateUUID,
+			UpdateUuid:  updateUUID,
 			FailureType: string(failureType),
 			FatalError:  fatalError,
 		}); err != nil {

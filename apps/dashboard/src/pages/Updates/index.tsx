@@ -251,7 +251,12 @@ export const Updates = () => {
   const updates = useMemo(() => query.data?.pages.flatMap(page => page.items) ?? [], [query.data]);
   const healthIdBatches = useMemo(() => {
     const updateUUIDs = Array.from(
-      new Set(updates.map(update => update.updateUUID).filter(isUuid))
+      new Set(
+        updates
+          .filter(update => update.healthRelevant)
+          .map(update => update.updateUUID)
+          .filter(isUuid)
+      )
     );
     const batches: string[][] = [];
     for (let index = 0; index < updateUUIDs.length; index += healthBatchSize) {
@@ -621,7 +626,9 @@ export const Updates = () => {
                   update => update.rolloutPercentage != null
                 )?.rolloutPercentage;
                 const groupHealth = aggregateUpdateHealth(
-                  group.updates.map(update => healthByUuid[update.updateUUID])
+                  group.updates
+                    .filter(update => update.healthRelevant)
+                    .map(update => healthByUuid[update.updateUUID])
                 );
                 return (
                   <Fragment key={group.key}>
@@ -730,12 +737,16 @@ export const Updates = () => {
                             <PlatformIcon platform={update.platform} />
                           </TableCell>
                           <TableCell className="text-right font-medium tabular-nums">
-                            {healthByUuid[update.updateUUID]
+                            {update.healthRelevant && healthByUuid[update.updateUUID]
                               ? healthByUuid[update.updateUUID].devicesOnUpdate.toLocaleString()
                               : '—'}
                           </TableCell>
                           <TableCell>
-                            <HealthBadge health={healthByUuid[update.updateUUID]} />
+                            {update.healthRelevant ? (
+                              <HealthBadge health={healthByUuid[update.updateUUID]} />
+                            ) : (
+                              <span className="text-muted-foreground/60">—</span>
+                            )}
                           </TableCell>
                           <TableCell>
                             <CommitLabel value={update.commitHash} />

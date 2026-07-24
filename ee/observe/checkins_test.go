@@ -10,6 +10,7 @@ import (
 	"expo-open-ota/ee/identity"
 	"expo-open-ota/internal/cache"
 	"expo-open-ota/internal/handlers"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -197,6 +198,18 @@ func TestParseFailedUpdateIDs(t *testing.T) {
 	// Uppercase normalizes, unquoted tolerated, garbage dropped.
 	assert.Equal(t, []string{testUpdateA},
 		ParseFailedUpdateIDs(`"9B3B89B6-5A0D-4A57-B1F5-6E1D5B7C2A10", "not-a-uuid"`))
+	// One manifest can report at most five distinct failures. Duplicates do
+	// not consume the cap or trigger duplicate writes.
+	extra := []string{
+		"11111111-1111-4111-8111-111111111111",
+		"22222222-2222-4222-8222-222222222222",
+		"33333333-3333-4333-8333-333333333333",
+		"44444444-4444-4444-8444-444444444444",
+	}
+	raw := `"` + testUpdateA + `", "` + testUpdateA + `", "` +
+		strings.Join(extra, `", "`) + `", "` + testUpdateB + `"`
+	assert.Equal(t, append([]string{testUpdateA}, extra...),
+		ParseFailedUpdateIDs(raw))
 	assert.Nil(t, ParseFailedUpdateIDs(""))
 	assert.Nil(t, ParseFailedUpdateIDs(`totally, broken, garbage`))
 }
