@@ -27,6 +27,12 @@ const packageAdvisoryLockID = 823672942
 // Upper bound on waiting for the other test packages to finish.
 const packageLockTimeout = 5 * time.Minute
 
+// A blocking pg_advisory_lock query remains an active transaction while it
+// waits. CREATE INDEX CONCURRENTLY in the lock holder then waits for that
+// transaction, creating a cycle. Polling the non-blocking variant lets each
+// failed attempt finish before the migrator checks for active transactions.
+const packageLockRetryInterval = 100 * time.Millisecond
+
 // RunSerialized runs the package's tests under a Postgres advisory lock shared
 // by every test package that uses TEST_DATABASE_URL, so at most one of them
 // touches the database at a time. Without the env var it just runs the tests
@@ -53,9 +59,38 @@ func RunSerialized(m *testing.M) int {
 		log.Fatalf("pgtest: failed to acquire connection for the package lock: %v", err)
 	}
 	defer conn.Close()
-	if _, err := conn.ExecContext(ctx, "SELECT pg_advisory_lock($1)", packageAdvisoryLockID); err != nil {
+	if err := waitForPackageLock(ctx, packageLockRetryInterval, func(ctx context.Context) (bool, error) {
+		var acquired bool
+		err := conn.QueryRowContext(ctx, "SELECT pg_try_advisory_lock($1)", packageAdvisoryLockID).Scan(&acquired)
+		return acquired, err
+	}); err != nil {
 		log.Fatalf("pgtest: failed to acquire the package lock: %v", err)
 	}
 
 	return m.Run()
+}
+
+func waitForPackageLock(
+	ctx context.Context,
+	retryInterval time.Duration,
+	tryLock func(context.Context) (bool, error),
+) error {
+	retry := time.NewTicker(retryInterval)
+	defer retry.Stop()
+
+	for {
+		acquired, err := tryLock(ctx)
+		if err != nil {
+			return err
+		}
+		if acquired {
+			return nil
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-retry.C:
+		}
+	}
 }
