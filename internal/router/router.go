@@ -2,6 +2,7 @@ package infrastructure
 
 import (
 	"expo-open-ota/config"
+	"expo-open-ota/ee/observe"
 	"expo-open-ota/ee/rbac"
 	dashutils "expo-open-ota/internal/dashboard"
 	"expo-open-ota/internal/metrics"
@@ -64,6 +65,21 @@ func NewRouter(container *AppContainer) *mux.Router {
 	appSubrouter.HandleFunc("/markUpdateAsUploaded/{BRANCH}", container.UploadHandler.MarkUpdateAsUploadedHandler).Methods(http.MethodPost)
 	appSubrouter.HandleFunc("/rollback/{BRANCH}", container.RollbackHandler.HandleRollback).Methods(http.MethodPost)
 	appSubrouter.HandleFunc("/republish/{BRANCH}", container.RepublishHandler.HandleRepublish).Methods(http.MethodPost)
+
+	// expo-observe ingestion (ee/observe), all under one /observe prefix. The
+	// operator sets extra.eas.observe.endpointUrl to
+	// https://<host>/observe/{APP_ID}; the SDK appends /{projectId}/v1/logs
+	// with the app's REAL EAS project id (used by EAS builds, never equal to
+	// our APP_ID), so the PROJECT_ID segment is deliberately ignored, exactly
+	// as the SDK itself never validates it. Exact paths, no trailing-slash
+	// variant: a gorilla 301 would turn the POST into a bodyless GET.
+	observeSubrouter := r.PathPrefix("/observe/{APP_ID}").Subrouter()
+	// The app check is memoized so telemetry (which fires on every
+	// app-background of every device) does not issue an uncached primary-key
+	// query per request.
+	observeSubrouter.Use(observe.CachedAppResolverMiddleware(container.AppRepo))
+	observeSubrouter.HandleFunc("/{PROJECT_ID}/v1/logs", container.ObserveIngestHandler.HandleLogs).Methods(http.MethodPost)
+	observeSubrouter.HandleFunc("/{PROJECT_ID}/v1/metrics", container.ObserveIngestHandler.HandleMetrics).Methods(http.MethodPost)
 
 	r.HandleFunc("/manifest", container.ExpoProtocolHandler.HandleManifest).Methods(http.MethodGet)
 	r.HandleFunc("/assets", container.ExpoProtocolHandler.HandleAssets).Methods(http.MethodGet)
@@ -238,5 +254,15 @@ func NewRouter(container *AppContainer) *mux.Router {
 	appAuthSubrouter.HandleFunc("/apiKeys/restrictions", container.ApiKeyRestrictionHandler.GetApiKeyRestrictionsHandler).Methods(http.MethodGet)
 	appAuthSubrouter.Handle("/apiKeys/{API_KEY_ID}/restrictions", requirePermission(rbac.PermApiKeysManage)(http.HandlerFunc(container.ApiKeyRestrictionHandler.SetApiKeyRestrictionsHandler))).Methods(http.MethodPut)
 	appAuthSubrouter.Handle("/branches/{BRANCH}/protection", requirePermission(rbac.PermBranchProtect)(http.HandlerFunc(container.ApiKeyRestrictionHandler.SetBranchProtectionHandler))).Methods(http.MethodPut)
+	// Device identity (ee/identity). Reads stay open to any app viewer; shaping
+	// the allowlist needs the identity:manage permission (admins bypass it).
+	// Free up to 1000 devices/MAU without a license, enterprise beyond (the
+	// freemium gate + eviction cap land in a later batch, in identity.Service).
+	appAuthSubrouter.HandleFunc("/identity/schema", container.IdentityHandler.GetSchemaHandler).Methods(http.MethodGet)
+	appAuthSubrouter.Handle("/identity/schema/{KEY}", requirePermission(rbac.PermIdentityManage)(http.HandlerFunc(container.IdentityHandler.UpsertSchemaKeyHandler))).Methods(http.MethodPut)
+	appAuthSubrouter.Handle("/identity/schema/{KEY}", requirePermission(rbac.PermIdentityManage)(http.HandlerFunc(container.IdentityHandler.DeleteSchemaKeyHandler))).Methods(http.MethodDelete)
+	appAuthSubrouter.HandleFunc("/identity/values", container.IdentityHandler.SearchValuesHandler).Methods(http.MethodGet)
+	appAuthSubrouter.HandleFunc("/identity/devices", container.IdentityHandler.ListDevicesHandler).Methods(http.MethodGet)
+	appAuthSubrouter.HandleFunc("/identity/devices/{EAS_CLIENT_ID}", container.IdentityHandler.GetDeviceHandler).Methods(http.MethodGet)
 	return r
 }

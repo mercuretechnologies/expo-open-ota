@@ -93,6 +93,17 @@ func (q *Queries) CountAuditLogEvents(ctx context.Context, arg CountAuditLogEven
 	return count, err
 }
 
+const countDevices = `-- name: CountDevices :one
+SELECT COUNT(*) FROM device_identity WHERE app_id = $1
+`
+
+func (q *Queries) CountDevices(ctx context.Context, appID pgtype.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countDevices, appID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countGrantsByRole = `-- name: CountGrantsByRole :one
 SELECT COUNT(*) FROM user_app_grants
 WHERE role_id = $1
@@ -136,6 +147,23 @@ func (q *Queries) CountGrantsPerUser(ctx context.Context) ([]CountGrantsPerUserR
 		return nil, err
 	}
 	return items, nil
+}
+
+const decrementIdentityValueStat = `-- name: DecrementIdentityValueStat :exec
+UPDATE identity_value_stats
+SET device_count = GREATEST(device_count - 1, 0)
+WHERE app_id = $1 AND key = $2 AND value = $3
+`
+
+type DecrementIdentityValueStatParams struct {
+	AppID pgtype.UUID `json:"app_id"`
+	Key   string      `json:"key"`
+	Value string      `json:"value"`
+}
+
+func (q *Queries) DecrementIdentityValueStat(ctx context.Context, arg DecrementIdentityValueStatParams) error {
+	_, err := q.db.Exec(ctx, decrementIdentityValueStat, arg.AppID, arg.Key, arg.Value)
+	return err
 }
 
 const deleteAppByID = `-- name: DeleteAppByID :execresult
@@ -197,12 +225,59 @@ func (q *Queries) DeleteChannelRollout(ctx context.Context, arg DeleteChannelRol
 	return result.RowsAffected(), nil
 }
 
+const deleteDevices = `-- name: DeleteDevices :exec
+DELETE FROM device_identity
+WHERE app_id = $1 AND eas_client_id = ANY($2::uuid[])
+`
+
+type DeleteDevicesParams struct {
+	AppID     pgtype.UUID   `json:"app_id"`
+	ClientIds []pgtype.UUID `json:"client_ids"`
+}
+
+func (q *Queries) DeleteDevices(ctx context.Context, arg DeleteDevicesParams) error {
+	_, err := q.db.Exec(ctx, deleteDevices, arg.AppID, arg.ClientIds)
+	return err
+}
+
 const deleteEnterpriseLicense = `-- name: DeleteEnterpriseLicense :exec
 DELETE FROM enterprise_license
 `
 
 func (q *Queries) DeleteEnterpriseLicense(ctx context.Context) error {
 	_, err := q.db.Exec(ctx, deleteEnterpriseLicense)
+	return err
+}
+
+const deleteIdentitySchemaKey = `-- name: DeleteIdentitySchemaKey :execresult
+DELETE FROM identity_schema
+WHERE app_id = $1 AND key = $2
+`
+
+type DeleteIdentitySchemaKeyParams struct {
+	AppID pgtype.UUID `json:"app_id"`
+	Key   string      `json:"key"`
+}
+
+func (q *Queries) DeleteIdentitySchemaKey(ctx context.Context, arg DeleteIdentitySchemaKeyParams) (pgconn.CommandTag, error) {
+	return q.db.Exec(ctx, deleteIdentitySchemaKey, arg.AppID, arg.Key)
+}
+
+const deleteIdentityValueStatsForKey = `-- name: DeleteIdentityValueStatsForKey :exec
+DELETE FROM identity_value_stats
+WHERE app_id = $1 AND key = $2
+`
+
+type DeleteIdentityValueStatsForKeyParams struct {
+	AppID pgtype.UUID `json:"app_id"`
+	Key   string      `json:"key"`
+}
+
+// Wipes the autocomplete entries of a key when it leaves the allowlist, so
+// searchMetadata never suggests values of a key the operator removed. The
+// values already merged into device_identity.metadata are left in place.
+func (q *Queries) DeleteIdentityValueStatsForKey(ctx context.Context, arg DeleteIdentityValueStatsForKeyParams) error {
+	_, err := q.db.Exec(ctx, deleteIdentityValueStatsForKey, arg.AppID, arg.Key)
 	return err
 }
 
@@ -253,6 +328,48 @@ WHERE users.id = $1
 // an account that cannot sign in is no safety net.
 func (q *Queries) DeleteUserByID(ctx context.Context, id pgtype.UUID) (pgconn.CommandTag, error) {
 	return q.db.Exec(ctx, deleteUserByID, id)
+}
+
+const deleteZeroIdentityValueStats = `-- name: DeleteZeroIdentityValueStats :exec
+DELETE FROM identity_value_stats
+WHERE app_id = $1 AND key = $2 AND value = $3 AND device_count <= 0
+`
+
+type DeleteZeroIdentityValueStatsParams struct {
+	AppID pgtype.UUID `json:"app_id"`
+	Key   string      `json:"key"`
+	Value string      `json:"value"`
+}
+
+func (q *Queries) DeleteZeroIdentityValueStats(ctx context.Context, arg DeleteZeroIdentityValueStatsParams) error {
+	_, err := q.db.Exec(ctx, deleteZeroIdentityValueStats, arg.AppID, arg.Key, arg.Value)
+	return err
+}
+
+const ensureDeviceIdentity = `-- name: EnsureDeviceIdentity :execrows
+INSERT INTO device_identity (app_id, eas_client_id)
+VALUES ($1, $2)
+ON CONFLICT (app_id, eas_client_id) DO NOTHING
+`
+
+type EnsureDeviceIdentityParams struct {
+	AppID       pgtype.UUID `json:"app_id"`
+	EasClientID pgtype.UUID `json:"eas_client_id"`
+}
+
+// Creates the row if this install was never seen. Split from the update on
+// purpose: FOR UPDATE cannot lock a row that does not exist yet, so two
+// concurrent first identifies of the same install would both merge against
+// an empty map and one would silently win. Insert-then-lock serializes them.
+// Returns the number of rows inserted: 1 when this install is brand new, 0
+// when it already existed. The free-tier device cap only needs to run on a
+// genuine new-device insert, so the caller keys the count/eviction off this.
+func (q *Queries) EnsureDeviceIdentity(ctx context.Context, arg EnsureDeviceIdentityParams) (int64, error) {
+	result, err := q.db.Exec(ctx, ensureDeviceIdentity, arg.AppID, arg.EasClientID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const getActiveRolloutUpdates = `-- name: GetActiveRolloutUpdates :many
@@ -861,6 +978,61 @@ func (q *Queries) GetChannelsByAppID(ctx context.Context, appID pgtype.UUID) ([]
 		return nil, err
 	}
 	return items, nil
+}
+
+const getDeviceIdentity = `-- name: GetDeviceIdentity :one
+SELECT app_id, eas_client_id, metadata, country_code, city, lat, lng, first_seen_at, last_seen_at FROM device_identity
+WHERE app_id = $1 AND eas_client_id = $2
+`
+
+type GetDeviceIdentityParams struct {
+	AppID       pgtype.UUID `json:"app_id"`
+	EasClientID pgtype.UUID `json:"eas_client_id"`
+}
+
+func (q *Queries) GetDeviceIdentity(ctx context.Context, arg GetDeviceIdentityParams) (DeviceIdentity, error) {
+	row := q.db.QueryRow(ctx, getDeviceIdentity, arg.AppID, arg.EasClientID)
+	var i DeviceIdentity
+	err := row.Scan(
+		&i.AppID,
+		&i.EasClientID,
+		&i.Metadata,
+		&i.CountryCode,
+		&i.City,
+		&i.Lat,
+		&i.Lng,
+		&i.FirstSeenAt,
+		&i.LastSeenAt,
+	)
+	return i, err
+}
+
+const getDeviceIdentityForUpdate = `-- name: GetDeviceIdentityForUpdate :one
+SELECT app_id, eas_client_id, metadata, country_code, city, lat, lng, first_seen_at, last_seen_at FROM device_identity
+WHERE app_id = $1 AND eas_client_id = $2
+FOR UPDATE
+`
+
+type GetDeviceIdentityForUpdateParams struct {
+	AppID       pgtype.UUID `json:"app_id"`
+	EasClientID pgtype.UUID `json:"eas_client_id"`
+}
+
+func (q *Queries) GetDeviceIdentityForUpdate(ctx context.Context, arg GetDeviceIdentityForUpdateParams) (DeviceIdentity, error) {
+	row := q.db.QueryRow(ctx, getDeviceIdentityForUpdate, arg.AppID, arg.EasClientID)
+	var i DeviceIdentity
+	err := row.Scan(
+		&i.AppID,
+		&i.EasClientID,
+		&i.Metadata,
+		&i.CountryCode,
+		&i.City,
+		&i.Lat,
+		&i.Lng,
+		&i.FirstSeenAt,
+		&i.LastSeenAt,
+	)
+	return i, err
 }
 
 const getEnterpriseLicense = `-- name: GetEnterpriseLicense :one
@@ -1789,6 +1961,25 @@ func (q *Queries) HasActiveRolloutUpdate(ctx context.Context, arg HasActiveRollo
 	return exists, err
 }
 
+const incrementIdentityValueStat = `-- name: IncrementIdentityValueStat :exec
+INSERT INTO identity_value_stats (app_id, key, value, device_count)
+VALUES ($1, $2, $3, 1)
+ON CONFLICT (app_id, key, value) DO UPDATE SET
+    device_count = identity_value_stats.device_count + 1,
+    last_seen_at = CURRENT_TIMESTAMP
+`
+
+type IncrementIdentityValueStatParams struct {
+	AppID pgtype.UUID `json:"app_id"`
+	Key   string      `json:"key"`
+	Value string      `json:"value"`
+}
+
+func (q *Queries) IncrementIdentityValueStat(ctx context.Context, arg IncrementIdentityValueStatParams) error {
+	_, err := q.db.Exec(ctx, incrementIdentityValueStat, arg.AppID, arg.Key, arg.Value)
+	return err
+}
+
 const insertApiKey = `-- name: InsertApiKey :one
 INSERT INTO api_keys (app_id, name, hint, hashed_key)
 VALUES ($1, $2, $3, $4)
@@ -2496,6 +2687,104 @@ func (q *Queries) ListAuditLogEventsAfter(ctx context.Context, arg ListAuditLogE
 	return items, nil
 }
 
+const listDevices = `-- name: ListDevices :many
+SELECT app_id, eas_client_id, metadata, country_code, city, lat, lng, first_seen_at, last_seen_at FROM device_identity
+WHERE app_id = $1
+  AND ($2::jsonb IS NULL OR metadata @> $2::jsonb)
+  AND (
+    $3::timestamptz IS NULL
+    OR last_seen_at < $3::timestamptz
+    OR (last_seen_at = $3::timestamptz
+        AND eas_client_id < $4::uuid)
+  )
+ORDER BY last_seen_at DESC, eas_client_id DESC
+LIMIT $5::int
+`
+
+type ListDevicesParams struct {
+	AppID          pgtype.UUID        `json:"app_id"`
+	Filter         []byte             `json:"filter"`
+	BeforeLastSeen pgtype.Timestamptz `json:"before_last_seen"`
+	BeforeClientID pgtype.UUID        `json:"before_client_id"`
+	Lim            int32              `json:"lim"`
+}
+
+// Device inventory for the dashboard: newest-seen first, keyset-paginated on
+// (last_seen_at DESC, eas_client_id DESC) so deep pages stay cheap. The
+// optional jsonb filter (metadata @> $filter, served by the GIN index) powers
+// "devices for a userId / tenant". Fetch one extra row to detect the next page.
+func (q *Queries) ListDevices(ctx context.Context, arg ListDevicesParams) ([]DeviceIdentity, error) {
+	rows, err := q.db.Query(ctx, listDevices,
+		arg.AppID,
+		arg.Filter,
+		arg.BeforeLastSeen,
+		arg.BeforeClientID,
+		arg.Lim,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []DeviceIdentity
+	for rows.Next() {
+		var i DeviceIdentity
+		if err := rows.Scan(
+			&i.AppID,
+			&i.EasClientID,
+			&i.Metadata,
+			&i.CountryCode,
+			&i.City,
+			&i.Lat,
+			&i.Lng,
+			&i.FirstSeenAt,
+			&i.LastSeenAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listIdentitySchemaKeys = `-- name: ListIdentitySchemaKeys :many
+
+SELECT app_id, key, value_type, max_length, created_at FROM identity_schema
+WHERE app_id = $1
+ORDER BY key ASC
+`
+
+// ============================================================
+// Identity (ee/identity)
+// ============================================================
+func (q *Queries) ListIdentitySchemaKeys(ctx context.Context, appID pgtype.UUID) ([]IdentitySchema, error) {
+	rows, err := q.db.Query(ctx, listIdentitySchemaKeys, appID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []IdentitySchema
+	for rows.Next() {
+		var i IdentitySchema
+		if err := rows.Scan(
+			&i.AppID,
+			&i.Key,
+			&i.ValueType,
+			&i.MaxLength,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listRoles = `-- name: ListRoles :many
 SELECT id, name, permissions, created_at, updated_at FROM roles
 ORDER BY name ASC
@@ -2850,6 +3139,48 @@ func (q *Queries) MigrateLegacyUpdate(ctx context.Context, arg MigrateLegacyUpda
 	return err
 }
 
+const oldestDevicesExcluding = `-- name: OldestDevicesExcluding :many
+SELECT eas_client_id, metadata FROM device_identity
+WHERE app_id = $1 AND eas_client_id <> $2
+ORDER BY last_seen_at ASC, eas_client_id ASC
+LIMIT $3::int
+`
+
+type OldestDevicesExcludingParams struct {
+	AppID       pgtype.UUID `json:"app_id"`
+	EasClientID pgtype.UUID `json:"eas_client_id"`
+	Lim         int32       `json:"lim"`
+}
+
+type OldestDevicesExcludingRow struct {
+	EasClientID pgtype.UUID `json:"eas_client_id"`
+	Metadata    []byte      `json:"metadata"`
+}
+
+// The oldest devices of an app by last activity, excluding one (the install
+// being written, which is the most recent and must never be evicted). Feeds
+// the free-tier eviction: their metadata is read so the per-value stats can be
+// decremented before the rows are deleted.
+func (q *Queries) OldestDevicesExcluding(ctx context.Context, arg OldestDevicesExcludingParams) ([]OldestDevicesExcludingRow, error) {
+	rows, err := q.db.Query(ctx, oldestDevicesExcluding, arg.AppID, arg.EasClientID, arg.Lim)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []OldestDevicesExcludingRow
+	for rows.Next() {
+		var i OldestDevicesExcludingRow
+		if err := rows.Scan(&i.EasClientID, &i.Metadata); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const purgeAuditLogEventsBefore = `-- name: PurgeAuditLogEventsBefore :execresult
 DELETE FROM audit_log_events
 WHERE occurred_at < $1
@@ -2919,6 +3250,54 @@ func (q *Queries) RevokeApiKeyByID(ctx context.Context, arg RevokeApiKeyByIDPara
 	var name string
 	err := row.Scan(&name)
 	return name, err
+}
+
+const searchIdentityValues = `-- name: SearchIdentityValues :many
+SELECT value, device_count FROM identity_value_stats
+WHERE app_id = $1 AND key = $2
+  AND value ILIKE '%' || $3::TEXT || '%'
+ORDER BY device_count DESC, value ASC
+LIMIT $4::INT
+`
+
+type SearchIdentityValuesParams struct {
+	AppID      pgtype.UUID `json:"app_id"`
+	Key        string      `json:"key"`
+	Search     string      `json:"search"`
+	MaxResults int32       `json:"max_results"`
+}
+
+type SearchIdentityValuesRow struct {
+	Value       string `json:"value"`
+	DeviceCount int64  `json:"device_count"`
+}
+
+// Autocomplete, substring arm: case-insensitive containment served by the
+// trigram index. % and _ in the search act as SQL wildcards; harmless for
+// autocomplete, so they are not escaped.
+func (q *Queries) SearchIdentityValues(ctx context.Context, arg SearchIdentityValuesParams) ([]SearchIdentityValuesRow, error) {
+	rows, err := q.db.Query(ctx, searchIdentityValues,
+		arg.AppID,
+		arg.Key,
+		arg.Search,
+		arg.MaxResults,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []SearchIdentityValuesRow
+	for rows.Next() {
+		var i SearchIdentityValuesRow
+		if err := rows.Scan(&i.Value, &i.DeviceCount); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const setBranchProtected = `-- name: SetBranchProtected :execrows
@@ -3001,6 +3380,50 @@ func (q *Queries) StoreUpdateUUID(ctx context.Context, arg StoreUpdateUUIDParams
 		arg.AppID,
 		arg.Name,
 	)
+}
+
+const topIdentityValues = `-- name: TopIdentityValues :many
+SELECT value, device_count FROM identity_value_stats
+WHERE app_id = $1 AND key = $2
+ORDER BY device_count DESC, value ASC
+LIMIT $3::INT
+`
+
+type TopIdentityValuesParams struct {
+	AppID      pgtype.UUID `json:"app_id"`
+	Key        string      `json:"key"`
+	MaxResults int32       `json:"max_results"`
+}
+
+type TopIdentityValuesRow struct {
+	Value       string `json:"value"`
+	DeviceCount int64  `json:"device_count"`
+}
+
+// Autocomplete, empty-search arm: top values of a key by device count.
+// Deliberately a separate query from SearchIdentityValues: an OR'd
+// "search = ” OR value ILIKE ..." arm makes the statement un-indexable under
+// a generic plan (pgx prepares statements), forcing a seq scan of every
+// distinct value. Split, each arm gets its own stable plan: this one is an
+// index-only scan on (app_id, key, device_count DESC, value ASC).
+func (q *Queries) TopIdentityValues(ctx context.Context, arg TopIdentityValuesParams) ([]TopIdentityValuesRow, error) {
+	rows, err := q.db.Query(ctx, topIdentityValues, arg.AppID, arg.Key, arg.MaxResults)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []TopIdentityValuesRow
+	for rows.Next() {
+		var i TopIdentityValuesRow
+		if err := rows.Scan(&i.Value, &i.DeviceCount); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const touchSSOIdentityLastLogin = `-- name: TouchSSOIdentityLastLogin :exec
@@ -3121,6 +3544,53 @@ func (q *Queries) UpdateChannelRolloutPercentage(ctx context.Context, arg Update
 	return result.RowsAffected(), nil
 }
 
+const updateDeviceIdentity = `-- name: UpdateDeviceIdentity :one
+UPDATE device_identity SET
+    metadata = $3,
+    country_code = COALESCE($4, country_code),
+    city = COALESCE($5, city),
+    lat = COALESCE($6, lat),
+    lng = COALESCE($7, lng),
+    last_seen_at = CURRENT_TIMESTAMP
+WHERE app_id = $1 AND eas_client_id = $2
+RETURNING app_id, eas_client_id, metadata, country_code, city, lat, lng, first_seen_at, last_seen_at
+`
+
+type UpdateDeviceIdentityParams struct {
+	AppID       pgtype.UUID `json:"app_id"`
+	EasClientID pgtype.UUID `json:"eas_client_id"`
+	Metadata    []byte      `json:"metadata"`
+	CountryCode *string     `json:"country_code"`
+	City        *string     `json:"city"`
+	Lat         *float64    `json:"lat"`
+	Lng         *float64    `json:"lng"`
+}
+
+func (q *Queries) UpdateDeviceIdentity(ctx context.Context, arg UpdateDeviceIdentityParams) (DeviceIdentity, error) {
+	row := q.db.QueryRow(ctx, updateDeviceIdentity,
+		arg.AppID,
+		arg.EasClientID,
+		arg.Metadata,
+		arg.CountryCode,
+		arg.City,
+		arg.Lat,
+		arg.Lng,
+	)
+	var i DeviceIdentity
+	err := row.Scan(
+		&i.AppID,
+		&i.EasClientID,
+		&i.Metadata,
+		&i.CountryCode,
+		&i.City,
+		&i.Lat,
+		&i.Lng,
+		&i.FirstSeenAt,
+		&i.LastSeenAt,
+	)
+	return i, err
+}
+
 const updateRole = `-- name: UpdateRole :execresult
 UPDATE roles
 SET name = $2, permissions = $3, updated_at = CURRENT_TIMESTAMP
@@ -3217,6 +3687,40 @@ func (q *Queries) UpsertEnterpriseLicense(ctx context.Context, licenseKey string
 		&i.LicenseKey,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const upsertIdentitySchemaKey = `-- name: UpsertIdentitySchemaKey :one
+INSERT INTO identity_schema (app_id, key, value_type, max_length)
+VALUES ($1, $2, $3, $4)
+ON CONFLICT (app_id, key) DO UPDATE SET
+    value_type = EXCLUDED.value_type,
+    max_length = EXCLUDED.max_length
+RETURNING app_id, key, value_type, max_length, created_at
+`
+
+type UpsertIdentitySchemaKeyParams struct {
+	AppID     pgtype.UUID `json:"app_id"`
+	Key       string      `json:"key"`
+	ValueType string      `json:"value_type"`
+	MaxLength int32       `json:"max_length"`
+}
+
+func (q *Queries) UpsertIdentitySchemaKey(ctx context.Context, arg UpsertIdentitySchemaKeyParams) (IdentitySchema, error) {
+	row := q.db.QueryRow(ctx, upsertIdentitySchemaKey,
+		arg.AppID,
+		arg.Key,
+		arg.ValueType,
+		arg.MaxLength,
+	)
+	var i IdentitySchema
+	err := row.Scan(
+		&i.AppID,
+		&i.Key,
+		&i.ValueType,
+		&i.MaxLength,
+		&i.CreatedAt,
 	)
 	return i, err
 }

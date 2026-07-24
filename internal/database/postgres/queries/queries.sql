@@ -1102,3 +1102,135 @@ WHERE (sqlc.narg('actor_id')::TEXT IS NULL OR actor_id = sqlc.narg('actor_id'))
   AND (sqlc.narg('outcome')::TEXT IS NULL OR outcome = sqlc.narg('outcome'))
   AND (sqlc.narg('occurred_from')::TIMESTAMPTZ IS NULL OR occurred_at >= sqlc.narg('occurred_from'))
   AND (sqlc.narg('occurred_to')::TIMESTAMPTZ IS NULL OR occurred_at <= sqlc.narg('occurred_to'));
+
+-- ============================================================
+-- Identity (ee/identity)
+-- ============================================================
+
+-- name: ListIdentitySchemaKeys :many
+SELECT * FROM identity_schema
+WHERE app_id = $1
+ORDER BY key ASC;
+
+-- name: UpsertIdentitySchemaKey :one
+INSERT INTO identity_schema (app_id, key, value_type, max_length)
+VALUES ($1, $2, $3, $4)
+ON CONFLICT (app_id, key) DO UPDATE SET
+    value_type = EXCLUDED.value_type,
+    max_length = EXCLUDED.max_length
+RETURNING *;
+
+-- name: DeleteIdentitySchemaKey :execresult
+DELETE FROM identity_schema
+WHERE app_id = $1 AND key = $2;
+
+-- Wipes the autocomplete entries of a key when it leaves the allowlist, so
+-- searchMetadata never suggests values of a key the operator removed. The
+-- values already merged into device_identity.metadata are left in place.
+-- name: DeleteIdentityValueStatsForKey :exec
+DELETE FROM identity_value_stats
+WHERE app_id = $1 AND key = $2;
+
+-- Creates the row if this install was never seen. Split from the update on
+-- purpose: FOR UPDATE cannot lock a row that does not exist yet, so two
+-- concurrent first identifies of the same install would both merge against
+-- an empty map and one would silently win. Insert-then-lock serializes them.
+-- Returns the number of rows inserted: 1 when this install is brand new, 0
+-- when it already existed. The free-tier device cap only needs to run on a
+-- genuine new-device insert, so the caller keys the count/eviction off this.
+-- name: EnsureDeviceIdentity :execrows
+INSERT INTO device_identity (app_id, eas_client_id)
+VALUES ($1, $2)
+ON CONFLICT (app_id, eas_client_id) DO NOTHING;
+
+-- name: CountDevices :one
+SELECT COUNT(*) FROM device_identity WHERE app_id = $1;
+
+-- The oldest devices of an app by last activity, excluding one (the install
+-- being written, which is the most recent and must never be evicted). Feeds
+-- the free-tier eviction: their metadata is read so the per-value stats can be
+-- decremented before the rows are deleted.
+-- name: OldestDevicesExcluding :many
+SELECT eas_client_id, metadata FROM device_identity
+WHERE app_id = $1 AND eas_client_id <> $2
+ORDER BY last_seen_at ASC, eas_client_id ASC
+LIMIT sqlc.arg('lim')::int;
+
+-- name: DeleteDevices :exec
+DELETE FROM device_identity
+WHERE app_id = $1 AND eas_client_id = ANY(sqlc.arg('client_ids')::uuid[]);
+
+-- name: GetDeviceIdentityForUpdate :one
+SELECT * FROM device_identity
+WHERE app_id = $1 AND eas_client_id = $2
+FOR UPDATE;
+
+-- name: GetDeviceIdentity :one
+SELECT * FROM device_identity
+WHERE app_id = $1 AND eas_client_id = $2;
+
+-- name: UpdateDeviceIdentity :one
+UPDATE device_identity SET
+    metadata = $3,
+    country_code = COALESCE(sqlc.narg('country_code'), country_code),
+    city = COALESCE(sqlc.narg('city'), city),
+    lat = COALESCE(sqlc.narg('lat'), lat),
+    lng = COALESCE(sqlc.narg('lng'), lng),
+    last_seen_at = CURRENT_TIMESTAMP
+WHERE app_id = $1 AND eas_client_id = $2
+RETURNING *;
+
+-- name: IncrementIdentityValueStat :exec
+INSERT INTO identity_value_stats (app_id, key, value, device_count)
+VALUES ($1, $2, $3, 1)
+ON CONFLICT (app_id, key, value) DO UPDATE SET
+    device_count = identity_value_stats.device_count + 1,
+    last_seen_at = CURRENT_TIMESTAMP;
+
+-- name: DecrementIdentityValueStat :exec
+UPDATE identity_value_stats
+SET device_count = GREATEST(device_count - 1, 0)
+WHERE app_id = $1 AND key = $2 AND value = $3;
+
+-- name: DeleteZeroIdentityValueStats :exec
+DELETE FROM identity_value_stats
+WHERE app_id = $1 AND key = $2 AND value = $3 AND device_count <= 0;
+
+-- Autocomplete, empty-search arm: top values of a key by device count.
+-- Deliberately a separate query from SearchIdentityValues: an OR'd
+-- "search = '' OR value ILIKE ..." arm makes the statement un-indexable under
+-- a generic plan (pgx prepares statements), forcing a seq scan of every
+-- distinct value. Split, each arm gets its own stable plan: this one is an
+-- index-only scan on (app_id, key, device_count DESC, value ASC).
+-- name: TopIdentityValues :many
+SELECT value, device_count FROM identity_value_stats
+WHERE app_id = $1 AND key = $2
+ORDER BY device_count DESC, value ASC
+LIMIT sqlc.arg(max_results)::INT;
+
+-- Autocomplete, substring arm: case-insensitive containment served by the
+-- trigram index. % and _ in the search act as SQL wildcards; harmless for
+-- autocomplete, so they are not escaped.
+-- name: SearchIdentityValues :many
+SELECT value, device_count FROM identity_value_stats
+WHERE app_id = $1 AND key = $2
+  AND value ILIKE '%' || sqlc.arg(search)::TEXT || '%'
+ORDER BY device_count DESC, value ASC
+LIMIT sqlc.arg(max_results)::INT;
+
+-- Device inventory for the dashboard: newest-seen first, keyset-paginated on
+-- (last_seen_at DESC, eas_client_id DESC) so deep pages stay cheap. The
+-- optional jsonb filter (metadata @> $filter, served by the GIN index) powers
+-- "devices for a userId / tenant". Fetch one extra row to detect the next page.
+-- name: ListDevices :many
+SELECT * FROM device_identity
+WHERE app_id = $1
+  AND (sqlc.narg('filter')::jsonb IS NULL OR metadata @> sqlc.narg('filter')::jsonb)
+  AND (
+    sqlc.narg('before_last_seen')::timestamptz IS NULL
+    OR last_seen_at < sqlc.narg('before_last_seen')::timestamptz
+    OR (last_seen_at = sqlc.narg('before_last_seen')::timestamptz
+        AND eas_client_id < sqlc.narg('before_client_id')::uuid)
+  )
+ORDER BY last_seen_at DESC, eas_client_id DESC
+LIMIT sqlc.arg('lim')::int;

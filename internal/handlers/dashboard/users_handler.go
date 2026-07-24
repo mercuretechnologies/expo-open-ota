@@ -55,13 +55,6 @@ func userResponseFrom(user store.User) UserResponse {
 	}
 }
 
-func renderJSON(w http.ResponseWriter, status int, payload interface{}) {
-	marshaledResponse, _ := json.Marshal(payload)
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	w.Write(marshaledResponse)
-}
-
 // renderUserServiceError maps the user service's business-rule errors onto
 // explicit status codes; anything unrecognized stays an opaque 500.
 func renderUserServiceError(w http.ResponseWriter, err error) {
@@ -112,7 +105,7 @@ func (h *UsersHandler) GetMeHandler(w http.ResponseWriter, r *http.Request) {
 		handlers.RenderError(w, http.StatusInternalServerError, "An internal error occurred.")
 		return
 	}
-	renderJSON(w, http.StatusOK, userResponseFrom(user))
+	handlers.RenderJSON(w, http.StatusOK, userResponseFrom(user))
 }
 
 func (h *UsersHandler) ChangeMyPasswordHandler(w http.ResponseWriter, r *http.Request) {
@@ -151,7 +144,7 @@ func (h *UsersHandler) GetUsersHandler(w http.ResponseWriter, r *http.Request) {
 	for i, user := range users {
 		response[i] = userResponseFrom(user)
 	}
-	renderJSON(w, http.StatusOK, response)
+	handlers.RenderJSON(w, http.StatusOK, response)
 }
 
 func (h *UsersHandler) CreateUserHandler(w http.ResponseWriter, r *http.Request) {
@@ -173,7 +166,7 @@ func (h *UsersHandler) CreateUserHandler(w http.ResponseWriter, r *http.Request)
 		renderUserServiceError(w, err)
 		return
 	}
-	renderJSON(w, http.StatusCreated, userResponseFrom(user))
+	handlers.RenderJSON(w, http.StatusCreated, userResponseFrom(user))
 }
 
 // UpdateUserHandler patches the two admin-controlled flags of an account. Both

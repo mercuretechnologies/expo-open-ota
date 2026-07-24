@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"expo-open-ota/config"
+	"expo-open-ota/ee/licensing"
 	"expo-open-ota/internal/auditlog"
 	"log"
 	"strconv"
@@ -92,12 +93,14 @@ type AuditService struct {
 }
 
 // NewAuditService accepts a nil repository (stateless mode); reads then answer
-// ErrRequiresControlPlane and Record no-ops. licenseValid is the live
-// licensing gate (licensing.IsEnterprise in production) — a parameter rather
-// than a direct dependency, so this package stays importable from anywhere
-// without dragging the licensing stack along.
-func NewAuditService(repo AuditRepository, licenseValid func() bool) *AuditService {
-	return &AuditService{repo: repo, licenseValid: licenseValid}
+// ErrRequiresControlPlane and Record no-ops. The license gate defaults to
+// licensing.IsEnterprise and is imported directly ON PURPOSE: it must live in
+// EE code so bypassing it means editing an EE-licensed file (a license
+// violation), not swapping a func passed in from the MIT composition root
+// (which anyone may legally replace with `func() bool { return true }`).
+// Tests flip the licenseValid field instead of a signed key.
+func NewAuditService(repo AuditRepository) *AuditService {
+	return &AuditService{repo: repo, licenseValid: licensing.IsEnterprise}
 }
 
 // Enabled reports whether events are being collected right now.

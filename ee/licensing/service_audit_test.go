@@ -6,7 +6,6 @@ package licensing
 
 import (
 	"context"
-	"expo-open-ota/ee/audit"
 	"expo-open-ota/internal/auditlog"
 	"expo-open-ota/internal/services"
 	"testing"
@@ -16,41 +15,26 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// fakeAuditStore lets these tests run the REAL AuditService gated by the real
-// IsEnterprise, so the emit-before-Deactivate ordering in Remove is actually
-// exercised: an event emitted after the gate closed lands nowhere and the
-// assertions fail.
-type fakeAuditStore struct{ inserted []auditlog.Event }
-
-func (f *fakeAuditStore) Insert(_ context.Context, event auditlog.Event) (auditlog.Event, error) {
-	f.inserted = append(f.inserted, event)
-	return event, nil
-}
-func (f *fakeAuditStore) List(_ context.Context, _ audit.ListParams) ([]auditlog.Event, error) {
-	return nil, nil
-}
-func (f *fakeAuditStore) Count(_ context.Context, _ audit.ListFilters) (int64, error) {
-	return 0, nil
-}
-func (f *fakeAuditStore) PurgeBefore(_ context.Context, _ time.Time, _ bool) (int64, error) {
-	return 0, nil
-}
-func (f *fakeAuditStore) ListAfter(_ context.Context, _ int64, _ int) ([]auditlog.Event, error) {
-	return nil, nil
-}
-func (f *fakeAuditStore) ExportCursor(_ context.Context) (int64, error) { return 0, nil }
-func (f *fakeAuditStore) TryExportLock(_ context.Context) (func(), bool, error) {
-	return func() {}, true, nil
-}
-func (f *fakeAuditStore) AdvanceExportCursor(_ context.Context, _ int64, _ int64) (bool, error) {
-	return true, nil
+// The recorder mirrors audit.AuditService.Record's license gate (an event
+// emitted after the gate closed is dropped) with a LOCAL func rather than the
+// real AuditService — this package must not import ee/audit, which imports
+// ee/licensing back (the gate lives in EE code by design), so pulling the real
+// service in here would be an import cycle. The behavior under test is
+// licensing's own ordering (emit BEFORE Deactivate), and the local gate
+// reproduces exactly what would drop a mis-ordered event.
+func gatedRecorder(recorded *[]auditlog.Event) auditlog.RecordFunc {
+	return func(_ context.Context, event auditlog.Event) {
+		if IsEnterprise() {
+			*recorded = append(*recorded, event)
+		}
+	}
 }
 
 func TestActivateAndRemoveEmitAuditEvents(t *testing.T) {
 	priv := setupTestKeypair(t)
 	service := NewLicenseService(&fakeLicenseRepo{})
-	auditStore := &fakeAuditStore{}
-	service.SetOnAuditEvent(audit.NewAuditService(auditStore, IsEnterprise).Record)
+	var recorded []auditlog.Event
+	service.SetOnAuditEvent(gatedRecorder(&recorded))
 	ctx := services.WithPrincipal(context.Background(),
 		&services.DashboardPrincipal{UserId: "admin-1", Email: "admin@example.com"})
 
@@ -59,8 +43,8 @@ func TestActivateAndRemoveEmitAuditEvents(t *testing.T) {
 	require.NoError(t, err)
 
 	// The activation itself is recorded through the gate it just opened.
-	require.Len(t, auditStore.inserted, 1)
-	activated := auditStore.inserted[0]
+	require.Len(t, recorded, 1)
+	activated := recorded[0]
 	assert.Equal(t, auditlog.ActionLicenseActivated, activated.Action)
 	assert.Equal(t, "admin-1", activated.ActorID)
 	assert.Equal(t, "admin@example.com", activated.ActorDisplay)
@@ -71,7 +55,7 @@ func TestActivateAndRemoveEmitAuditEvents(t *testing.T) {
 
 	// Emitted before Deactivate: the removal is the last entry the license
 	// gate lets through. A regression emitting after would drop it here.
-	require.Len(t, auditStore.inserted, 2)
-	assert.Equal(t, auditlog.ActionLicenseRemoved, auditStore.inserted[1].Action)
+	require.Len(t, recorded, 2)
+	assert.Equal(t, auditlog.ActionLicenseRemoved, recorded[1].Action)
 	assert.False(t, IsEnterprise())
 }

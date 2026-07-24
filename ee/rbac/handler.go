@@ -70,13 +70,6 @@ func grantResponseFrom(grant AppGrant) GrantResponse {
 	}
 }
 
-func renderJSON(w http.ResponseWriter, status int, payload interface{}) {
-	marshaledResponse, _ := json.Marshal(payload)
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	w.Write(marshaledResponse)
-}
-
 func renderRBACServiceError(w http.ResponseWriter, err error) {
 	validationErr := (*ValidationError)(nil)
 	alreadyExistsErr := (*store.ErrResourceAlreadyExists)(nil)
@@ -108,7 +101,7 @@ func (h *RBACHandler) ListRolesHandler(w http.ResponseWriter, r *http.Request) {
 	for i, role := range roles {
 		response[i] = roleResponseFrom(role)
 	}
-	renderJSON(w, http.StatusOK, response)
+	handlers.RenderJSON(w, http.StatusOK, response)
 }
 
 type rolePayload struct {
@@ -127,7 +120,7 @@ func (h *RBACHandler) CreateRoleHandler(w http.ResponseWriter, r *http.Request) 
 		renderRBACServiceError(w, err)
 		return
 	}
-	renderJSON(w, http.StatusCreated, roleResponseFrom(role))
+	handlers.RenderJSON(w, http.StatusCreated, roleResponseFrom(role))
 }
 
 func (h *RBACHandler) UpdateRoleHandler(w http.ResponseWriter, r *http.Request) {
@@ -185,7 +178,7 @@ func (h *RBACHandler) GetUserGrantsHandler(w http.ResponseWriter, r *http.Reques
 	for i, grant := range grants {
 		response[i] = grantResponseFrom(grant)
 	}
-	renderJSON(w, http.StatusOK, response)
+	handlers.RenderJSON(w, http.StatusOK, response)
 }
 
 func (h *RBACHandler) SetUserGrantsHandler(w http.ResponseWriter, r *http.Request) {
@@ -225,7 +218,7 @@ func (h *RBACHandler) GetGrantSummaryHandler(w http.ResponseWriter, r *http.Requ
 		renderRBACServiceError(w, err)
 		return
 	}
-	renderJSON(w, http.StatusOK, counts)
+	handlers.RenderJSON(w, http.StatusOK, counts)
 }
 
 // MyPermissionsResponse tells the dashboard what to show the current account.
@@ -256,5 +249,5 @@ func (h *RBACHandler) GetMyPermissionsHandler(w http.ResponseWriter, r *http.Req
 			response.Apps[appId] = fromPermissions(perms)
 		}
 	}
-	renderJSON(w, http.StatusOK, response)
+	handlers.RenderJSON(w, http.StatusOK, response)
 }

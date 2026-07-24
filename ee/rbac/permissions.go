@@ -35,6 +35,11 @@ const (
 	// edits their enterprise restrictions (IP allowlists, protected-branch
 	// access).
 	PermApiKeysManage Permission = "apikeys:manage"
+	// PermIdentityManage edits the device-identity metadata allowlist (the
+	// dashboard "Identity" section): which metadata keys are accepted and
+	// their types. Reading identity and browsing devices stays open to any app
+	// viewer; only shaping the allowlist needs this.
+	PermIdentityManage Permission = "identity:manage"
 )
 
 // AllPermissions is the catalog, in the order the dashboard displays it.
@@ -51,6 +56,7 @@ var AllPermissions = []Permission{
 	PermChannelRolloutManage,
 	PermUpdateRolloutManage,
 	PermApiKeysManage,
+	PermIdentityManage,
 }
 
 var permissionSet = func() map[Permission]struct{} {
