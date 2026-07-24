@@ -391,6 +391,46 @@ func (q *Queries) DeleteZeroIdentityValueStats(ctx context.Context, arg DeleteZe
 	return err
 }
 
+const devicesOnUpdateByIDs = `-- name: DevicesOnUpdateByIDs :many
+SELECT current_update_id AS update_uuid, COUNT(*) AS device_count
+FROM device_identity
+WHERE app_id = $1
+  AND current_update_id = ANY($2::uuid[])
+GROUP BY current_update_id
+`
+
+type DevicesOnUpdateByIDsParams struct {
+	AppID     pgtype.UUID   `json:"app_id"`
+	UpdateIds []pgtype.UUID `json:"update_ids"`
+}
+
+type DevicesOnUpdateByIDsRow struct {
+	UpdateUuid  pgtype.UUID `json:"update_uuid"`
+	DeviceCount int64       `json:"device_count"`
+}
+
+// Batch adoption counts for a set of updates: every device CURRENTLY running
+// each update (the dashboard's "Devices" column).
+func (q *Queries) DevicesOnUpdateByIDs(ctx context.Context, arg DevicesOnUpdateByIDsParams) ([]DevicesOnUpdateByIDsRow, error) {
+	rows, err := q.db.Query(ctx, devicesOnUpdateByIDs, arg.AppID, arg.UpdateIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []DevicesOnUpdateByIDsRow
+	for rows.Next() {
+		var i DevicesOnUpdateByIDsRow
+		if err := rows.Scan(&i.UpdateUuid, &i.DeviceCount); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const ensureDeviceIdentity = `-- name: EnsureDeviceIdentity :exec
 INSERT INTO device_identity (app_id, eas_client_id)
 VALUES ($1, $2)
@@ -2600,6 +2640,47 @@ func (q *Queries) IsBranchProtected(ctx context.Context, arg IsBranchProtectedPa
 	var protected bool
 	err := row.Scan(&protected)
 	return protected, err
+}
+
+const launchFailuresByUpdate = `-- name: LaunchFailuresByUpdate :many
+SELECT update_id AS update_uuid, COUNT(*) AS device_count
+FROM device_update_failures
+WHERE app_id = $1
+  AND update_id = ANY($2::uuid[])
+GROUP BY update_id
+`
+
+type LaunchFailuresByUpdateParams struct {
+	AppID     pgtype.UUID   `json:"app_id"`
+	UpdateIds []pgtype.UUID `json:"update_ids"`
+}
+
+type LaunchFailuresByUpdateRow struct {
+	UpdateUuid  pgtype.UUID `json:"update_uuid"`
+	DeviceCount int64       `json:"device_count"`
+}
+
+// Batch launch-failure counts for a set of updates. All-time per update: an
+// update's failures belong to its rollout window by construction (update ids
+// are never reused), and the health score is only shown for the active one.
+func (q *Queries) LaunchFailuresByUpdate(ctx context.Context, arg LaunchFailuresByUpdateParams) ([]LaunchFailuresByUpdateRow, error) {
+	rows, err := q.db.Query(ctx, launchFailuresByUpdate, arg.AppID, arg.UpdateIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []LaunchFailuresByUpdateRow
+	for rows.Next() {
+		var i LaunchFailuresByUpdateRow
+		if err := rows.Scan(&i.UpdateUuid, &i.DeviceCount); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listAccessibleAppIDs = `-- name: ListAccessibleAppIDs :many

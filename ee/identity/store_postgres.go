@@ -566,3 +566,57 @@ func (s *PostgresIdentityStore) RecordUpdateFailures(ctx context.Context, appID 
 	}
 	return nil
 }
+
+// UpdateHealth is one update's instant-T adoption and launch health, from
+// the registry alone: no ClickHouse, no SDK. DevicesOnUpdate counts every
+// device currently RUNNING the update; LaunchFailures counts devices it
+// crashed on at launch. The health ratio successes/(successes+failures) is
+// meaningful for the ACTIVE update: past updates bleed successes to their
+// successor while failures stay, so the dashboard only scores the newest one.
+type UpdateHealth struct {
+	DevicesOnUpdate int64
+	LaunchFailures  int64
+}
+
+// UpdateHealthByIDs returns health per update uuid; updates absent from the
+// map simply had no data (zero devices, zero failures). Non-UUID ids are
+// skipped: the caller feeds dashboard input.
+func (s *PostgresIdentityStore) UpdateHealthByIDs(ctx context.Context, appID string, updateIDs []string) (map[string]UpdateHealth, error) {
+	appUUID, err := toPgUUID(appID)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]pgtype.UUID, 0, len(updateIDs))
+	for _, raw := range updateIDs {
+		if parsed, err := toPgUUID(raw); err == nil {
+			ids = append(ids, parsed)
+		}
+	}
+	health := make(map[string]UpdateHealth, len(ids))
+	if len(ids) == 0 {
+		return health, nil
+	}
+
+	active, err := s.engine.DevicesOnUpdateByIDs(ctx, pgdb.DevicesOnUpdateByIDsParams{AppID: appUUID, UpdateIds: ids})
+	if err != nil {
+		return nil, fmt.Errorf("counting devices on updates: %w", err)
+	}
+	for _, row := range active {
+		key := uuid.UUID(row.UpdateUuid.Bytes).String()
+		entry := health[key]
+		entry.DevicesOnUpdate = row.DeviceCount
+		health[key] = entry
+	}
+
+	failures, err := s.engine.LaunchFailuresByUpdate(ctx, pgdb.LaunchFailuresByUpdateParams{AppID: appUUID, UpdateIds: ids})
+	if err != nil {
+		return nil, fmt.Errorf("counting launch failures: %w", err)
+	}
+	for _, row := range failures {
+		key := uuid.UUID(row.UpdateUuid.Bytes).String()
+		entry := health[key]
+		entry.LaunchFailures = row.DeviceCount
+		health[key] = entry
+	}
+	return health, nil
+}

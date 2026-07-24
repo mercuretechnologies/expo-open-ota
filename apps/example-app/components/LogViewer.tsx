@@ -2,7 +2,7 @@ import React, { useState } from 'react'
 import { View, Text, ScrollView, TouchableOpacity } from 'react-native'
 import JSONTree from 'react-native-json-tree'
 import * as Clipboard from 'expo-clipboard'
-import * as Updates from '@latitudegames/expo-updates'
+import * as Updates from 'expo-updates'
 
 export function UpdatesLogViewer({
   logs,

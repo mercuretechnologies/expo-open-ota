@@ -262,5 +262,9 @@ func NewRouter(container *AppContainer) *mux.Router {
 	appAuthSubrouter.HandleFunc("/identity/values", container.IdentityHandler.SearchValuesHandler).Methods(http.MethodGet)
 	appAuthSubrouter.HandleFunc("/identity/devices", container.IdentityHandler.ListDevicesHandler).Methods(http.MethodGet)
 	appAuthSubrouter.HandleFunc("/identity/devices/{EAS_CLIENT_ID}", container.IdentityHandler.GetDeviceHandler).Methods(http.MethodGet)
+	// Instant-T adoption and launch health per update, straight from the
+	// device registry (Postgres only, works without ClickHouse): feeds the
+	// updates table's MAU column and the rollout card's health score.
+	appAuthSubrouter.HandleFunc("/identity/update-health", container.IdentityHandler.UpdateHealthHandler).Methods(http.MethodGet)
 	return r
 }

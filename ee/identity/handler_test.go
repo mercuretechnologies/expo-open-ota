@@ -30,6 +30,7 @@ type fakeStore struct {
 	// listDevices lets a test control pagination output.
 	listDevices func(filter *MetadataFilter, limit int, cursor *DeviceCursor) ([]Device, *DeviceCursor, error)
 	upsertErr   error
+	health      map[string]UpdateHealth
 }
 
 func newFakeStore() *fakeStore {
@@ -69,6 +70,16 @@ func (f *fakeStore) GetDevice(_ context.Context, _ string, easClientID string) (
 	return f.devices[easClientID], nil
 }
 
+func (f *fakeStore) UpdateHealthByIDs(_ context.Context, _ string, updateIDs []string) (map[string]UpdateHealth, error) {
+	out := make(map[string]UpdateHealth, len(updateIDs))
+	for _, id := range updateIDs {
+		if h, ok := f.health[id]; ok {
+			out[id] = h
+		}
+	}
+	return out, nil
+}
+
 // serve routes a request through a real mux router so path vars resolve.
 func serve(handler *IdentityHandler, method, path, body string) *httptest.ResponseRecorder {
 	router := mux.NewRouter()
@@ -78,6 +89,7 @@ func serve(handler *IdentityHandler, method, path, body string) *httptest.Respon
 	router.HandleFunc("/api/apps/{APP_ID}/identity/values", handler.SearchValuesHandler).Methods(http.MethodGet)
 	router.HandleFunc("/api/apps/{APP_ID}/identity/devices", handler.ListDevicesHandler).Methods(http.MethodGet)
 	router.HandleFunc("/api/apps/{APP_ID}/identity/devices/{EAS_CLIENT_ID}", handler.GetDeviceHandler).Methods(http.MethodGet)
+	router.HandleFunc("/api/apps/{APP_ID}/identity/update-health", handler.UpdateHealthHandler).Methods(http.MethodGet)
 	req := httptest.NewRequestWithContext(context.Background(), method, path, strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
@@ -93,6 +105,7 @@ func TestNilStoreAnswers400(t *testing.T) {
 		appPath + "/values?key=userId",
 		appPath + "/devices",
 		appPath + "/devices/abc",
+		appPath + "/update-health?ids=9b3b89b6-5a0d-4a57-b1f5-6e1d5b7c2a10",
 	} {
 		rec := serve(h, http.MethodGet, path, "")
 		require.Equal(t, http.StatusBadRequest, rec.Code, path)
@@ -255,4 +268,45 @@ func TestDeviceCursorRoundTrip(t *testing.T) {
 	got, err := decodeDeviceCursor("")
 	require.NoError(t, err)
 	require.Nil(t, got)
+}
+
+func TestUpdateHealthHandler(t *testing.T) {
+	store := newFakeStore()
+	healthy := "9b3b89b6-5a0d-4a57-b1f5-6e1d5b7c2a10"
+	broken := "0f61f1d1-3f5f-4b6a-9a44-6e9a1c2b3d4e"
+	untried := "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+	store.health = map[string]UpdateHealth{
+		healthy: {DevicesOnUpdate: 99, LaunchFailures: 1},
+		broken:  {DevicesOnUpdate: 0, LaunchFailures: 7},
+	}
+	h := NewIdentityHandler(NewService(store, nil))
+
+	rec := serve(h, http.MethodGet, appPath+"/update-health?ids="+healthy+","+broken+","+untried+",garbage", "")
+	require.Equal(t, http.StatusOK, rec.Code)
+	var body struct {
+		Updates map[string]struct {
+			DevicesOnUpdate int64    `json:"devicesOnUpdate"`
+			LaunchFailures  int64    `json:"launchFailures"`
+			HealthPercent   *float64 `json:"healthPercent"`
+		} `json:"updates"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+	// Garbage id: silently absent. Every valid id gets an entry.
+	require.Len(t, body.Updates, 3)
+	require.NotNil(t, body.Updates[healthy].HealthPercent)
+	require.InDelta(t, 99.0, *body.Updates[healthy].HealthPercent, 0.001)
+	// Zero successes with failures is a hard 0%, the broken-update red badge.
+	require.NotNil(t, body.Updates[broken].HealthPercent)
+	require.InDelta(t, 0.0, *body.Updates[broken].HealthPercent, 0.001)
+	// Nothing attempted it: percent stays null, never a fake 100%.
+	require.Nil(t, body.Updates[untried].HealthPercent)
+	require.EqualValues(t, 0, body.Updates[untried].DevicesOnUpdate)
+
+	// Input contract: missing ids is a 400, an oversized list is a 400.
+	require.Equal(t, http.StatusBadRequest, serve(h, http.MethodGet, appPath+"/update-health", "").Code)
+	tooMany := make([]string, 101)
+	for i := range tooMany {
+		tooMany[i] = healthy
+	}
+	require.Equal(t, http.StatusBadRequest, serve(h, http.MethodGet, appPath+"/update-health?ids="+strings.Join(tooMany, ","), "").Code)
 }

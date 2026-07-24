@@ -13,8 +13,10 @@ CREATE INDEX idx_device_identity_current_update ON device_identity (app_id, curr
 
 -- Launch failures per (device, update), from the manifest error-recovery
 -- headers: an update listed in Expo-Recent-Failed-Update-IDs crashed at
--- launch on that device and was rolled back (it never becomes current, which
--- is exactly what makes this table the only place launch crashes exist).
+-- launch on that device and was rolled back. A device can later retry the
+-- same update and succeed (the server does not exclude recently-failed
+-- updates from resolution), in which case it counts once on each side of
+-- the health ratio: an attempt-level score, deliberately.
 -- fatal_error is capture-once: the client consumes Expo-Fatal-Error (sends
 -- it exactly once, truncated to 1024 chars), so the first non-empty capture
 -- wins and later sticky re-sends never blank it.

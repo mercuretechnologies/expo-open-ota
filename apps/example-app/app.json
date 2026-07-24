@@ -7,7 +7,6 @@
     "icon": "./assets/images/icon.png",
     "scheme": "myapp",
     "userInterfaceStyle": "automatic",
-    "newArchEnabled": true,
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.expoota.exampleapp"
@@ -35,7 +34,10 @@
           "backgroundColor": "#ffffff"
         }
       ],
-      "./scripts/trust_local_certs.js"
+      "./scripts/trust_local_certs.js",
+      "expo-font",
+      "expo-status-bar",
+      "expo-web-browser"
     ],
     "experiments": {
       "typedRoutes": true
@@ -45,7 +47,10 @@
         "origin": false
       },
       "eas": {
-        "projectId": "a45ed151-0387-4419-a97c-d008d8f214c7"
+        "projectId": "a45ed151-0387-4419-a97c-d008d8f214c7",
+        "observe": {
+          "endpointUrl": "https://otatest.ngrok.io/observe/007f8ed1-3f69-4a4c-9f05-5cfcb91041d4"
+        }
       }
     },
     "owner": "techskeat"

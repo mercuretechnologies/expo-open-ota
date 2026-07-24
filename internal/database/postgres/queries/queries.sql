@@ -1283,3 +1283,22 @@ FROM device_identity
 WHERE app_id = $1
 GROUP BY current_update_id
 ORDER BY device_count DESC, current_update_id ASC NULLS LAST;
+
+-- Batch adoption counts for a set of updates: every device CURRENTLY running
+-- each update (the dashboard's "Devices" column).
+-- name: DevicesOnUpdateByIDs :many
+SELECT current_update_id AS update_uuid, COUNT(*) AS device_count
+FROM device_identity
+WHERE app_id = $1
+  AND current_update_id = ANY(sqlc.arg(update_ids)::uuid[])
+GROUP BY current_update_id;
+
+-- Batch launch-failure counts for a set of updates. All-time per update: an
+-- update's failures belong to its rollout window by construction (update ids
+-- are never reused), and the health score is only shown for the active one.
+-- name: LaunchFailuresByUpdate :many
+SELECT update_id AS update_uuid, COUNT(*) AS device_count
+FROM device_update_failures
+WHERE app_id = $1
+  AND update_id = ANY(sqlc.arg(update_ids)::uuid[])
+GROUP BY update_id;

@@ -208,6 +208,17 @@ export type UpdateRolloutInfo = {
   createdAt: string;
 };
 
+// Instant-T health of one update, from the device registry (Postgres only,
+// no ClickHouse needed): every device currently running it, and the devices
+// it crashed on at launch. healthPercent is successes/(successes+failures)
+// over devices that actually attempted the update, null until anything
+// attempted it.
+export type UpdateHealthRecord = {
+  devicesOnUpdate: number;
+  launchFailures: number;
+  healthPercent: number | null;
+};
+
 export type UpdateDetailsRecord = {
   updateUUID: string;
   createdAt: string;
@@ -882,6 +893,14 @@ export class ApiClient {
     return this.request<UpdateFeedPage>(`${this.appScope()}/updates${suffix}`, {
       method: 'GET',
     });
+  }
+  public async getUpdateHealth(updateUUIDs: string[]) {
+    return this.request<{ updates: Record<string, UpdateHealthRecord> }>(
+      `${this.appScope()}/identity/update-health?ids=${encodeURIComponent(updateUUIDs.join(','))}`,
+      {
+        method: 'GET',
+      }
+    );
   }
   public async getUpdateDetails(branch: string, runtimeVersion: string, updateId: string) {
     return this.request<UpdateDetailsRecord>(

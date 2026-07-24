@@ -181,9 +181,9 @@ func (h *IngestHandler) HandleLogs(w http.ResponseWriter, r *http.Request) {
 	// identical re-flattened rows carry the same content_hash for query-time
 	// dedup.
 	rows := FlattenLogs(appID, batch, time.Now().UTC())
-	if h.telemetry == nil {
-		observeRecordsDropped(reasonTelemetry, len(rows))
-	} else {
+	// Check-ins ride every log batch, sink or not: a no-ClickHouse deployment
+	// still keeps its registry (and update health) fresh from telemetry.
+	{
 		remoteIP := ""
 		if clientIP := helpers.ClientIP(r); clientIP.IsValid() {
 			remoteIP = clientIP.String()
@@ -192,6 +192,10 @@ func (h *IngestHandler) HandleLogs(w http.ResponseWriter, r *http.Request) {
 			func(row LogRow) string { return row.EASClientID },
 			func(row LogRow) string { return row.UpdateID },
 			func(row LogRow) time.Time { return row.Timestamp })
+	}
+	if h.telemetry == nil {
+		observeRecordsDropped(reasonTelemetry, len(rows))
+	} else {
 		if len(rows) > 0 {
 			for i := range rows {
 				rows[i].Branch = h.resolveBranch(r.Context(), appID, rows[i].UpdateID)
@@ -256,6 +260,10 @@ func (h *IngestHandler) HandleMetrics(w http.ResponseWriter, r *http.Request) {
 
 	if h.telemetry == nil {
 		// Drain within the same cap so keep-alive connections stay reusable.
+		// Deliberately no decode and therefore no check-ins on this path:
+		// every expo-updates device polls the manifest anyway (the seam
+		// registers it there), so decoding metrics just to register would be
+		// pure cost for a deployment that dropped the data.
 		_, _ = io.Copy(io.Discard, http.MaxBytesReader(w, r.Body, maxLogsBodyBytes))
 		observeBatch(resultAccepted)
 		w.WriteHeader(http.StatusNoContent)

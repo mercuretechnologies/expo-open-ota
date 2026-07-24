@@ -746,3 +746,36 @@ func TestUpdateHealthCounts(t *testing.T) {
 	require.Len(t, breakdown, 3, "A cohort, B cohort, embedded-bundle cohort")
 	require.EqualValues(t, 2, breakdown[0].DeviceCount)
 }
+
+func TestUpdateHealthByIDs(t *testing.T) {
+	store, pool := setupIdentityStore(t)
+	appID := seedApp(t, pool)
+	ctx := context.Background()
+	updateA, updateB, updateGhost := uuid.NewString(), uuid.NewString(), uuid.NewString()
+
+	// 2 devices running A this month, 1 running B; B also crashed on another.
+	d1, d2, d3, d4 := uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString()
+	require.NoError(t, store.TouchDevice(ctx, appID, d1, nil, &updateA))
+	require.NoError(t, store.TouchDevice(ctx, appID, d2, nil, &updateA))
+	require.NoError(t, store.TouchDevice(ctx, appID, d3, nil, &updateB))
+	require.NoError(t, store.TouchDevice(ctx, appID, d4, nil, nil))
+	require.NoError(t, store.RecordUpdateFailures(ctx, appID, d4, []string{updateB}, "boom"))
+
+	// Adoption is the TOTAL population on the update: a device last seen a
+	// month ago still runs it and still counts.
+	dOld := uuid.NewString()
+	require.NoError(t, store.TouchDevice(ctx, appID, dOld, nil, &updateA))
+	_, err := pool.Exec(ctx,
+		"UPDATE device_identity SET last_seen_at = date_trunc('month', CURRENT_TIMESTAMP) - INTERVAL '1 day' WHERE app_id = $1 AND eas_client_id = $2",
+		appID, dOld)
+	require.NoError(t, err)
+
+	health, err := store.UpdateHealthByIDs(ctx, appID, []string{updateA, updateB, updateGhost, "not-a-uuid"})
+	require.NoError(t, err)
+	require.EqualValues(t, 3, health[updateA].DevicesOnUpdate)
+	require.EqualValues(t, 0, health[updateA].LaunchFailures)
+	require.EqualValues(t, 1, health[updateB].DevicesOnUpdate)
+	require.EqualValues(t, 1, health[updateB].LaunchFailures)
+	// An update nothing attempted has no entry: zero-valued on read.
+	require.Zero(t, health[updateGhost])
+}

@@ -30,12 +30,11 @@ func NewIdentityHandler(service *Service) *IdentityHandler {
 	return &IdentityHandler{service: service}
 }
 
-// requireService short-circuits with a 400 when identity is not wired:
-// stateless mode, or no ClickHouse configured (identity is part of Observe
-// and only comes up with it). Returns the service and true when available.
+// requireService short-circuits with a 400 when identity has no storage
+// (stateless mode). Returns the service and true when it is available.
 func (h *IdentityHandler) requireService(w http.ResponseWriter) (*Service, bool) {
 	if h.service == nil {
-		handlers.RenderError(w, http.StatusBadRequest, "Device identity is part of Observe: it requires a control plane (DB_URL) and a configured ClickHouse (CLICKHOUSE_URL).")
+		handlers.RenderError(w, http.StatusBadRequest, "Device identity requires a control plane (database).")
 		return nil, false
 	}
 	return h.service, true
@@ -301,4 +300,69 @@ func decodeDeviceCursor(encoded string) (*DeviceCursor, error) {
 		return nil, err
 	}
 	return &DeviceCursor{LastSeenAt: ts, EASClientID: parts[1]}, nil
+}
+
+// --- Update health (adoption + launch failures per update) ---
+
+// maxHealthUpdateIDs bounds one health request; a branch page shows far
+// fewer updates than this.
+const maxHealthUpdateIDs = 100
+
+type updateHealthResponse struct {
+	DevicesOnUpdate int64 `json:"devicesOnUpdate"`
+	LaunchFailures  int64 `json:"launchFailures"`
+	// HealthPercent is successes/(successes+failures) over devices that
+	// actually attempted the update; null when nothing attempted it yet.
+	HealthPercent *float64 `json:"healthPercent"`
+}
+
+// UpdateHealthHandler serves GET .../identity/update-health?ids=uuid,uuid:
+// the registry-backed instant-T health of a set of updates (the dashboard
+// passes the UUIDs it is displaying). Every id gets an entry, zeroes when
+// nothing was recorded for it.
+func (h *IdentityHandler) UpdateHealthHandler(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.requireService(w)
+	if !ok {
+		return
+	}
+	appID := mux.Vars(r)["APP_ID"]
+	rawIDs := strings.Split(r.URL.Query().Get("ids"), ",")
+	ids := make([]string, 0, len(rawIDs))
+	for _, raw := range rawIDs {
+		if trimmed := strings.TrimSpace(raw); trimmed != "" {
+			ids = append(ids, trimmed)
+		}
+	}
+	if len(ids) == 0 {
+		handlers.RenderError(w, http.StatusBadRequest, "Query parameter 'ids' is required.")
+		return
+	}
+	if len(ids) > maxHealthUpdateIDs {
+		handlers.RenderError(w, http.StatusBadRequest, "Too many update ids in one request.")
+		return
+	}
+
+	health, err := service.UpdateHealthByIDs(r.Context(), appID, ids)
+	if err != nil {
+		renderIdentityServiceError(w, err)
+		return
+	}
+	out := make(map[string]updateHealthResponse, len(ids))
+	for _, id := range ids {
+		parsed, err := uuid.Parse(id)
+		if err != nil {
+			continue // non-UUID input: no entry, never an error
+		}
+		entry := health[parsed.String()]
+		response := updateHealthResponse{
+			DevicesOnUpdate: entry.DevicesOnUpdate,
+			LaunchFailures:  entry.LaunchFailures,
+		}
+		if attempts := entry.DevicesOnUpdate + entry.LaunchFailures; attempts > 0 {
+			percent := 100 * float64(entry.DevicesOnUpdate) / float64(attempts)
+			response.HealthPercent = &percent
+		}
+		out[parsed.String()] = response
+	}
+	handlers.RenderJSON(w, http.StatusOK, map[string]any{"updates": out})
 }

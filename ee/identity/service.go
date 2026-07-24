@@ -60,6 +60,7 @@ type Store interface {
 	SearchMetadataValues(ctx context.Context, appID string, key string, search string, limit int) ([]ValueCount, error)
 	ListDevices(ctx context.Context, appID string, filter *MetadataFilter, limit int, cursor *DeviceCursor) ([]Device, *DeviceCursor, error)
 	GetDevice(ctx context.Context, appID string, easClientID string) (*Device, error)
+	UpdateHealthByIDs(ctx context.Context, appID string, updateIDs []string) (map[string]UpdateHealth, error)
 }
 
 // Service owns the store and the geo resolver. The ingest route calls Apply;
@@ -100,6 +101,12 @@ func (s *Service) ListDevices(ctx context.Context, appID string, filter *Metadat
 
 func (s *Service) GetDevice(ctx context.Context, appID string, easClientID string) (*Device, error) {
 	return s.store.GetDevice(ctx, appID, easClientID)
+}
+
+// UpdateHealthByIDs serves the dashboard's update-health display: MAU and
+// launch failures per update, straight from the Postgres registry.
+func (s *Service) UpdateHealthByIDs(ctx context.Context, appID string, updateIDs []string) (map[string]UpdateHealth, error) {
+	return s.store.UpdateHealthByIDs(ctx, appID, updateIDs)
 }
 
 // TouchDevice is Apply's passive sibling: every contact a device makes with
