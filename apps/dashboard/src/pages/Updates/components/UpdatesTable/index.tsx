@@ -13,7 +13,6 @@ import { useAppPermission } from '@/ee/lib/PermissionsContext';
 import { TimestampCell } from '@/components/ui/timestamp-cell';
 import { UpdatesBreadcrumb } from '@/pages/Updates/components/UpdatesBreadcrumb';
 import { UpdateRolloutCard } from '@/pages/Updates/components/UpdateRolloutCard';
-import { HealthBadge } from '@/pages/Updates/components/HealthBadge';
 
 export const UpdatesTable = ({
   branch,
@@ -45,11 +44,12 @@ export const UpdatesTable = ({
   const controlIds = new Set(activeRollout.map(u => u.controlUpdateId).filter(Boolean));
 
   // Update health (adoption + launch failures) comes from the device
-  // registry, uncached server-side. Rollback rows carry a literal
-  // "Rollback to embedded" instead of a UUID: they have no health and must
-  // not reach the endpoint. The server caps one request at 100 ids, so only
-  // the newest 100 updates are scored (older ones cannot show a meaningful
-  // score anyway).
+  // registry, uncached server-side. It only feeds the rollout card here (the
+  // per-update health display belongs to the dedicated Observe section), so
+  // it is fetched, and polled fast, only while a rollout is live. Rollback
+  // rows carry a literal "Rollback to embedded" instead of a UUID: they have
+  // no health and must not reach the endpoint. The server caps one request
+  // at 100 ids.
   const isUuid = (value: string) =>
     /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
   const updateUUIDs = [...(data ?? [])]
@@ -57,29 +57,17 @@ export const UpdatesTable = ({
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
     .slice(0, 100)
     .map(u => u.updateUUID);
-  // Poll fast while a rollout is live (the moment the score is being
-  // watched), lazily otherwise.
   const healthQuery = useQuery({
     queryKey: ['update-health', selectedAppId, branch, runtimeVersion, updateUUIDs.join(',')],
     queryFn: () => api.getUpdateHealth(updateUUIDs),
-    enabled: !!selectedAppId && CONTROL_PLANE_ENABLED && updateUUIDs.length > 0,
-    refetchInterval: activeRollout.length > 0 ? 5_000 : 60_000,
+    enabled:
+      !!selectedAppId &&
+      CONTROL_PLANE_ENABLED &&
+      updateUUIDs.length > 0 &&
+      activeRollout.length > 0,
+    refetchInterval: 5_000,
   });
   const healthByUuid = healthQuery.data?.updates;
-
-  // The health score is only shown where it is meaningful: the newest update
-  // OF EACH PLATFORM (ios and android sibling publishes are distinct updates
-  // with distinct UUIDs, and their timestamps tie at second precision), or an
-  // update currently mid-rollout.
-  const newestUuidByPlatform = new Map<string, string>();
-  for (const u of data ?? []) {
-    if (!isUuid(u.updateUUID)) continue;
-    const current = (data ?? []).find(x => x.updateUUID === newestUuidByPlatform.get(u.platform));
-    if (!current || u.createdAt.localeCompare(current.createdAt) >= 0) {
-      newestUuidByPlatform.set(u.platform, u.updateUUID);
-    }
-  }
-  const newestUuids = new Set(newestUuidByPlatform.values());
 
   // A rollout spans one row per platform, each a DISTINCT update: aggregate
   // devices and failures across the whole rollout set (and the control set)
@@ -185,36 +173,6 @@ export const UpdatesTable = ({
           },
           ...(CONTROL_PLANE_ENABLED
             ? [
-                {
-                  // Every device currently running this update, straight
-                  // from the device registry.
-                  header: 'Devices',
-                  id: 'devices',
-                  cell: ({ row }: { row: { original: UpdateRecord } }) => {
-                    const health = healthByUuid?.[row.original.updateUUID];
-                    if (!health) {
-                      return <span className="text-muted-foreground/40">-</span>;
-                    }
-                    return (
-                      <span className="text-sm tabular-nums">
-                        {health.devicesOnUpdate.toLocaleString()}
-                      </span>
-                    );
-                  },
-                },
-                {
-                  header: 'Health',
-                  id: 'health',
-                  cell: ({ row }: { row: { original: UpdateRecord } }) => {
-                    const update = row.original;
-                    const scored =
-                      newestUuids.has(update.updateUUID) || update.rolloutPercentage != null;
-                    if (!scored) {
-                      return <span className="text-muted-foreground/40">-</span>;
-                    }
-                    return <HealthBadge health={healthByUuid?.[update.updateUUID]} />;
-                  },
-                },
                 {
                   header: 'Rollout',
                   id: 'rollout',
