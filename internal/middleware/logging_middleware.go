@@ -26,14 +26,8 @@ func LoggingMiddleware(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		start := time.Now()
 
 		safeHeaders := redactHeaders(r.Header)
-
-		log.Printf("Started %s %s with query: %s and headers: %v", r.Method, r.RequestURI, r.URL.RawQuery, safeHeaders)
-
-		recorder := &statusRecorder{ResponseWriter: w, statusCode: http.StatusOK}
-
 		defer func() {
 			if err := recover(); err != nil {
 				log.Printf("Panic recovered during %s %s\nQuery: %s\nHeaders: %v\nError: %v\nStack Trace:\n%s",
@@ -41,6 +35,18 @@ func LoggingMiddleware(next http.Handler) http.Handler {
 				http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 			}
 		}()
+
+		// Telemetry ingestion fires on every app-background of every device;
+		// logging each batch would drown the request log.
+		if strings.HasSuffix(r.URL.Path, "/v1/logs") || strings.HasSuffix(r.URL.Path, "/v1/metrics") {
+			next.ServeHTTP(w, r)
+			return
+		}
+		start := time.Now()
+
+		log.Printf("Started %s %s with query: %s and headers: %v", r.Method, r.RequestURI, r.URL.RawQuery, safeHeaders)
+
+		recorder := &statusRecorder{ResponseWriter: w, statusCode: http.StatusOK}
 
 		next.ServeHTTP(recorder, r)
 

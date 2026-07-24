@@ -33,7 +33,8 @@ func TestEndToEndArchiveSmoke(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	service := NewAuditService(auditStore, func() bool { return true })
+	service := NewAuditService(auditStore)
+	service.licenseValid = func() bool { return true }
 	// Unique like every other DB test here: the table and the export cursor
 	// are shared across runs, a fixed actor would collide with itself.
 	actorID := "smoke-" + uuid.NewString()

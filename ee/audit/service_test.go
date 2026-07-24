@@ -117,12 +117,15 @@ func (f *fakeAuditRepo) AdvanceExportCursor(ctx context.Context, from int64, to 
 }
 
 func enabledService(repo AuditRepository) *AuditService {
-	return NewAuditService(repo, func() bool { return true })
+	svc := NewAuditService(repo)
+	svc.licenseValid = func() bool { return true }
+	return svc
 }
 
 func TestRecordCollectsNothingWithoutLicense(t *testing.T) {
 	repo := &fakeAuditRepo{}
-	service := NewAuditService(repo, func() bool { return false })
+	service := NewAuditService(repo)
+	service.licenseValid = func() bool { return false }
 
 	service.Record(context.Background(), Event{Action: auditlog.ActionUserLogin})
 
@@ -131,7 +134,8 @@ func TestRecordCollectsNothingWithoutLicense(t *testing.T) {
 }
 
 func TestRecordCollectsNothingInStatelessMode(t *testing.T) {
-	service := NewAuditService(nil, func() bool { return true })
+	service := NewAuditService(nil)
+	service.licenseValid = func() bool { return true }
 
 	// Must be a silent no-op, not a nil dereference.
 	service.Record(context.Background(), Event{Action: auditlog.ActionUserLogin})
@@ -178,7 +182,8 @@ func TestRecordSwallowsInsertErrors(t *testing.T) {
 }
 
 func TestListRequiresControlPlane(t *testing.T) {
-	service := NewAuditService(nil, func() bool { return true })
+	service := NewAuditService(nil)
+	service.licenseValid = func() bool { return true }
 
 	_, _, err := service.List(context.Background(), ListParams{})
 	require.ErrorIs(t, err, ErrRequiresControlPlane)
@@ -228,7 +233,8 @@ func TestPurgeOlderThanUsesTheRetentionCutoff(t *testing.T) {
 	repo := &fakeAuditRepo{purgedCount: 12}
 	// Deliberately unlicensed: retention applies to collected data whatever
 	// the licence state.
-	service := NewAuditService(repo, func() bool { return false })
+	service := NewAuditService(repo)
+	service.licenseValid = func() bool { return false }
 
 	purged, err := service.PurgeOlderThan(context.Background(), 550*24*time.Hour)
 	require.NoError(t, err)
@@ -240,7 +246,8 @@ func TestPurgeOlderThanUsesTheRetentionCutoff(t *testing.T) {
 
 func TestPurgeSparesUnarchivedRowsWhileArchiving(t *testing.T) {
 	repo := &fakeAuditRepo{}
-	service := NewAuditService(repo, func() bool { return true })
+	service := NewAuditService(repo)
+	service.licenseValid = func() bool { return true }
 	service.startArchive(context.Background(), time.Hour, &fakePutter{})
 
 	_, err := service.PurgeOlderThan(context.Background(), 550*24*time.Hour)
@@ -251,7 +258,8 @@ func TestPurgeSparesUnarchivedRowsWhileArchiving(t *testing.T) {
 }
 
 func TestPurgeRequiresControlPlane(t *testing.T) {
-	service := NewAuditService(nil, func() bool { return true })
+	service := NewAuditService(nil)
+	service.licenseValid = func() bool { return true }
 	_, err := service.PurgeOlderThan(context.Background(), time.Hour)
 	require.ErrorIs(t, err, ErrRequiresControlPlane)
 	// And the scheduler declines to start rather than panic.
@@ -260,7 +268,8 @@ func TestPurgeRequiresControlPlane(t *testing.T) {
 
 func TestListReadsStayOpenWithoutLicense(t *testing.T) {
 	repo := &fakeAuditRepo{listResult: []Event{{ID: 1, Action: auditlog.ActionUserLogin, OccurredAt: time.Now()}}}
-	service := NewAuditService(repo, func() bool { return false })
+	service := NewAuditService(repo)
+	service.licenseValid = func() bool { return false }
 
 	// A lapsed license stops collection, never read access to what was
 	// collected while licensed.

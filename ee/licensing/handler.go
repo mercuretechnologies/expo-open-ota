@@ -58,13 +58,6 @@ func licenseResponseFrom(status LicenseStatus) LicenseResponse {
 	return response
 }
 
-func renderJSON(w http.ResponseWriter, status int, payload interface{}) {
-	marshaledResponse, _ := json.Marshal(payload)
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	w.Write(marshaledResponse)
-}
-
 // renderLicenseServiceError maps key-validation failures onto 400s with the
 // actionable reason; anything unrecognized stays an opaque 500.
 func renderLicenseServiceError(w http.ResponseWriter, err error) {
@@ -86,7 +79,7 @@ func (h *LicenseHandler) GetLicenseHandler(w http.ResponseWriter, r *http.Reques
 		renderLicenseServiceError(w, err)
 		return
 	}
-	renderJSON(w, http.StatusOK, licenseResponseFrom(status))
+	handlers.RenderJSON(w, http.StatusOK, licenseResponseFrom(status))
 }
 
 func (h *LicenseHandler) ActivateLicenseHandler(w http.ResponseWriter, r *http.Request) {
@@ -106,7 +99,7 @@ func (h *LicenseHandler) ActivateLicenseHandler(w http.ResponseWriter, r *http.R
 		renderLicenseServiceError(w, err)
 		return
 	}
-	renderJSON(w, http.StatusOK, licenseResponseFrom(status))
+	handlers.RenderJSON(w, http.StatusOK, licenseResponseFrom(status))
 }
 
 func (h *LicenseHandler) RemoveLicenseHandler(w http.ResponseWriter, r *http.Request) {

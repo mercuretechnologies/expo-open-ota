@@ -24,6 +24,19 @@ func RenderError(w http.ResponseWriter, status int, detail string) {
 	})
 }
 
+// RenderJSON writes payload as a JSON body with the given status. The success
+// counterpart to RenderError, shared so every handler renders the same way.
+func RenderJSON(w http.ResponseWriter, status int, payload interface{}) {
+	marshaledResponse, err := json.Marshal(payload)
+	if err != nil {
+		RenderError(w, http.StatusInternalServerError, "An internal error occurred.")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_, _ = w.Write(marshaledResponse)
+}
+
 // activeRolloutConflictMessage is the CLI-facing 409 body for publish, republish and
 // rollback attempts against a branch and runtime version with an active per-update
 // rollout. The republish and rollback commands print it verbatim.

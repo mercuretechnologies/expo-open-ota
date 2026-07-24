@@ -170,7 +170,8 @@ func TestListHandlerRejectsInvalidInput(t *testing.T) {
 }
 
 func TestListHandlerStatelessMode(t *testing.T) {
-	service := NewAuditService(nil, func() bool { return true })
+	service := NewAuditService(nil)
+	service.licenseValid = func() bool { return true }
 
 	recorder := performList(t, service, "")
 	assert.Equal(t, http.StatusBadRequest, recorder.Code)
@@ -200,7 +201,8 @@ func TestListHandlerReadsStayOpenWithoutLicense(t *testing.T) {
 	// A lapsed license stops collection, never read access: the viewer must
 	// keep answering (the UI overlay is the gate, not the server).
 	repo := &fakeAuditRepo{listResult: []Event{{ID: 1, Action: auditlog.ActionUserLogin}}}
-	service := NewAuditService(repo, func() bool { return false })
+	service := NewAuditService(repo)
+	service.licenseValid = func() bool { return false }
 
 	recorder := performList(t, service, "")
 	require.Equal(t, http.StatusOK, recorder.Code)

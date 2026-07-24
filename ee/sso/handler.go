@@ -40,13 +40,6 @@ func NewSSOHandler(service *SSOService) *SSOHandler {
 	return &SSOHandler{service: service}
 }
 
-func renderJSON(w http.ResponseWriter, status int, payload interface{}) {
-	marshaledResponse, _ := json.Marshal(payload)
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	w.Write(marshaledResponse)
-}
-
 // renderSSOServiceError maps the service's business errors onto explicit
 // status codes for the admin endpoints; anything unrecognized stays an
 // opaque 500.
@@ -134,7 +127,7 @@ func (h *SSOHandler) GetPublicConfigHandler(w http.ResponseWriter, r *http.Reque
 		handlers.RenderError(w, http.StatusNotFound, "Dashboard is disabled")
 		return
 	}
-	renderJSON(w, http.StatusOK, h.service.PublicConfig(r.Context()))
+	handlers.RenderJSON(w, http.StatusOK, h.service.PublicConfig(r.Context()))
 }
 
 // LoginRedirectHandler starts the flow: it drops the flow cookie and sends
@@ -245,7 +238,7 @@ func (h *SSOHandler) GetConfigHandler(w http.ResponseWriter, r *http.Request) {
 		renderSSOServiceError(w, err)
 		return
 	}
-	renderJSON(w, http.StatusOK, adminConfigResponseFrom(view))
+	handlers.RenderJSON(w, http.StatusOK, adminConfigResponseFrom(view))
 }
 
 func (h *SSOHandler) SaveConfigHandler(w http.ResponseWriter, r *http.Request) {
@@ -283,7 +276,7 @@ func (h *SSOHandler) SaveConfigHandler(w http.ResponseWriter, r *http.Request) {
 		renderSSOServiceError(w, err)
 		return
 	}
-	renderJSON(w, http.StatusOK, adminConfigResponseFrom(view))
+	handlers.RenderJSON(w, http.StatusOK, adminConfigResponseFrom(view))
 }
 
 func (h *SSOHandler) DeleteConfigHandler(w http.ResponseWriter, r *http.Request) {

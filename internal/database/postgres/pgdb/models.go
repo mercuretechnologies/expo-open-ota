@@ -84,11 +84,39 @@ type ChannelRollout struct {
 	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
 }
 
+type DeviceIdentity struct {
+	AppID       pgtype.UUID        `json:"app_id"`
+	EasClientID pgtype.UUID        `json:"eas_client_id"`
+	Metadata    []byte             `json:"metadata"`
+	CountryCode *string            `json:"country_code"`
+	City        *string            `json:"city"`
+	Lat         *float64           `json:"lat"`
+	Lng         *float64           `json:"lng"`
+	FirstSeenAt pgtype.Timestamptz `json:"first_seen_at"`
+	LastSeenAt  pgtype.Timestamptz `json:"last_seen_at"`
+}
+
 type EnterpriseLicense struct {
 	Singleton  bool               `json:"singleton"`
 	LicenseKey string             `json:"license_key"`
 	CreatedAt  pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt  pgtype.Timestamptz `json:"updated_at"`
+}
+
+type IdentitySchema struct {
+	AppID     pgtype.UUID        `json:"app_id"`
+	Key       string             `json:"key"`
+	ValueType string             `json:"value_type"`
+	MaxLength int32              `json:"max_length"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+}
+
+type IdentityValueStat struct {
+	AppID       pgtype.UUID        `json:"app_id"`
+	Key         string             `json:"key"`
+	Value       string             `json:"value"`
+	DeviceCount int64              `json:"device_count"`
+	LastSeenAt  pgtype.Timestamptz `json:"last_seen_at"`
 }
 
 type Role struct {

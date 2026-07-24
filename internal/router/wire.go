@@ -5,7 +5,9 @@ import (
 	"expo-open-ota/config"
 	"expo-open-ota/ee/apikeyrestrictions"
 	"expo-open-ota/ee/audit"
+	"expo-open-ota/ee/identity"
 	"expo-open-ota/ee/licensing"
+	"expo-open-ota/ee/observe"
 	"expo-open-ota/ee/rbac"
 	"expo-open-ota/ee/sso"
 	"expo-open-ota/internal/bucket"
@@ -44,6 +46,8 @@ type AppContainer struct {
 	UsersHandler             *dashhandlers.UsersHandler
 	AuditHandler             *audit.AuditHandler
 	UserRepo                 services.UserRepository
+	ObserveIngestHandler     *observe.IngestHandler
+	IdentityHandler          *identity.IdentityHandler
 }
 
 // logLegacyAppIdFallback states, once at boot, which app receives manifest and
@@ -87,6 +91,11 @@ func InitDependencies(ctx context.Context) (*AppContainer, func()) {
 	// The audit trail (ee/audit) as well: nil keeps its recorder a no-op, so
 	// stateless deployments never collect an event.
 	var auditRepo audit.AuditRepository
+	// Device identity (ee/identity) lives in the database; nil makes the
+	// observe ingestion acknowledge-and-drop and the dashboard handler answer
+	// 400, so stateless deployments never block on it. The service owns the
+	// store; the ingest route and the dashboard handler both go through it.
+	var identityService *identity.Service
 
 	cleanup := func() {}
 	dbUrl := config.GetDBURL()
@@ -123,6 +132,24 @@ func InitDependencies(ctx context.Context) (*AppContainer, func()) {
 		channelRepo = store.NewPostgresChannelStore(dbEngine)
 		updateRepo = store.NewPostgresUpdateStore(dbEngine)
 		rolloutRepo = store.NewPostgresRolloutStore(dbEngine)
+
+		// GeoIP enrichment is optional: without a configured GeoLite2 City
+		// database, devices simply stay unlocated. A configured-but-broken
+		// path fails the boot loudly instead of resolving nothing forever.
+		var geoResolver identity.GeoResolver
+		if mmdbPath := config.GetEnv("GEOIP_MMDB_PATH"); mmdbPath != "" {
+			resolver, err := identity.NewGeoLite2Resolver(mmdbPath)
+			if err != nil {
+				log.Fatalf("🚨 [IDENTITY] %v", err)
+			}
+			geoResolver = resolver
+			dbCleanup := cleanup
+			cleanup = func() {
+				resolver.Close()
+				dbCleanup()
+			}
+		}
+		identityService = identity.NewService(identity.NewPostgresIdentityStore(dbEngine), geoResolver)
 	} else {
 		log.Println("⚙️  [STATELESS] Initializing Stateless Mode (Flat-Env Mode)...")
 		if err := config.LoadAppsFromFlatEnv(); err != nil {
@@ -151,7 +178,7 @@ func InitDependencies(ctx context.Context) (*AppContainer, func()) {
 	// The audit recorder is handed to every emitting surface below; it
 	// no-ops without a control plane and a currently valid license, so the
 	// call sites stay unconditional.
-	auditService := audit.NewAuditService(auditRepo, licensing.IsEnterprise)
+	auditService := audit.NewAuditService(auditRepo)
 	// The archive and the retention purge read their own configuration: that
 	// knowledge is the feature's, not the wiring's. The archive starts first
 	// so the purge spares unarchived rows, and an enabled-but-misconfigured
@@ -223,5 +250,7 @@ func InitDependencies(ctx context.Context) (*AppContainer, func()) {
 		UploadHandler:            handlers.NewUploadHandler(cliAuthService, deploymentService),
 		UsersHandler:             dashhandlers.NewUsersHandler(userService),
 		UserRepo:                 userRepo,
+		ObserveIngestHandler:     observe.NewIngestHandler(identityService),
+		IdentityHandler:          identity.NewIdentityHandler(identityService),
 	}, cleanup
 }

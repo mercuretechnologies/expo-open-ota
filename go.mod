@@ -19,6 +19,7 @@ require (
 	github.com/jackc/pgx/v5 v5.9.2
 	github.com/jarcoal/httpmock v1.3.1
 	github.com/joho/godotenv v1.5.1
+	github.com/oschwald/geoip2-golang v1.13.0
 	github.com/pressly/goose/v3 v3.26.0
 	github.com/prometheus/client_golang v1.20.5
 	github.com/redis/go-redis/v9 v9.18.0
@@ -26,6 +27,7 @@ require (
 	golang.org/x/crypto v0.54.0
 	golang.org/x/oauth2 v0.35.0
 	golang.org/x/sync v0.22.0
+	golang.org/x/time v0.5.0
 	google.golang.org/api v0.178.0
 	gopkg.in/yaml.v3 v3.0.1
 )
@@ -72,6 +74,7 @@ require (
 	github.com/klauspost/compress v1.18.0 // indirect
 	github.com/mfridman/interpolate v0.0.2 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
+	github.com/oschwald/maxminddb-golang v1.13.0 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/prometheus/client_model v0.6.1 // indirect
 	github.com/prometheus/common v0.55.0 // indirect
@@ -89,7 +92,6 @@ require (
 	golang.org/x/net v0.57.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/text v0.40.0 // indirect
-	golang.org/x/time v0.5.0 // indirect
 	google.golang.org/genproto v0.0.0-20240401170217-c3f982113cda // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20251202230838-ff82c1b0f217 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20251202230838-ff82c1b0f217 // indirect

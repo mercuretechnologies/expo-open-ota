@@ -114,7 +114,8 @@ func TestArchiveKeepsDrainingWithoutALicense(t *testing.T) {
 	// would never come for them).
 	repo := seededExportRepo()
 	putter := &fakePutter{}
-	service := NewAuditService(repo, func() bool { return false })
+	service := NewAuditService(repo)
+	service.licenseValid = func() bool { return false }
 
 	_, err := service.archiveNextBatch(context.Background(), putter)
 	require.NoError(t, err)
@@ -172,7 +173,8 @@ func TestArchivePutFailureLeavesTheCursorUntouched(t *testing.T) {
 }
 
 func TestArchiveDeclinesToStartWithoutControlPlane(t *testing.T) {
-	service := NewAuditService(nil, func() bool { return true })
+	service := NewAuditService(nil)
+	service.licenseValid = func() bool { return true }
 	service.startArchive(context.Background(), time.Minute, &fakePutter{})
 	// Declining must not flip the purge into exported-only mode: a stateless
 	// service has no exporter to ever advance the cursor.
@@ -189,7 +191,8 @@ func TestStartArchiveFromEnvStaysOffByDefault(t *testing.T) {
 
 func TestStartArchiveFromEnvRequiresControlPlane(t *testing.T) {
 	t.Setenv("ARCHIVE_AUDIT_LOGS", "true")
-	service := NewAuditService(nil, func() bool { return true })
+	service := NewAuditService(nil)
+	service.licenseValid = func() bool { return true }
 
 	err := service.StartArchiveFromEnv(context.Background())
 	require.ErrorContains(t, err, "control plane")

@@ -5,7 +5,6 @@
 package audit
 
 import (
-	"encoding/json"
 	"errors"
 	"expo-open-ota/internal/handlers"
 	"net/http"
@@ -76,13 +75,6 @@ func checkAndParseRange(from *string, to *string) (*time.Time, *time.Time, error
 		}
 	}
 	return finalFrom, finalTo, nil
-}
-
-func renderJSON(w http.ResponseWriter, status int, payload interface{}) {
-	marshaledResponse, _ := json.Marshal(payload)
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	w.Write(marshaledResponse)
 }
 
 type AuditEventResponse struct {
@@ -190,7 +182,7 @@ func (h *AuditHandler) ListAuditLogsHandler(w http.ResponseWriter, r *http.Reque
 	for i, event := range events {
 		responseEvents[i] = auditEventResponseFrom(event)
 	}
-	renderJSON(w, http.StatusOK, map[string]interface{}{
+	handlers.RenderJSON(w, http.StatusOK, map[string]interface{}{
 		"events":     responseEvents,
 		"nextCursor": nextCursor,
 		"count":      count,
