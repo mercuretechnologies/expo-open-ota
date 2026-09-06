@@ -1,4 +1,15 @@
+-- +goose NO TRANSACTION
 -- +goose Up
+-- Build the parent indexes without blocking authentication reads and writes.
+-- Drop unfinished indexes before retrying an interrupted migration.
+DROP INDEX CONCURRENTLY IF EXISTS idx_api_keys_id_app;
+CREATE UNIQUE INDEX CONCURRENTLY idx_api_keys_id_app ON api_keys (id, app_id);
+DROP INDEX CONCURRENTLY IF EXISTS idx_app_identifiers_id_app;
+CREATE UNIQUE INDEX CONCURRENTLY idx_app_identifiers_id_app ON app_identifiers (id, app_id);
+
+-- Goose sends this block in one pgx Exec; PostgreSQL applies its statements
+-- in one implicit transaction, so a failure rolls back the schema changes.
+-- +goose StatementBegin
 -- Existing tokens retain all Updates access they had before empty rule lists
 -- became deny-by-default. Scoped tokens keep their existing rules unchanged.
 INSERT INTO api_key_branch_rules (api_key_id, pattern, actions)
@@ -11,8 +22,8 @@ ALTER TABLE api_key_update_rules RENAME CONSTRAINT uq_api_key_branch_rule TO uq_
 ALTER TABLE api_key_update_rules RENAME CONSTRAINT fk_api_key_branch_rules_api_key TO fk_api_key_update_rules_api_key;
 ALTER TABLE api_key_update_rules RENAME CONSTRAINT api_key_branch_rules_pkey TO api_key_update_rules_pkey;
 ALTER SEQUENCE api_key_branch_rules_id_seq RENAME TO api_key_update_rules_id_seq;
-ALTER TABLE api_keys ADD CONSTRAINT uq_api_keys_app_id UNIQUE (id, app_id);
-ALTER TABLE app_identifiers ADD CONSTRAINT uq_app_identifiers_app_id UNIQUE (id, app_id);
+ALTER TABLE api_keys ADD CONSTRAINT uq_api_keys_app_id UNIQUE USING INDEX idx_api_keys_id_app;
+ALTER TABLE app_identifiers ADD CONSTRAINT uq_app_identifiers_app_id UNIQUE USING INDEX idx_app_identifiers_id_app;
 
 CREATE TABLE api_key_build_rules (
     api_key_id BIGINT NOT NULL,
@@ -39,6 +50,8 @@ CREATE TABLE api_key_submit_rules (
 CREATE INDEX idx_api_key_submit_rules_identifier ON api_key_submit_rules(app_identifier_id, app_id);
 CREATE INDEX idx_api_key_submit_rules_app ON api_key_submit_rules(app_id);
 
+-- +goose StatementEnd
+
 -- +goose Down
 -- Refuse a downgrade that would widen Updates access or discard native grants.
 -- +goose StatementBegin
@@ -56,7 +69,6 @@ BEGIN
         RAISE EXCEPTION 'Cannot downgrade while live tokens have Build or Submit rules; revoke those grants first';
     END IF;
 END $$;
--- +goose StatementEnd
 DROP TABLE api_key_submit_rules;
 DROP TABLE api_key_build_rules;
 ALTER TABLE app_identifiers DROP CONSTRAINT uq_app_identifiers_app_id;
@@ -66,3 +78,4 @@ ALTER TABLE api_key_update_rules RENAME CONSTRAINT fk_api_key_update_rules_api_k
 ALTER TABLE api_key_update_rules RENAME CONSTRAINT api_key_update_rules_pkey TO api_key_branch_rules_pkey;
 ALTER SEQUENCE api_key_update_rules_id_seq RENAME TO api_key_branch_rules_id_seq;
 ALTER TABLE api_key_update_rules RENAME TO api_key_branch_rules;
+-- +goose StatementEnd
