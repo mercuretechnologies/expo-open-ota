@@ -265,6 +265,11 @@ func TestSSOMigrationDownAndUp(t *testing.T) {
 	}
 
 	require.Equal(t, 2, tableCount())
+	// This schema roundtrip also rolls back token permissions. Discard API key
+	// fixtures left by other packages: the downgrade correctly refuses live
+	// keys whose empty Updates rules would become full access in the old code.
+	_, err = pool.Exec(ctx, "DELETE FROM api_keys")
+	require.NoError(t, err)
 	require.NoError(t, goose.DownTo(db, "migrations", 20260718110000))
 	assert.Equal(t, 0, tableCount())
 	require.NoError(t, goose.Up(db, "migrations"))
