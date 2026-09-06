@@ -5,9 +5,11 @@
 package apikeyrestrictions
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"xprem/internal/branch"
+	"xprem/internal/services"
 	"xprem/internal/validation"
 )
 
@@ -43,6 +45,13 @@ func (a UpdateAction) Implies(b UpdateAction) bool {
 		return true
 	}
 	return b == UpdateActionRead && (a == UpdateActionPublish || a == UpdateActionRollback)
+}
+
+// UpdateRequest describes an operation on a concrete OTA branch.
+type UpdateRequest struct {
+	APIKeyContext
+	Branch string
+	Action UpdateAction
 }
 
 // UpdateRule grants a set of actions on every branch matching Pattern, where
@@ -148,4 +157,17 @@ func describeUpdateRules(rules []UpdateRule) []string {
 		described = append(described, fmt.Sprintf("%s:%s", rule.Pattern, strings.Join(actions, "+")))
 	}
 	return described
+}
+
+// AuthorizeUpdates checks the authenticated key and IP, then only Update grants.
+// It is a no-op without an active Enterprise license or control plane.
+func (s *ApiKeyAccessService) AuthorizeUpdates(ctx context.Context, req UpdateRequest) error {
+	access, err := s.authorizationAccess(ctx, req.APIKeyContext)
+	if err != nil || access == nil {
+		return err
+	}
+	if !IsValidUpdateAction(string(req.Action)) || !AllowsUpdates(access.UpdateRules, req.Branch, req.Action) {
+		return fmt.Errorf("%w: this API key is not allowed to %s updates on branch %q", services.ErrCliAccessDenied, req.Action, req.Branch)
+	}
+	return nil
 }

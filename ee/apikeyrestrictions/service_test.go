@@ -33,7 +33,7 @@ func (f *fakeAccessRepo) GetAccessByAppID(_ context.Context, _ string) ([]ApiKey
 	return out, nil
 }
 
-func (f *fakeAccessRepo) GetAccess(_ context.Context, apiKeyID int64) (ApiKeyAccess, error) {
+func (f *fakeAccessRepo) GetAccess(_ context.Context, _ string, apiKeyID int64) (ApiKeyAccess, error) {
 	access, ok := f.access[apiKeyID]
 	if !ok {
 		return ApiKeyAccess{}, ErrApiKeyNotFound
@@ -71,8 +71,8 @@ func mustAddr(t *testing.T, value string) netip.Addr {
 
 // publish is the request most tests are about; the fields that vary are set
 // by the caller.
-func publishOn(branchName string) CliRequest {
-	return CliRequest{AppID: "app", APIKeyID: 1, Branch: branchName, Action: UpdateActionPublish}
+func publishOn(branchName string) UpdateRequest {
+	return UpdateRequest{APIKeyContext: APIKeyContext{AppID: "app", APIKeyID: 1}, Branch: branchName, Action: UpdateActionPublish}
 }
 
 func TestStatelessModeAnswersControlPlaneError(t *testing.T) {
@@ -84,7 +84,7 @@ func TestStatelessModeAnswersControlPlaneError(t *testing.T) {
 		t.Fatalf("expected ErrRequiresControlPlane, got %v", err)
 	}
 	// Enforcement is a no-op in stateless mode, never an error.
-	if err := service.Authorize(context.Background(), publishOn("main")); err != nil {
+	if err := service.AuthorizeUpdates(context.Background(), publishOn("main")); err != nil {
 		t.Fatalf("expected enforcement no-op, got %v", err)
 	}
 }
@@ -181,12 +181,12 @@ func TestAuthorizeEnforcesIpAllowlist(t *testing.T) {
 
 	request := publishOn("main")
 	request.ClientIP = mustAddr(t, "10.1.2.3")
-	if err := service.Authorize(context.Background(), request); err != nil {
+	if err := service.AuthorizeUpdates(context.Background(), request); err != nil {
 		t.Fatalf("allowlisted address rejected: %v", err)
 	}
 	// The rejection names the resolved caller IP and still wraps ErrIpNotAllowed.
 	request.ClientIP = mustAddr(t, "203.0.113.9")
-	err := service.Authorize(context.Background(), request)
+	err := service.AuthorizeUpdates(context.Background(), request)
 	if !errors.Is(err, ErrIpNotAllowed) {
 		t.Fatalf("expected ErrIpNotAllowed, got %v", err)
 	}
@@ -198,7 +198,7 @@ func TestAuthorizeEnforcesIpAllowlist(t *testing.T) {
 	}
 	// An unresolvable caller address never passes; the message hints at proxy config.
 	request.ClientIP = netip.Addr{}
-	err = service.Authorize(context.Background(), request)
+	err = service.AuthorizeUpdates(context.Background(), request)
 	if !errors.Is(err, ErrIpNotAllowed) {
 		t.Fatalf("expected ErrIpNotAllowed for invalid address, got %v", err)
 	}
@@ -224,14 +224,14 @@ func TestAuthorizeMatchesAllowlistEnteredInMappedForm(t *testing.T) {
 	for _, caller := range []string{"203.0.113.7", "::ffff:203.0.113.7", "10.20.30.40"} {
 		request := publishOn("main")
 		request.ClientIP = mustAddr(t, caller)
-		if err := service.Authorize(context.Background(), request); err != nil {
+		if err := service.AuthorizeUpdates(context.Background(), request); err != nil {
 			t.Fatalf("caller %q: allowlisted address rejected: %v", caller, err)
 		}
 	}
 	for _, caller := range []string{"203.0.113.8", "2001:db8::1"} {
 		request := publishOn("main")
 		request.ClientIP = mustAddr(t, caller)
-		if err := service.Authorize(context.Background(), request); !errors.Is(err, ErrIpNotAllowed) {
+		if err := service.AuthorizeUpdates(context.Background(), request); !errors.Is(err, ErrIpNotAllowed) {
 			t.Fatalf("caller %q: expected ErrIpNotAllowed, got %v", caller, err)
 		}
 	}
@@ -244,7 +244,7 @@ func TestAuthorizeDeniesEverythingWithoutRules(t *testing.T) {
 	for _, action := range AllUpdateActions {
 		request := publishOn("production")
 		request.Action = action
-		if err := service.Authorize(context.Background(), request); !errors.Is(err, services.ErrCliAccessDenied) {
+		if err := service.AuthorizeUpdates(context.Background(), request); !errors.Is(err, services.ErrCliAccessDenied) {
 			t.Fatalf("action %q: expected access denied, got %v", action, err)
 		}
 	}
@@ -263,11 +263,11 @@ func TestAuthorizeEnforcesUpdateRules(t *testing.T) {
 	service := serviceWith(repo, true)
 
 	// In scope, with the action granted.
-	if err := service.Authorize(context.Background(), publishOn("pr-482")); err != nil {
+	if err := service.AuthorizeUpdates(context.Background(), publishOn("pr-482")); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	// In scope, but the action is not granted.
-	err := service.Authorize(context.Background(), publishOn("production"))
+	err := service.AuthorizeUpdates(context.Background(), publishOn("production"))
 	if !errors.Is(err, services.ErrCliAccessDenied) {
 		t.Fatalf("expected a CLI access denial, got %v", err)
 	}
@@ -275,13 +275,13 @@ func TestAuthorizeEnforcesUpdateRules(t *testing.T) {
 		t.Fatalf("expected the branch and the action in the message, got %q", err.Error())
 	}
 	// Out of scope entirely.
-	if err := service.Authorize(context.Background(), publishOn("staging")); !errors.Is(err, services.ErrCliAccessDenied) {
+	if err := service.AuthorizeUpdates(context.Background(), publishOn("staging")); !errors.Is(err, services.ErrCliAccessDenied) {
 		t.Fatalf("expected a CLI access denial, got %v", err)
 	}
 	// Reading production is granted by the rule.
 	read := publishOn("production")
 	read.Action = UpdateActionRead
-	if err := service.Authorize(context.Background(), read); err != nil {
+	if err := service.AuthorizeUpdates(context.Background(), read); err != nil {
 		t.Fatalf("unexpected error on a granted read: %v", err)
 	}
 }
@@ -296,13 +296,13 @@ func TestAuthorizeRefusesBranchlessRequestForScopedKey(t *testing.T) {
 	}
 	service := serviceWith(repo, true)
 
-	if err := service.Authorize(context.Background(), publishOn("")); !errors.Is(err, services.ErrCliAccessDenied) {
+	if err := service.AuthorizeUpdates(context.Background(), publishOn("")); !errors.Is(err, services.ErrCliAccessDenied) {
 		t.Fatalf("expected a CLI access denial for a scoped key, got %v", err)
 	}
 	// A key without rules is refused too.
 	unscoped := publishOn("")
 	unscoped.APIKeyID = 2
-	if err := service.Authorize(context.Background(), unscoped); !errors.Is(err, services.ErrCliAccessDenied) {
+	if err := service.AuthorizeUpdates(context.Background(), unscoped); !errors.Is(err, services.ErrCliAccessDenied) {
 		t.Fatalf("expected access denied for a key without rules, got %v", err)
 	}
 }
@@ -320,7 +320,7 @@ func TestAuthorizeIsNoOpWithoutValidLicense(t *testing.T) {
 	service := serviceWith(repo, false)
 	request := publishOn("production")
 	request.ClientIP = mustAddr(t, "203.0.113.9")
-	if err := service.Authorize(context.Background(), request); err != nil {
+	if err := service.AuthorizeUpdates(context.Background(), request); err != nil {
 		t.Fatalf("expected community behavior without license, got %v", err)
 	}
 }

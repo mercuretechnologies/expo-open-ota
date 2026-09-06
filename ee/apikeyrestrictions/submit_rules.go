@@ -5,10 +5,12 @@
 package apikeyrestrictions
 
 import (
+	"context"
 	"fmt"
 	"slices"
 	"strings"
 
+	"xprem/internal/services"
 	"xprem/internal/validation"
 )
 
@@ -27,6 +29,15 @@ const (
 	SubmitDestinationProduction SubmitDestination = "production"
 	SubmitDestinationTestFlight SubmitDestination = "testflight"
 )
+
+// SubmitRequest describes an operation on a registered app identifier.
+// Resolve AppIdentifierID from the actual operation target before authorizing.
+type SubmitRequest struct {
+	APIKeyContext
+	AppIdentifierID string
+	Action          SubmitAction
+	Destination     SubmitDestination
+}
 
 // SubmitRule grants upload for one identifier and store destination.
 type SubmitRule struct {
@@ -100,4 +111,22 @@ func describeSubmitRules(rules []SubmitRule) []string {
 		described = append(described, fmt.Sprintf("%s:%s:%s", rule.AppIdentifierID, rule.Destination, strings.Join(actions, "+")))
 	}
 	return described
+}
+
+// AuthorizeSubmit checks the authenticated key and IP, then only Submit grants.
+// It is a no-op without an active Enterprise license or control plane.
+func (s *ApiKeyAccessService) AuthorizeSubmit(ctx context.Context, req SubmitRequest) error {
+	access, err := s.authorizationAccess(ctx, req.APIKeyContext)
+	if err != nil || access == nil {
+		return err
+	}
+	identifierID, err := normalizeIdentifierID(req.AppIdentifierID)
+	if err == nil {
+		for _, rule := range access.SubmitRules {
+			if rule.Allows(identifierID, req.Destination, req.Action) {
+				return nil
+			}
+		}
+	}
+	return fmt.Errorf("%w: this API key is not allowed to %s submissions for app identifier %q to %q", services.ErrCliAccessDenied, req.Action, req.AppIdentifierID, req.Destination)
 }

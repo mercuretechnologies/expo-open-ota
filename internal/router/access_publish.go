@@ -12,11 +12,11 @@ import (
 	"github.com/gorilla/mux"
 )
 
-// publishGroup registers the CLI write routes.
+// publishGroup registers the CLI routes that publish or roll back OTA updates.
 type publishGroup struct {
 	router       *mux.Router
 	cliAuth      *services.CliAuthService
-	apiKeyAccess cliAccessPolicy
+	apiKeyAccess updateAccessPolicy
 }
 
 func (g publishGroup) route(method, path string, handler http.HandlerFunc, action apikeyrestrictions.UpdateAction) {
@@ -66,7 +66,7 @@ func (g publishGroup) guard(action apikeyrestrictions.UpdateAction, resolveBranc
 				handlers.RenderCliAuthError(w, err)
 				return
 			}
-			if !authorizeCliRequest(g.apiKeyAccess, w, r, credential, action, resolveBranch(r)) {
+			if !authorizeUpdateRequest(g.apiKeyAccess, w, r, credential, action, resolveBranch(r)) {
 				return
 			}
 			next.ServeHTTP(w, r.WithContext(services.WithCliAuth(r.Context(), credential)))

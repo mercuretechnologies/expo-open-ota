@@ -18,7 +18,7 @@ import (
 
 // servePublishRequest builds the publish group the way registerPublishRoutes
 // does, with a spy policy, and sends one request at it.
-func servePublishRequest(t *testing.T, method, path, requestPath string, action apikeyrestrictions.UpdateAction, policy *recordingPolicy) *httptest.ResponseRecorder {
+func servePublishRequest(t *testing.T, method, path, requestPath string, action apikeyrestrictions.UpdateAction, policy *recordingUpdatePolicy) *httptest.ResponseRecorder {
 	t.Helper()
 	router := mux.NewRouter()
 	group := publishGroup{
@@ -51,7 +51,7 @@ func TestPublishRoutesDeclareTheirAction(t *testing.T) {
 		{"/republish/{BRANCH}", "/app-1/republish/production", apikeyrestrictions.UpdateActionRollback},
 	} {
 		t.Run(tc.path, func(t *testing.T) {
-			policy := &recordingPolicy{}
+			policy := &recordingUpdatePolicy{}
 			w := servePublishRequest(t, http.MethodPost, tc.path, tc.requestPath, tc.action, policy)
 			if w.Code != http.StatusOK {
 				t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
@@ -72,7 +72,7 @@ func TestPublishRoutesDeclareTheirAction(t *testing.T) {
 // TestGuardRefusesARequestWithNoResolvedBranch checks that a resolver naming
 // no branch is refused rather than judged on an empty branch.
 func TestGuardRefusesARequestWithNoResolvedBranch(t *testing.T) {
-	policy := &recordingPolicy{}
+	policy := &recordingUpdatePolicy{}
 	router := mux.NewRouter()
 	group := publishGroup{
 		router:       router.PathPrefix("/{APP_ID}").Subrouter(),
@@ -119,7 +119,7 @@ func TestPublishRouteDeclarationIsCheckedAtBoot(t *testing.T) {
 					t.Fatal("expected the registration to panic")
 				}
 			}()
-			register(publishGroup{router: mux.NewRouter(), apiKeyAccess: &recordingPolicy{}})
+			register(publishGroup{router: mux.NewRouter(), apiKeyAccess: &recordingUpdatePolicy{}})
 		})
 	}
 }
@@ -145,7 +145,7 @@ func TestUploadTokenBranchResolution(t *testing.T) {
 		"foreign token": {"?token=" + mintForeignUploadToken(t, "app-1", "production"), "", http.StatusForbidden},
 	} {
 		t.Run(name, func(t *testing.T) {
-			policy := &recordingPolicy{}
+			policy := &recordingUpdatePolicy{}
 			router := mux.NewRouter()
 			group := publishGroup{
 				router:       router.PathPrefix("/{APP_ID}").Subrouter(),

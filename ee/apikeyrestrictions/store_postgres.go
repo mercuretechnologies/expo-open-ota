@@ -31,11 +31,14 @@ func (s *PostgresApiKeyAccessStore) GetApiKeyName(ctx context.Context, appID str
 	})
 }
 
-// GetAccess is the enforcement read for one authenticated key; no app check
-// is repeated here since the key was already validated against its app.
-// Zero rows means the key is gone; a key with no rule still yields one row.
-func (s *PostgresApiKeyAccessStore) GetAccess(ctx context.Context, apiKeyID int64) (ApiKeyAccess, error) {
-	rows, err := s.engine.Queries.GetApiKeyAccess(ctx, apiKeyID)
+// GetAccess reads the live key and all permission domains in one database
+// snapshot, checking the key and its native targets still belong to this app.
+// Zero rows means the key is gone; a key with no rules still yields one row.
+func (s *PostgresApiKeyAccessStore) GetAccess(ctx context.Context, appID string, apiKeyID int64) (ApiKeyAccess, error) {
+	rows, err := s.engine.Queries.GetApiKeyAccess(ctx, pgdb.GetApiKeyAccessParams{
+		ApiKeyID: apiKeyID,
+		AppID:    store.ToPgUUID(appID),
+	})
 	if err != nil {
 		return ApiKeyAccess{}, fmt.Errorf("failed to read api key access: %w", err)
 	}
@@ -44,27 +47,24 @@ func (s *PostgresApiKeyAccessStore) GetAccess(ctx context.Context, apiKeyID int6
 	}
 	access := ApiKeyAccess{ApiKeyID: apiKeyID, AllowedIps: rows[0].AllowedIps}
 	for _, row := range rows {
-		if row.Pattern == nil {
-			continue
+		switch row.Domain {
+		case "updates":
+			access.UpdateRules = append(access.UpdateRules, UpdateRule{
+				Pattern: row.Pattern,
+				Actions: toUpdateActions(row.Actions),
+			})
+		case "build":
+			access.BuildRules = append(access.BuildRules, BuildRule{
+				AppIdentifierID: row.AppIdentifierID.String(),
+				Actions:         toBuildActions(row.Actions),
+			})
+		case "submit":
+			access.SubmitRules = append(access.SubmitRules, SubmitRule{
+				AppIdentifierID: row.AppIdentifierID.String(),
+				Destination:     SubmitDestination(row.Destination),
+				Actions:         toSubmitActions(row.Actions),
+			})
 		}
-		access.UpdateRules = append(access.UpdateRules, UpdateRule{
-			Pattern: *row.Pattern,
-			Actions: toUpdateActions(row.Actions),
-		})
-	}
-	buildRows, err := s.engine.Queries.GetApiKeyBuildRules(ctx, apiKeyID)
-	if err != nil {
-		return ApiKeyAccess{}, err
-	}
-	for _, row := range buildRows {
-		access.BuildRules = append(access.BuildRules, BuildRule{AppIdentifierID: row.AppIdentifierID.String(), Actions: toBuildActions(row.Actions)})
-	}
-	submitRows, err := s.engine.Queries.GetApiKeySubmitRules(ctx, apiKeyID)
-	if err != nil {
-		return ApiKeyAccess{}, err
-	}
-	for _, row := range submitRows {
-		access.SubmitRules = append(access.SubmitRules, SubmitRule{AppIdentifierID: row.AppIdentifierID.String(), Destination: SubmitDestination(row.Destination), Actions: toSubmitActions(row.Actions)})
 	}
 	return access, nil
 }

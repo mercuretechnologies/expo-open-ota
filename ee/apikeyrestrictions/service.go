@@ -27,21 +27,12 @@ type ApiKeyAccess struct {
 	SubmitRules []SubmitRule
 }
 
-// CliRequest is one authenticated CLI request, in the terms the access
-// decision is made in.
-type CliRequest struct {
-	AppID    string
-	APIKeyID int64
-	Branch   string
-	Action   UpdateAction
-	ClientIP netip.Addr
-}
-
-// ApiKeyAccessRepository persists per-key access. GetAccess is the enforcement
-// read on the CLI request hot path.
+// ApiKeyAccessRepository persists per-key access. GetAccess returns a consistent
+// policy for a live key in the requested app, excluding native rules whose
+// identifier no longer belongs to the app or has an incompatible platform.
 type ApiKeyAccessRepository interface {
 	GetAccessByAppID(ctx context.Context, appID string) ([]ApiKeyAccess, error)
-	GetAccess(ctx context.Context, apiKeyID int64) (ApiKeyAccess, error)
+	GetAccess(ctx context.Context, appID string, apiKeyID int64) (ApiKeyAccess, error)
 	SetAccess(ctx context.Context, appID string, access ApiKeyAccess) error
 	// GetApiKeyName resolves the key's display name for the audit trail.
 	GetApiKeyName(ctx context.Context, appID string, apiKeyID int64) (string, error)
@@ -53,26 +44,10 @@ var (
 	ErrApiKeyNotFound       = errors.New("api key not found")
 	ErrInvalidCidr          = errors.New("invalid IP or CIDR range")
 
-	// Both wrap services.ErrCliAccessDenied so the community handlers can map
+	// Wraps services.ErrCliAccessDenied so the community handlers can map
 	// them to a 403 without knowing anything about this package.
 	ErrIpNotAllowed = fmt.Errorf("%w: this API key cannot be used from this IP address", services.ErrCliAccessDenied)
 )
-
-// deniedError names both the branch and the action so the caller does not
-// have to guess which one failed.
-func deniedError(action UpdateAction, branchName string) error {
-	return fmt.Errorf("%w: this API key is not allowed to %s on branch %q", services.ErrCliAccessDenied, action, branchName)
-}
-
-// unjudged turns a repository failure into "could not verify" so an outage
-// reaches the CLI as a 500 rather than an invalid-key error. ErrApiKeyNotFound
-// passes through unchanged since a missing key is not an outage.
-func unjudged(err error) error {
-	if errors.Is(err, ErrApiKeyNotFound) {
-		return err
-	}
-	return fmt.Errorf("%w: %w", services.ErrCliAuthUnavailable, err)
-}
 
 // ApiKeyAccessService owns the management and the enforcement of per-key
 // access. Mutations are license-gated; reads are not.
@@ -162,26 +137,6 @@ func (s *ApiKeyAccessService) SetAccess(ctx context.Context, appID string, apiKe
 			"submit_rules":  describeSubmitRules(normalizedSubmit),
 			"allowed_cidrs": normalizedCidrs,
 		})
-	return nil
-}
-
-// Authorize is the enforcement point for an authenticated CLI request.
-// Without a control plane or an active license, nothing is enforced.
-func (s *ApiKeyAccessService) Authorize(ctx context.Context, req CliRequest) error {
-	if s.repo == nil || !s.licenseValid() {
-		return nil
-	}
-	access, err := s.repo.GetAccess(ctx, req.APIKeyID)
-	if err != nil {
-		return unjudged(err)
-	}
-	if len(access.AllowedIps) > 0 && !ipAllowed(req.ClientIP, access.AllowedIps) {
-		return ipNotAllowedError(req.ClientIP)
-	}
-	if !AllowsUpdates(access.UpdateRules, req.Branch, req.Action) {
-		return deniedError(req.Action, req.Branch)
-	}
-	// A rule that admits a branch name also admits creating that branch via publish.
 	return nil
 }
 

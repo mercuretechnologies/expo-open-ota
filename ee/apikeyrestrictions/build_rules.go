@@ -5,10 +5,12 @@
 package apikeyrestrictions
 
 import (
+	"context"
 	"fmt"
 	"slices"
 	"strings"
 
+	"xprem/internal/services"
 	"xprem/internal/validation"
 )
 
@@ -17,6 +19,14 @@ import (
 type BuildAction string
 
 const BuildActionCreate BuildAction = "create"
+
+// BuildRequest describes an operation on a registered app identifier.
+// Resolve AppIdentifierID from the actual operation target before authorizing.
+type BuildRequest struct {
+	APIKeyContext
+	AppIdentifierID string
+	Action          BuildAction
+}
 
 // BuildRule grants actions on one registered app identifier, regardless of profile.
 type BuildRule struct {
@@ -88,4 +98,22 @@ func describeBuildRules(rules []BuildRule) []string {
 		described = append(described, fmt.Sprintf("%s:%s", rule.AppIdentifierID, strings.Join(actions, "+")))
 	}
 	return described
+}
+
+// AuthorizeBuild checks the authenticated key and IP, then only Build grants.
+// It is a no-op without an active Enterprise license or control plane.
+func (s *ApiKeyAccessService) AuthorizeBuild(ctx context.Context, req BuildRequest) error {
+	access, err := s.authorizationAccess(ctx, req.APIKeyContext)
+	if err != nil || access == nil {
+		return err
+	}
+	identifierID, err := normalizeIdentifierID(req.AppIdentifierID)
+	if err == nil {
+		for _, rule := range access.BuildRules {
+			if rule.Allows(identifierID, req.Action) {
+				return nil
+			}
+		}
+	}
+	return fmt.Errorf("%w: this API key is not allowed to %s builds for app identifier %q", services.ErrCliAccessDenied, req.Action, req.AppIdentifierID)
 }

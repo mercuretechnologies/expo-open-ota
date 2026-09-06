@@ -948,22 +948,42 @@ WHERE issuer = $1 AND subject = $2;
 -- queries above.
 
 -- name: GetApiKeyAccess :many
--- Enforcement read for one authenticated key on the CLI request hot path: the
--- IP allow-list and Updates branch rules in one round trip.
--- A key with no rule yields a single row with a NULL pattern: no Updates access.
---
--- revoked_at IS NULL is redundant with authentication, which already refuses a
--- revoked key, and it is here anyway: this is the last read before a publish is
--- authorised, so it costs nothing to make "zero rows" mean exactly what the
--- caller treats it as, a key that may no longer act.
-SELECT k.allowed_ips, r.pattern, r.actions
-FROM api_keys k
-LEFT JOIN api_key_update_rules r ON r.api_key_id = k.id
-WHERE k.id = $1 AND k.revoked_at IS NULL;
+-- Read a live key and all of its permission domains from one database snapshot.
+-- Native rules must still target a registered identifier in this app, and a
+-- Submit destination must match that identifier's current platform.
+-- A key without rules yields one row with an empty domain; no key yields none.
+WITH active_key AS (
+    SELECT k.id, k.app_id, k.allowed_ips
+    FROM api_keys k
+    WHERE k.id = sqlc.arg('api_key_id') AND k.app_id = sqlc.arg('app_id') AND k.revoked_at IS NULL
+), rules AS (
+    SELECT 'updates'::TEXT AS domain, r.pattern, NULL::UUID AS app_identifier_id,
+           ''::TEXT AS destination, r.actions
+    FROM api_key_update_rules r
+    JOIN active_key k ON k.id = r.api_key_id
+    UNION ALL
+    SELECT 'build'::TEXT, ''::TEXT, r.app_identifier_id, ''::TEXT, r.actions
+    FROM api_key_build_rules r
+    JOIN active_key k ON k.id = r.api_key_id AND k.app_id = r.app_id
+    JOIN app_identifiers i ON i.id = r.app_identifier_id AND i.app_id = k.app_id
+    UNION ALL
+    SELECT 'submit'::TEXT, ''::TEXT, r.app_identifier_id, r.destination, r.actions
+    FROM api_key_submit_rules r
+    JOIN active_key k ON k.id = r.api_key_id AND k.app_id = r.app_id
+    JOIN app_identifiers i ON i.id = r.app_identifier_id AND i.app_id = k.app_id
+    WHERE (i.platform = 'android' AND r.destination IN ('internal', 'alpha', 'beta', 'production'))
+       OR (i.platform = 'ios' AND r.destination = 'testflight')
+)
+SELECT k.allowed_ips, COALESCE(r.domain, '')::TEXT AS domain,
+       COALESCE(r.pattern, '')::TEXT AS pattern, r.app_identifier_id,
+       COALESCE(r.destination, '')::TEXT AS destination, r.actions
+FROM active_key k
+LEFT JOIN rules r ON TRUE
+ORDER BY r.domain, r.pattern, r.app_identifier_id, r.destination;
 
 -- name: GetApiKeyAccessByAppID :many
--- Same shape for the dashboard, over every live key of one app. Ordered so
--- the caller can fold consecutive rows into one key without a map.
+-- Updates rules for the dashboard, over every live key of one app. Ordered
+-- so the caller can fold consecutive rows into one key without a map.
 SELECT k.id, k.allowed_ips, r.pattern, r.actions
 FROM api_keys k
 LEFT JOIN api_key_update_rules r ON r.api_key_id = k.id
@@ -2708,11 +2728,3 @@ VALUES ($1, $2, $3, $4);
 -- name: InsertApiKeySubmitRule :exec
 INSERT INTO api_key_submit_rules (api_key_id, app_id, app_identifier_id, destination, actions)
 VALUES ($1, $2, $3, $4, $5);
-
--- name: GetApiKeyBuildRules :many
-SELECT app_identifier_id, actions FROM api_key_build_rules
-WHERE api_key_id = $1 ORDER BY app_identifier_id;
-
--- name: GetApiKeySubmitRules :many
-SELECT app_identifier_id, destination, actions FROM api_key_submit_rules
-WHERE api_key_id = $1 ORDER BY app_identifier_id, destination;

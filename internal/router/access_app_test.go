@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"testing"
 
 	"xprem/ee/apikeyrestrictions"
@@ -13,20 +14,20 @@ import (
 	"github.com/gorilla/mux"
 )
 
-// recordingPolicy captures what a route handed the access decision.
-type recordingPolicy struct {
-	requests []apikeyrestrictions.CliRequest
+// recordingUpdatePolicy captures what a route handed the access decision.
+type recordingUpdatePolicy struct {
+	requests []apikeyrestrictions.UpdateRequest
 	deny     error
 }
 
-func (p *recordingPolicy) Authorize(_ context.Context, req apikeyrestrictions.CliRequest) error {
+func (p *recordingUpdatePolicy) AuthorizeUpdates(_ context.Context, req apikeyrestrictions.UpdateRequest) error {
 	p.requests = append(p.requests, req)
 	return p.deny
 }
 
 // serveTokenRequest registers one route through appGroup and sends a CLI
 // credential at it.
-func serveTokenRequest(t *testing.T, path, requestPath string, access AppAccess, policy cliAccessPolicy) (*httptest.ResponseRecorder, *services.CliCredential) {
+func serveTokenRequest(t *testing.T, path, requestPath string, access AppAccess, policy updateAccessPolicy) (*httptest.ResponseRecorder, *services.CliCredential) {
 	t.Helper()
 	router := mux.NewRouter()
 	group := appGroup{router: router.PathPrefix("/apps/{APP_ID}").Subrouter(), apiKeyAccess: policy}
@@ -57,9 +58,9 @@ func TestTokenRouteMustNameABranch(t *testing.T) {
 					t.Fatal("expected the registration to panic")
 				}
 			}()
-			group := appGroup{router: mux.NewRouter(), apiKeyAccess: &recordingPolicy{}}
+			group := appGroup{router: mux.NewRouter(), apiKeyAccess: &recordingUpdatePolicy{}}
 			group.route(http.MethodGet, path, func(http.ResponseWriter, *http.Request) {},
-				AnyViewerOrToken(apikeyrestrictions.UpdateActionRead))
+				AnyViewerOrUpdateToken(apikeyrestrictions.UpdateActionRead))
 		})
 	}
 }
@@ -67,7 +68,7 @@ func TestTokenRouteMustNameABranch(t *testing.T) {
 // TestRouteWithoutTokenRefusesCliCredential checks that a route with no token
 // declaration refuses a CLI credential, whatever its path.
 func TestRouteWithoutTokenRefusesCliCredential(t *testing.T) {
-	policy := &recordingPolicy{}
+	policy := &recordingUpdatePolicy{}
 	w, _ := serveTokenRequest(t, "/branch/{BRANCH}/runtimeVersions",
 		"/apps/app-1/branch/production/runtimeVersions", AnyViewer(), policy)
 
@@ -80,10 +81,10 @@ func TestRouteWithoutTokenRefusesCliCredential(t *testing.T) {
 }
 
 func TestTokenRouteAsksThePolicyWithItsBranchAndAction(t *testing.T) {
-	policy := &recordingPolicy{}
+	policy := &recordingUpdatePolicy{}
 	w, credential := serveTokenRequest(t, "/branch/{BRANCH}/runtimeVersions",
 		"/apps/app-1/branch/production/runtimeVersions",
-		AnyViewerOrToken(apikeyrestrictions.UpdateActionRead), policy)
+		AnyViewerOrUpdateToken(apikeyrestrictions.UpdateActionRead), policy)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
@@ -101,16 +102,19 @@ func TestTokenRouteAsksThePolicyWithItsBranchAndAction(t *testing.T) {
 	if request.APIKeyID != 42 || request.AppID != "app-1" {
 		t.Fatalf("expected the credential's key and app, got %+v", request)
 	}
+	if request.ClientIP != netip.MustParseAddr("192.0.2.1") {
+		t.Fatalf("expected the request's client IP, got %v", request.ClientIP)
+	}
 	if credential == nil || credential.KeyID != 42 {
 		t.Fatalf("expected the credential on the handler's context, got %+v", credential)
 	}
 }
 
 func TestTokenRouteRefusesWhatThePolicyDenies(t *testing.T) {
-	policy := &recordingPolicy{deny: services.ErrCliAccessDenied}
+	policy := &recordingUpdatePolicy{deny: services.ErrCliAccessDenied}
 	w, _ := serveTokenRequest(t, "/branch/{BRANCH}/runtimeVersions",
 		"/apps/app-1/branch/production/runtimeVersions",
-		AnyViewerOrToken(apikeyrestrictions.UpdateActionRead), policy)
+		AnyViewerOrUpdateToken(apikeyrestrictions.UpdateActionRead), policy)
 
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("expected 403, got %d", w.Code)
@@ -120,12 +124,12 @@ func TestTokenRouteRefusesWhatThePolicyDenies(t *testing.T) {
 // TestStatelessCredentialSkipsThePolicy checks that a stateless credential
 // (no API key) never reaches the access policy.
 func TestStatelessCredentialSkipsThePolicy(t *testing.T) {
-	policy := &recordingPolicy{deny: errors.New("must not be called")}
+	policy := &recordingUpdatePolicy{deny: errors.New("must not be called")}
 	router := mux.NewRouter()
 	group := appGroup{router: router.PathPrefix("/apps/{APP_ID}").Subrouter(), apiKeyAccess: policy}
 	group.route(http.MethodGet, "/branch/{BRANCH}/runtimeVersions", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-	}, AnyViewerOrToken(apikeyrestrictions.UpdateActionRead))
+	}, AnyViewerOrUpdateToken(apikeyrestrictions.UpdateActionRead))
 
 	r := httptest.NewRequest(http.MethodGet, "/apps/app-1/branch/production/runtimeVersions", nil)
 	r = r.WithContext(services.WithCliAuth(r.Context(), services.CliCredential{AppID: "app-1"}))
@@ -148,6 +152,6 @@ func TestUndeclaredAccessIsRefusedAtBoot(t *testing.T) {
 			t.Fatal("expected the registration to panic")
 		}
 	}()
-	group := appGroup{router: mux.NewRouter(), apiKeyAccess: &recordingPolicy{}}
+	group := appGroup{router: mux.NewRouter(), apiKeyAccess: &recordingUpdatePolicy{}}
 	group.route(http.MethodGet, "/branches", func(http.ResponseWriter, *http.Request) {}, AppAccess{})
 }
