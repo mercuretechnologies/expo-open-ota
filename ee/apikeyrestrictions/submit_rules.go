@@ -6,16 +6,9 @@ package apikeyrestrictions
 
 import (
 	"slices"
+
 	"xprem/internal/validation"
-
-	"github.com/google/uuid"
 )
-
-// BuildRule grants actions on one registered app identifier, regardless of profile.
-type BuildRule struct {
-	AppIdentifierID string        `json:"appIdentifierId"`
-	Actions         []BuildAction `json:"actions"`
-}
 
 // SubmitAction never inherits permissions from Build or another destination.
 type SubmitAction string
@@ -51,39 +44,9 @@ func (d SubmitDestination) platform() string {
 	}
 }
 
-func normalizeIdentifierID(value string) (string, error) {
-	id, err := uuid.Parse(value)
-	if err != nil || id == uuid.Nil {
-		return "", validation.Errorf("appIdentifierId", "a registered app identifier ID is required")
-	}
-	return id.String(), nil
-}
-
-func normalizeBuildRules(rules []BuildRule) ([]BuildRule, error) {
-	if len(rules) > 50 {
-		return nil, validation.Errorf("build.rules", "at most 50 rules are allowed")
-	}
-	result := make([]BuildRule, 0, len(rules))
-	seen := map[string]bool{}
-	for _, rule := range rules {
-		id, err := normalizeIdentifierID(rule.AppIdentifierID)
-		if err != nil {
-			return nil, err
-		}
-		if seen[id] {
-			return nil, validation.Errorf("build.rules", "duplicate app identifier")
-		}
-		seen[id] = true
-		actions, err := normalizeBuildActions(rule.Actions)
-		if err != nil {
-			return nil, err
-		}
-		if len(actions) == 0 {
-			return nil, validation.Errorf("build.rules", "a rule must grant at least one action")
-		}
-		result = append(result, BuildRule{AppIdentifierID: id, Actions: actions})
-	}
-	return result, nil
+// Allows requires the exact identifier, destination and upload action.
+func (r SubmitRule) Allows(identifierID string, destination SubmitDestination, action SubmitAction) bool {
+	return identifierID != "" && r.AppIdentifierID == identifierID && r.Destination == destination && destination.platform() != "" && action == SubmitActionUpload && slices.Contains(r.Actions, action)
 }
 
 func normalizeSubmitRules(rules []SubmitRule) ([]SubmitRule, error) {
@@ -122,14 +85,4 @@ func normalizeSubmitRules(rules []SubmitRule) ([]SubmitRule, error) {
 		result = append(result, SubmitRule{AppIdentifierID: id, Destination: rule.Destination, Actions: actions})
 	}
 	return result, nil
-}
-
-// Allows checks a resolved identifier ID; no wildcard or profile can widen the grant.
-func (r BuildRule) Allows(identifierID string, action BuildAction) bool {
-	return identifierID != "" && r.AppIdentifierID == identifierID && action == BuildActionCreate && slices.Contains(r.Actions, action)
-}
-
-// Allows requires the exact identifier, destination and upload action.
-func (r SubmitRule) Allows(identifierID string, destination SubmitDestination, action SubmitAction) bool {
-	return identifierID != "" && r.AppIdentifierID == identifierID && r.Destination == destination && destination.platform() != "" && action == SubmitActionUpload && slices.Contains(r.Actions, action)
 }
