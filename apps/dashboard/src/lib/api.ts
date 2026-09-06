@@ -188,18 +188,18 @@ export type AndroidCredentialsMetadata = {
   identifier: string;
   keyAlias: string;
   hasGoogleServiceAccountKey: boolean;
+  googleServiceAccountEmail?: string;
+  googleServiceAccountProjectId?: string;
   createdAt: string;
   updatedAt: string;
 };
 
-// `keystore` is the keystore file base64-encoded; `googleServiceAccountKey`
-// is the raw service account JSON.
+// `keystore` is the keystore file base64-encoded.
 export type AndroidCredentialsPayload = {
   keyAlias: string;
   keystore: string;
   keystorePassword: string;
   keyPassword: string;
-  googleServiceAccountKey: string;
 };
 
 // One variable of an environment: metadata only, the value stays server side
@@ -968,14 +968,12 @@ export class ApiClient {
       headers.set('Authorization', `Bearer ${token}`);
     }
   }
-  // Every endpoint answers JSON except the certificate route, which serves a
-  // PEM. That one exception used to justify a second fetch site with its own
-  // copy of the auth handling below; naming the body format here keeps the
-  // retry, the token refresh and the error mapping in one place.
+  // Most endpoints answer JSON; downloads opt into their response body format.
+  // Keeping that choice here also keeps auth refresh and error mapping in one place.
   private async request<T>(
     endpoint: string,
     options: RequestInit = {},
-    parse: 'json' | 'text' = 'json'
+    parse: 'json' | 'text' | 'blob' = 'json'
   ): Promise<T> {
     const url = `${this.baseUrl}${endpoint}`;
     // Rebuilt per attempt, so the retry below picks up the token the refresh
@@ -1015,7 +1013,9 @@ export class ApiClient {
       return (parse === 'text' ? '' : {}) as T;
     }
 
-    return (parse === 'text' ? response.text() : response.json()) as Promise<T>;
+    if (parse === 'text') return response.text() as Promise<T>;
+    if (parse === 'blob') return response.blob() as Promise<T>;
+    return response.json() as Promise<T>;
   }
 
   // Refresh tokens are single-use on the server: presenting one retires it and
@@ -1599,12 +1599,36 @@ export class ApiClient {
     );
   }
 
-  public async deleteAndroidCredentials(identifierId: string) {
+  public async generateAndroidCredentials(identifierId: string) {
     return this.request<void>(
-      `${this.appScope()}/identifiers/${encodeURIComponent(identifierId)}/credentials/android`,
+      `${this.appScope()}/identifiers/${encodeURIComponent(identifierId)}/credentials/android/generate`,
+      { method: 'POST' }
+    );
+  }
+
+  public async downloadAndroidKeystore(identifierId: string) {
+    return this.request<Blob>(
+      `${this.appScope()}/identifiers/${encodeURIComponent(identifierId)}/credentials/android/download`,
+      { method: 'GET' },
+      'blob'
+    );
+  }
+
+  public async saveGooglePlayServiceAccountKey(identifierId: string, serviceAccountKey: string) {
+    return this.request<void>(
+      `${this.appScope()}/identifiers/${encodeURIComponent(identifierId)}/credentials/android/google-play-service-account`,
       {
-        method: 'DELETE',
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ serviceAccountKey }),
       }
+    );
+  }
+
+  public async deleteGooglePlayServiceAccountKey(identifierId: string) {
+    return this.request<void>(
+      `${this.appScope()}/identifiers/${encodeURIComponent(identifierId)}/credentials/android/google-play-service-account`,
+      { method: 'DELETE' }
     );
   }
 

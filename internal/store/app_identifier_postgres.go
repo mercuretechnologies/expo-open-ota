@@ -113,7 +113,7 @@ func (s *PostgresAppIdentifierStore) SetBuildNumber(ctx context.Context, appId s
 
 func (s *PostgresAppIdentifierStore) DeleteAppIdentifier(ctx context.Context, appId string, identifierId string) error {
 	return s.engine.WithTx(ctx, func(q *pgdb.Queries) error {
-		identifier, err := q.LockAppIdentifierByID(ctx, pgdb.LockAppIdentifierByIDParams{
+		_, err := q.LockAppIdentifierByID(ctx, pgdb.LockAppIdentifierByIDParams{
 			AppID: ToPgUUID(appId), ID: ToPgUUID(identifierId),
 		})
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -130,8 +130,7 @@ func (s *PostgresAppIdentifierStore) DeleteAppIdentifier(ctx context.Context, ap
 			return fmt.Errorf("failed to delete app identifier from database: %w", err)
 		}
 		if commandTag.RowsAffected() == 0 {
-			// The locked row exists, so only the credentials guard can reject it.
-			return &ErrIdentifierHasCredentials{Identifier: identifier}
+			return &ErrResourceNotFound{Resource: "app identifier", Identifier: identifierId}
 		}
 		return nil
 	})

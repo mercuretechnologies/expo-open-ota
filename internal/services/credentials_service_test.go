@@ -7,7 +7,9 @@ package services
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"testing"
+	"xprem/internal/android"
 	"xprem/internal/android/androidtest"
 	"xprem/internal/auditlog"
 	"xprem/internal/crypto"
@@ -68,6 +70,11 @@ func newFakeCredentialsRepo() *fakeCredentialsRepo {
 }
 
 func (f *fakeCredentialsRepo) UpsertAndroidCredentials(_ context.Context, identifierId string, credentials store.SealedAndroidCredentials) error {
+	if existing, ok := f.byIdentifierId[identifierId]; ok {
+		credentials.SealedGoogleServiceAccountKey = existing.SealedGoogleServiceAccountKey
+		credentials.GoogleServiceAccountEmail = existing.GoogleServiceAccountEmail
+		credentials.GoogleServiceAccountProjectID = existing.GoogleServiceAccountProjectID
+	}
 	f.byIdentifierId[identifierId] = credentials
 	return nil
 }
@@ -80,6 +87,18 @@ func (f *fakeCredentialsRepo) GetAndroidCredentials(_ context.Context, identifie
 	return &credentials, nil
 }
 
+func (f *fakeCredentialsRepo) UpdateGooglePlayServiceAccountKey(_ context.Context, identifierId string, sealedKey, email, projectID *string) error {
+	credentials, ok := f.byIdentifierId[identifierId]
+	if !ok {
+		return &store.ErrResourceNotFound{Resource: "android credentials", Identifier: identifierId}
+	}
+	credentials.SealedGoogleServiceAccountKey = sealedKey
+	credentials.GoogleServiceAccountEmail = email
+	credentials.GoogleServiceAccountProjectID = projectID
+	f.byIdentifierId[identifierId] = credentials
+	return nil
+}
+
 func (f *fakeCredentialsRepo) DeleteAndroidCredentials(_ context.Context, identifierId string) error {
 	if _, ok := f.byIdentifierId[identifierId]; !ok {
 		return &store.ErrResourceNotFound{Resource: "android credentials", Identifier: identifierId}
@@ -89,6 +108,8 @@ func (f *fakeCredentialsRepo) DeleteAndroidCredentials(_ context.Context, identi
 }
 
 const testMasterKey = "0123456789abcdef0123456789abcdef"
+const testServiceAccountPrivateKey = "secret"
+const validServiceAccountKey = `{"type":"service_account","project_id":"play-project","client_email":"publisher@play-project.iam.gserviceaccount.com","private_key":"` + testServiceAccountPrivateKey + `"}`
 
 const (
 	testAppId        = "app-1"
@@ -117,12 +138,11 @@ func validAndroidInput() AndroidCredentialsInput {
 	}
 }
 
-func TestSaveAndroidCredentialsSealsEveryTouchedSecret(t *testing.T) {
+func TestSaveAndroidCredentialsSealsKeystoreSecrets(t *testing.T) {
 	setMasterKey(t)
 	service, repo, _ := newCredentialsFixture()
 
 	input := validAndroidInput()
-	input.GoogleServiceAccountKeyJSON = `{"type":"service_account"}`
 	require.NoError(t, service.SaveAndroidCredentials(context.Background(), testAppId, testIdentifierId, input))
 
 	sealed := repo.byIdentifierId[testIdentifierId]
@@ -139,10 +159,7 @@ func TestSaveAndroidCredentialsSealsEveryTouchedSecret(t *testing.T) {
 	keyPassword, err := crypto.UnsealAESGCM(sealed.SealedKeyPassword, []byte(testMasterKey), androidCredentialAAD(testIdentifierId, "key_password"))
 	require.NoError(t, err)
 	assert.Equal(t, "key-pass", string(keyPassword))
-	require.NotNil(t, sealed.SealedGoogleServiceAccountKey)
-	gsa, err := crypto.UnsealAESGCM(*sealed.SealedGoogleServiceAccountKey, []byte(testMasterKey), androidCredentialAAD(testIdentifierId, "google_service_account_key"))
-	require.NoError(t, err)
-	assert.JSONEq(t, `{"type":"service_account"}`, string(gsa))
+	assert.Nil(t, sealed.SealedGoogleServiceAccountKey)
 
 	// No sealed field is readable under another identifier's binding.
 	_, err = crypto.UnsealAESGCM(sealed.SealedKeystore, []byte(testMasterKey), androidCredentialAAD("22222222-2222-2222-2222-222222222222", "keystore"))
@@ -181,7 +198,6 @@ func TestSaveAndroidCredentialsRejectsInvalidInput(t *testing.T) {
 		"empty key pwd":      func(i *AndroidCredentialsInput) { i.KeyPassword = "" },
 		"bad base64":         func(i *AndroidCredentialsInput) { i.KeystoreBase64 = "not base64!!" },
 		"empty keystore":     func(i *AndroidCredentialsInput) { i.KeystoreBase64 = "" },
-		"bad gsa json":       func(i *AndroidCredentialsInput) { i.GoogleServiceAccountKeyJSON = "{broken" },
 		"garbage keystore": func(i *AndroidCredentialsInput) {
 			i.KeystoreBase64 = base64.StdEncoding.EncodeToString([]byte("not a keystore"))
 		},
@@ -202,13 +218,119 @@ func TestAndroidCredentialsMetadataCarriesNoSecret(t *testing.T) {
 	setMasterKey(t)
 	service, _, _ := newCredentialsFixture()
 	require.NoError(t, service.SaveAndroidCredentials(context.Background(), testAppId, testIdentifierId, validAndroidInput()))
+	require.NoError(t, service.SaveGooglePlayServiceAccountKey(context.Background(), testAppId, testIdentifierId, validServiceAccountKey))
 
 	metadata, err := service.GetAndroidCredentialsMetadata(context.Background(), testAppId, testIdentifierId)
 	require.NoError(t, err)
 	require.NotNil(t, metadata)
 	assert.Equal(t, "com.example.app", metadata.Identifier)
 	assert.Equal(t, "upload", metadata.KeyAlias)
-	assert.False(t, metadata.HasGoogleServiceAccountKey)
+	assert.True(t, metadata.HasGoogleServiceAccountKey)
+	assert.Equal(t, "publisher@play-project.iam.gserviceaccount.com", metadata.GoogleServiceAccountEmail)
+	assert.Equal(t, "play-project", metadata.GoogleServiceAccountProjectID)
+	encoded, err := json.Marshal(metadata)
+	require.NoError(t, err)
+	assert.NotContains(t, string(encoded), "private_key")
+	assert.NotContains(t, string(encoded), testServiceAccountPrivateKey)
+}
+
+func TestAndroidCredentialsMetadataDoesNotDecryptServiceAccountKey(t *testing.T) {
+	service, repo, _ := newCredentialsFixture()
+	email := "publisher@play-project.iam.gserviceaccount.com"
+	projectID := "play-project"
+	invalidCiphertext := "not-a-sealed-service-account"
+	repo.byIdentifierId[testIdentifierId] = store.SealedAndroidCredentials{
+		KeyAlias:                      "upload",
+		SealedGoogleServiceAccountKey: &invalidCiphertext,
+		GoogleServiceAccountEmail:     &email,
+		GoogleServiceAccountProjectID: &projectID,
+	}
+
+	metadata, err := service.GetAndroidCredentialsMetadata(context.Background(), testAppId, testIdentifierId)
+	require.NoError(t, err)
+	require.NotNil(t, metadata)
+	assert.Equal(t, email, metadata.GoogleServiceAccountEmail)
+	assert.Equal(t, projectID, metadata.GoogleServiceAccountProjectID)
+}
+
+func TestGenerateAndroidCredentialsReplacesKeystoreAndPreservesServiceAccount(t *testing.T) {
+	setMasterKey(t)
+	service, repo, _ := newCredentialsFixture()
+	input := validAndroidInput()
+	require.NoError(t, service.SaveAndroidCredentials(context.Background(), testAppId, testIdentifierId, input))
+	require.NoError(t, service.SaveGooglePlayServiceAccountKey(context.Background(), testAppId, testIdentifierId, validServiceAccountKey))
+	previous := repo.byIdentifierId[testIdentifierId]
+
+	require.NoError(t, service.GenerateAndroidCredentials(context.Background(), testAppId, testIdentifierId))
+	generated := repo.byIdentifierId[testIdentifierId]
+
+	assert.Equal(t, "upload", generated.KeyAlias)
+	assert.NotEqual(t, previous.SealedKeystore, generated.SealedKeystore)
+	assert.Equal(t, previous.SealedGoogleServiceAccountKey, generated.SealedGoogleServiceAccountKey)
+
+	keystore, err := crypto.UnsealAESGCM(generated.SealedKeystore, []byte(testMasterKey), androidCredentialAAD(testIdentifierId, "keystore"))
+	require.NoError(t, err)
+	keystorePassword, err := crypto.UnsealAESGCM(generated.SealedKeystorePassword, []byte(testMasterKey), androidCredentialAAD(testIdentifierId, "keystore_password"))
+	require.NoError(t, err)
+	keyPassword, err := crypto.UnsealAESGCM(generated.SealedKeyPassword, []byte(testMasterKey), androidCredentialAAD(testIdentifierId, "key_password"))
+	require.NoError(t, err)
+	require.NoError(t, android.ValidateKeystore(keystore, string(keystorePassword), string(keyPassword), generated.KeyAlias))
+}
+
+func TestKeystoreAndGooglePlayServiceAccountChangeIndependently(t *testing.T) {
+	setMasterKey(t)
+	service, repo, _ := newCredentialsFixture()
+	require.NoError(t, service.SaveAndroidCredentials(context.Background(), testAppId, testIdentifierId, validAndroidInput()))
+	originalKeystore := repo.byIdentifierId[testIdentifierId]
+
+	require.NoError(t, service.SaveGooglePlayServiceAccountKey(context.Background(), testAppId, testIdentifierId, validServiceAccountKey))
+	withServiceAccount := repo.byIdentifierId[testIdentifierId]
+	assert.Equal(t, originalKeystore.SealedKeystore, withServiceAccount.SealedKeystore)
+	assert.Equal(t, originalKeystore.SealedKeystorePassword, withServiceAccount.SealedKeystorePassword)
+	assert.Equal(t, originalKeystore.SealedKeyPassword, withServiceAccount.SealedKeyPassword)
+	require.NotNil(t, withServiceAccount.SealedGoogleServiceAccountKey)
+
+	replacement := validAndroidInput()
+	replacement.KeystorePassword = "replacement-store-password"
+	replacement.KeyPassword = "replacement-key-password"
+	replacement.KeystoreBase64 = base64.StdEncoding.EncodeToString(androidtest.JKSKeystore(replacement.KeystorePassword, replacement.KeyPassword, replacement.KeyAlias))
+	require.NoError(t, service.SaveAndroidCredentials(context.Background(), testAppId, testIdentifierId, replacement))
+	replacedKeystore := repo.byIdentifierId[testIdentifierId]
+	assert.NotEqual(t, originalKeystore.SealedKeystore, replacedKeystore.SealedKeystore)
+	assert.Equal(t, withServiceAccount.SealedGoogleServiceAccountKey, replacedKeystore.SealedGoogleServiceAccountKey)
+
+	require.NoError(t, service.DeleteGooglePlayServiceAccountKey(context.Background(), testAppId, testIdentifierId))
+	withoutServiceAccount := repo.byIdentifierId[testIdentifierId]
+	assert.Equal(t, replacedKeystore.SealedKeystore, withoutServiceAccount.SealedKeystore)
+	assert.Nil(t, withoutServiceAccount.SealedGoogleServiceAccountKey)
+}
+
+func TestSaveGooglePlayServiceAccountKeyRejectsInvalidJSON(t *testing.T) {
+	setMasterKey(t)
+	service, _, _ := newCredentialsFixture()
+	require.NoError(t, service.SaveAndroidCredentials(context.Background(), testAppId, testIdentifierId, validAndroidInput()))
+
+	err := service.SaveGooglePlayServiceAccountKey(context.Background(), testAppId, testIdentifierId, "{broken")
+	var valErr *validation.Error
+	assert.ErrorAs(t, err, &valErr)
+	err = service.SaveGooglePlayServiceAccountKey(context.Background(), testAppId, testIdentifierId, `{}`)
+	assert.ErrorAs(t, err, &valErr)
+}
+
+func TestExportAndroidKeystoreUnsealsPortableCredentials(t *testing.T) {
+	setMasterKey(t)
+	service, _, _ := newCredentialsFixture()
+	input := validAndroidInput()
+	require.NoError(t, service.SaveAndroidCredentials(context.Background(), testAppId, testIdentifierId, input))
+
+	exported, err := service.ExportAndroidKeystore(context.Background(), testAppId, testIdentifierId)
+	require.NoError(t, err)
+
+	assert.Equal(t, input.KeyAlias, exported.KeyAlias)
+	assert.Equal(t, input.KeystorePassword, exported.KeystorePassword)
+	assert.Equal(t, input.KeyPassword, exported.KeyPassword)
+	assert.Contains(t, string(exported.CertificatePEM), "BEGIN CERTIFICATE")
+	require.NoError(t, android.ValidateKeystore(exported.Keystore, exported.KeystorePassword, exported.KeyPassword, exported.KeyAlias))
 }
 
 func TestAndroidCredentialsAuditEvents(t *testing.T) {
@@ -238,4 +360,9 @@ func TestAndroidCredentialsUnsupportedInStatelessMode(t *testing.T) {
 	_, err := service.GetAndroidCredentialsMetadata(ctx, testAppId, testIdentifierId)
 	assert.ErrorIs(t, err, store.ErrNotSupportedInStatelessMode)
 	assert.ErrorIs(t, service.DeleteAndroidCredentials(ctx, testAppId, testIdentifierId), store.ErrNotSupportedInStatelessMode)
+	assert.ErrorIs(t, service.GenerateAndroidCredentials(ctx, testAppId, testIdentifierId), store.ErrNotSupportedInStatelessMode)
+	_, err = service.ExportAndroidKeystore(ctx, testAppId, testIdentifierId)
+	assert.ErrorIs(t, err, store.ErrNotSupportedInStatelessMode)
+	assert.ErrorIs(t, service.SaveGooglePlayServiceAccountKey(ctx, testAppId, testIdentifierId, `{}`), store.ErrNotSupportedInStatelessMode)
+	assert.ErrorIs(t, service.DeleteGooglePlayServiceAccountKey(ctx, testAppId, testIdentifierId), store.ErrNotSupportedInStatelessMode)
 }

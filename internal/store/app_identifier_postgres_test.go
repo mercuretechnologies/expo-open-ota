@@ -1,5 +1,5 @@
 // Integration tests for the app identifier store: the per-app uniqueness,
-// the credentials-guarded delete and the app-deletion cascade are enforced
+// the identifier and app deletion cascades are enforced
 // by the SQL itself, which the in-memory fakes cannot exercise.
 package store_test
 
@@ -54,20 +54,17 @@ func TestAppIdentifierListReportsCredentialState(t *testing.T) {
 	assert.False(t, byIdentifier["com.example.staging"])
 }
 
-func TestAppIdentifierDeleteIsGuardedByCredentials(t *testing.T) {
+func TestAppIdentifierDeleteRemovesCredentials(t *testing.T) {
 	credentialsStore, identifierStore, pool := setupCredentialsStores(t)
 	ctx := context.Background()
 	appId := insertBareApp(t, pool)
 	identifierId := insertIdentifier(t, identifierStore, appId, "android", "com.example.app")
 	require.NoError(t, credentialsStore.UpsertAndroidCredentials(ctx, identifierId, sealedFixture("v1")))
 
-	err := identifierStore.DeleteAppIdentifier(ctx, appId, identifierId)
-	hasCredsErr := (*store.ErrIdentifierHasCredentials)(nil)
-	require.True(t, errors.As(err, &hasCredsErr))
-	assert.Equal(t, "com.example.app", hasCredsErr.Identifier)
-
-	require.NoError(t, credentialsStore.DeleteAndroidCredentials(ctx, identifierId))
 	require.NoError(t, identifierStore.DeleteAppIdentifier(ctx, appId, identifierId))
+	credentials, err := credentialsStore.GetAndroidCredentials(ctx, identifierId)
+	require.NoError(t, err)
+	assert.Nil(t, credentials)
 
 	err = identifierStore.DeleteAppIdentifier(ctx, appId, identifierId)
 	notFoundErr := (*store.ErrResourceNotFound)(nil)

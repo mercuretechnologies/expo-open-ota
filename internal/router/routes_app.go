@@ -104,6 +104,14 @@ func registerAppRoutes(
 		AnyViewer())
 	app.route(http.MethodPut, "/identifiers/{IDENTIFIER_ID}/credentials/android", container.CredentialsHandler.PutAndroidCredentialsHandler,
 		NeedsPermission(rbac.PermCredentialsManage, rbac.FallbackAdminOnly))
+	app.route(http.MethodPost, "/identifiers/{IDENTIFIER_ID}/credentials/android/generate", container.CredentialsHandler.GenerateAndroidCredentialsHandler,
+		NeedsPermission(rbac.PermCredentialsManage, rbac.FallbackAdminOnly))
+	app.route(http.MethodGet, "/identifiers/{IDENTIFIER_ID}/credentials/android/download", container.CredentialsHandler.DownloadAndroidKeystoreHandler,
+		NeedsPermission(rbac.PermCredentialsManage, rbac.FallbackAdminOnly))
+	app.route(http.MethodPut, "/identifiers/{IDENTIFIER_ID}/credentials/android/google-play-service-account", container.CredentialsHandler.PutGooglePlayServiceAccountHandler,
+		NeedsPermission(rbac.PermCredentialsManage, rbac.FallbackAdminOnly))
+	app.route(http.MethodDelete, "/identifiers/{IDENTIFIER_ID}/credentials/android/google-play-service-account", container.CredentialsHandler.DeleteGooglePlayServiceAccountHandler,
+		NeedsPermission(rbac.PermCredentialsManage, rbac.FallbackAdminOnly))
 	app.route(http.MethodDelete, "/identifiers/{IDENTIFIER_ID}/credentials/android", container.CredentialsHandler.DeleteAndroidCredentialsHandler,
 		NeedsPermission(rbac.PermCredentialsManage, rbac.FallbackAdminOnly))
 

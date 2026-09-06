@@ -21,6 +21,8 @@ type SealedAndroidCredentials struct {
 	SealedKeystorePassword        string
 	SealedKeyPassword             string
 	SealedGoogleServiceAccountKey *string
+	GoogleServiceAccountEmail     *string
+	GoogleServiceAccountProjectID *string
 	CreatedAt                     time.Time
 	UpdatedAt                     time.Time
 }
@@ -65,9 +67,27 @@ func (s *PostgresCredentialsStore) GetAndroidCredentials(ctx context.Context, id
 		SealedKeystorePassword:        row.SealedKeystorePassword,
 		SealedKeyPassword:             row.SealedKeyPassword,
 		SealedGoogleServiceAccountKey: row.SealedGoogleServiceAccountKey,
+		GoogleServiceAccountEmail:     row.GoogleServiceAccountEmail,
+		GoogleServiceAccountProjectID: row.GoogleServiceAccountProjectID,
 		CreatedAt:                     row.CreatedAt.Time,
 		UpdatedAt:                     row.UpdatedAt.Time,
 	}, nil
+}
+
+func (s *PostgresCredentialsStore) UpdateGooglePlayServiceAccountKey(ctx context.Context, identifierId string, sealedKey, email, projectID *string) error {
+	commandTag, err := s.engine.Queries.UpdateGooglePlayServiceAccountKey(ctx, pgdb.UpdateGooglePlayServiceAccountKeyParams{
+		AppIdentifierID:               ToPgUUID(identifierId),
+		SealedGoogleServiceAccountKey: sealedKey,
+		GoogleServiceAccountEmail:     email,
+		GoogleServiceAccountProjectID: projectID,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to update google play service account key in database: %w", err)
+	}
+	if commandTag.RowsAffected() == 0 {
+		return &ErrResourceNotFound{Resource: "android credentials", Identifier: fmt.Sprintf("identifierId: %s", identifierId)}
+	}
+	return nil
 }
 
 func (s *PostgresCredentialsStore) DeleteAndroidCredentials(ctx context.Context, identifierId string) error {

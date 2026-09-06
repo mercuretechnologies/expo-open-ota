@@ -2510,14 +2510,24 @@ ON CONFLICT (app_identifier_id) DO UPDATE SET
     sealed_keystore = EXCLUDED.sealed_keystore,
     sealed_keystore_password = EXCLUDED.sealed_keystore_password,
     sealed_key_password = EXCLUDED.sealed_key_password,
-    sealed_google_service_account_key = EXCLUDED.sealed_google_service_account_key,
     updated_at = CURRENT_TIMESTAMP
 RETURNING id;
+
+-- name: UpdateGooglePlayServiceAccountKey :execresult
+-- updated_at belongs to the signing keystore shown in the dashboard; changing
+-- the independently managed service account must not make that timestamp lie.
+UPDATE android_credentials
+SET sealed_google_service_account_key = $2,
+    google_service_account_email = $3,
+    google_service_account_project_id = $4
+WHERE app_identifier_id = $1;
 
 -- name: GetAndroidCredentialsByIdentifierID :one
 SELECT id, app_identifier_id, key_alias,
        sealed_keystore, sealed_keystore_password, sealed_key_password,
-       sealed_google_service_account_key, created_at, updated_at
+       sealed_google_service_account_key,
+       google_service_account_email, google_service_account_project_id,
+       created_at, updated_at
 FROM android_credentials
 WHERE app_identifier_id = $1;
 
@@ -2548,21 +2558,16 @@ SET build_number = $3
 WHERE app_id = $1 AND id = $2;
 
 -- name: LockAppIdentifierByID :one
--- Lock separately from the guarded DELETE so its next READ COMMITTED snapshot
--- sees credentials inserted by a transaction we waited for (FK KEY SHARE).
+-- Lock before DELETE so a concurrent credential insert settles before the
+-- identifier and its credentials are removed by the cascade.
 SELECT identifier FROM app_identifiers
 WHERE app_id = $1 AND id = $2
 FOR UPDATE;
 
 -- name: DeleteAppIdentifierByID :execresult
--- Guarded: an identifier still holding credentials is NOT deleted, its
--- keystore must be removed explicitly first. The caller disambiguates the
--- 0-rows result into has-credentials vs not-found.
+-- Credential rows are removed atomically by their ON DELETE CASCADE FK.
 DELETE FROM app_identifiers
-WHERE app_identifiers.app_id = $1 AND app_identifiers.id = $2
-  AND NOT EXISTS (
-      SELECT 1 FROM android_credentials ac WHERE ac.app_identifier_id = app_identifiers.id
-  );
+WHERE app_identifiers.app_id = $1 AND app_identifiers.id = $2;
 
 -- name: InsertEnvironment :one
 INSERT INTO environments (id, app_id, name)

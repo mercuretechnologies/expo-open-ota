@@ -1,6 +1,8 @@
 package android
 
 import (
+	"bytes"
+	"encoding/pem"
 	"os"
 	"testing"
 	"xprem/internal/android/androidtest"
@@ -8,6 +10,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	pkcs12 "software.sslmate.com/src/go-pkcs12"
 )
 
 func assertFieldError(t *testing.T, err error, field string) {
@@ -43,22 +46,58 @@ func TestValidateAndroidKeystoreJKS(t *testing.T) {
 func TestValidateAndroidKeystorePKCS12FromKeytool(t *testing.T) {
 	single := readTestdata(t, "single.p12")
 	assert.NoError(t, ValidateKeystore(single, "store-pass", "store-pass", "upload"))
+	certificatePEM, err := SigningCertificatePEM(single, "store-pass", "store-pass", "upload")
+	require.NoError(t, err)
+	assert.Contains(t, string(certificatePEM), "BEGIN CERTIFICATE")
 	assert.NoError(t, ValidateKeystore(single, "store-pass", "store-pass", "UPLOAD"))
 	assertFieldError(t, ValidateKeystore(single, "wrong", "wrong", "upload"), "keystorePassword")
 	assertFieldError(t, ValidateKeystore(single, "store-pass", "other", "upload"), "keyPassword")
 
-	err := ValidateKeystore(single, "store-pass", "store-pass", "release")
+	err = ValidateKeystore(single, "store-pass", "store-pass", "release")
 	assertFieldError(t, err, "keyAlias")
 	assert.Contains(t, err.Error(), "upload")
 
 	multi := readTestdata(t, "multi.p12")
 	assert.NoError(t, ValidateKeystore(multi, "store-pass", "store-pass", "upload"))
 	assert.NoError(t, ValidateKeystore(multi, "store-pass", "store-pass", "release"))
+	uploadCertificate, err := SigningCertificatePEM(multi, "store-pass", "store-pass", "upload")
+	require.NoError(t, err)
+	releaseCertificate, err := SigningCertificatePEM(multi, "store-pass", "store-pass", "release")
+	require.NoError(t, err)
+	assert.NotEqual(t, uploadCertificate, releaseCertificate)
 
 	err = ValidateKeystore(multi, "store-pass", "store-pass", "nope")
 	assertFieldError(t, err, "keyAlias")
 	assert.Contains(t, err.Error(), "upload")
 	assert.Contains(t, err.Error(), "release")
+}
+
+func TestPKCS12CertificateSelectionMatchesThePrivateKey(t *testing.T) {
+	blocks, err := pkcs12.ToPEM(readTestdata(t, "multi.p12"), "store-pass")
+	require.NoError(t, err)
+
+	var uploadCertificate, releaseCertificate *pem.Block
+	for _, block := range blocks {
+		if block.Type != "CERTIFICATE" {
+			continue
+		}
+		switch block.Headers["friendlyName"] {
+		case "upload":
+			uploadCertificate = block
+		case "release":
+			releaseCertificate = block
+		}
+	}
+	require.NotNil(t, uploadCertificate)
+	require.NotNil(t, releaseCertificate)
+
+	mislabelled := *releaseCertificate
+	mislabelled.Headers = map[string]string{"friendlyName": "upload"}
+	blocks = append([]*pem.Block{&mislabelled}, blocks...)
+
+	selected, err := signingCertificateDER(blocks, "upload")
+	require.NoError(t, err)
+	assert.True(t, bytes.Equal(uploadCertificate.Bytes, selected))
 }
 
 // go-pkcs12 writes no friendlyName, so the alias cannot be checked.

@@ -1,8 +1,11 @@
 package handlers
 
 import (
+	"archive/zip"
+	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"xprem/internal/handlers"
 	"xprem/internal/services"
@@ -81,28 +84,131 @@ func (h *CredentialsHandler) PutAndroidCredentialsHandler(w http.ResponseWriter,
 		return
 	}
 	var requestBody struct {
-		KeyAlias                string `json:"keyAlias"`
-		Keystore                string `json:"keystore"`
-		KeystorePassword        string `json:"keystorePassword"`
-		KeyPassword             string `json:"keyPassword"`
-		GoogleServiceAccountKey string `json:"googleServiceAccountKey"`
+		KeyAlias         string `json:"keyAlias"`
+		Keystore         string `json:"keystore"`
+		KeystorePassword string `json:"keystorePassword"`
+		KeyPassword      string `json:"keyPassword"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 2<<20)).Decode(&requestBody); err != nil {
 		handlers.RenderError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	err := h.credentialsService.SaveAndroidCredentials(r.Context(), appId, identifierId, services.AndroidCredentialsInput{
-		KeyAlias:                    requestBody.KeyAlias,
-		KeystoreBase64:              requestBody.Keystore,
-		KeystorePassword:            requestBody.KeystorePassword,
-		KeyPassword:                 requestBody.KeyPassword,
-		GoogleServiceAccountKeyJSON: requestBody.GoogleServiceAccountKey,
+		KeyAlias:         requestBody.KeyAlias,
+		KeystoreBase64:   requestBody.Keystore,
+		KeystorePassword: requestBody.KeystorePassword,
+		KeyPassword:      requestBody.KeyPassword,
 	})
 	if err != nil {
 		renderServiceError(w, err, "An internal error occurred while saving android credentials.")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *CredentialsHandler) PutGooglePlayServiceAccountHandler(w http.ResponseWriter, r *http.Request) {
+	appId, identifierId := credentialsVars(w, r)
+	if identifierId == "" {
+		return
+	}
+	var requestBody struct {
+		ServiceAccountKey string `json:"serviceAccountKey"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 2<<20)).Decode(&requestBody); err != nil {
+		handlers.RenderError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if err := h.credentialsService.SaveGooglePlayServiceAccountKey(r.Context(), appId, identifierId, requestBody.ServiceAccountKey); err != nil {
+		renderServiceError(w, err, "An internal error occurred while saving the google play service account key.")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *CredentialsHandler) DeleteGooglePlayServiceAccountHandler(w http.ResponseWriter, r *http.Request) {
+	appId, identifierId := credentialsVars(w, r)
+	if identifierId == "" {
+		return
+	}
+	if err := h.credentialsService.DeleteGooglePlayServiceAccountKey(r.Context(), appId, identifierId); err != nil {
+		renderServiceError(w, err, "An internal error occurred while deleting the google play service account key.")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *CredentialsHandler) GenerateAndroidCredentialsHandler(w http.ResponseWriter, r *http.Request) {
+	appId, identifierId := credentialsVars(w, r)
+	if identifierId == "" {
+		return
+	}
+	if err := h.credentialsService.GenerateAndroidCredentials(r.Context(), appId, identifierId); err != nil {
+		renderServiceError(w, err, "An internal error occurred while generating android credentials.")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *CredentialsHandler) DownloadAndroidKeystoreHandler(w http.ResponseWriter, r *http.Request) {
+	appId, identifierId := credentialsVars(w, r)
+	if identifierId == "" {
+		return
+	}
+	exported, err := h.credentialsService.ExportAndroidKeystore(r.Context(), appId, identifierId)
+	if err != nil {
+		renderServiceError(w, err, "An internal error occurred while exporting the android keystore.")
+		return
+	}
+
+	credentialsJSON, err := json.MarshalIndent(struct {
+		KeyAlias         string `json:"keyAlias"`
+		KeystorePassword string `json:"keystorePassword"`
+		KeyPassword      string `json:"keyPassword"`
+	}{
+		KeyAlias:         exported.KeyAlias,
+		KeystorePassword: exported.KeystorePassword,
+		KeyPassword:      exported.KeyPassword,
+	}, "", "  ")
+	if err != nil {
+		renderServiceError(w, err, "An internal error occurred while exporting the android keystore.")
+		return
+	}
+
+	var archive bytes.Buffer
+	zipWriter := zip.NewWriter(&archive)
+	keystoreFile, err := zipWriter.Create("keystore.jks")
+	if err == nil {
+		_, err = keystoreFile.Write(exported.Keystore)
+	}
+	if err == nil {
+		certificateFile, createErr := zipWriter.Create("upload-certificate.pem")
+		err = createErr
+		if err == nil {
+			_, err = certificateFile.Write(exported.CertificatePEM)
+		}
+	}
+	if err == nil {
+		credentialsFile, createErr := zipWriter.Create("credentials.json")
+		err = createErr
+		if err == nil {
+			_, err = credentialsFile.Write(credentialsJSON)
+		}
+	}
+	if closeErr := zipWriter.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		renderServiceError(w, err, "An internal error occurred while exporting the android keystore.")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/zip")
+	w.Header().Set("Content-Disposition", `attachment; filename="android-upload-keystore.zip"`)
+	w.Header().Set("Content-Length", fmt.Sprintf("%d", archive.Len()))
+	w.Header().Set("Cache-Control", "private, no-cache, no-store")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(archive.Bytes())
 }
 
 func (h *CredentialsHandler) DeleteAndroidCredentialsHandler(w http.ResponseWriter, r *http.Request) {
