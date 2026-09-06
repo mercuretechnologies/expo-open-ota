@@ -35,7 +35,22 @@ type ApiKey struct {
 	AllowedIps []netip.Prefix     `json:"allowed_ips"`
 }
 
-type ApiKeyBranchRule struct {
+type ApiKeyBuildRule struct {
+	ApiKeyID        int64       `json:"api_key_id"`
+	AppID           pgtype.UUID `json:"app_id"`
+	AppIdentifierID pgtype.UUID `json:"app_identifier_id"`
+	Actions         []string    `json:"actions"`
+}
+
+type ApiKeySubmitRule struct {
+	ApiKeyID        int64       `json:"api_key_id"`
+	AppID           pgtype.UUID `json:"app_id"`
+	AppIdentifierID pgtype.UUID `json:"app_identifier_id"`
+	Destination     string      `json:"destination"`
+	Actions         []string    `json:"actions"`
+}
+
+type ApiKeyUpdateRule struct {
 	ID        int64              `json:"id"`
 	ApiKeyID  int64              `json:"api_key_id"`
 	Pattern   string             `json:"pattern"`

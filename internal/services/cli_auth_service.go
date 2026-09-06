@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"strconv"
 	"xprem/internal/auditlog"
+	"xprem/internal/cache"
 	"xprem/internal/crypto"
+	"xprem/internal/dashboard"
 	"xprem/internal/types"
 	"xprem/internal/validation"
 )
@@ -119,6 +121,7 @@ func (s *CliAuthService) GenerateAPIKey(ctx context.Context, appId string, name 
 	if err != nil {
 		return "", fmt.Errorf("failed to insert API key into database: %w", err)
 	}
+	cache.GetCache().Delete(dashboard.ComputeGetApiKeyAccessCacheKey(appId))
 	// The hint is the shape shown in the dashboard, never key material.
 	recordManagementEvent(ctx, s.onAuditEvent, auditlog.Event{
 		Action:        auditlog.ActionAPIKeyCreated,
@@ -151,6 +154,7 @@ func (s *CliAuthService) RevokeApiKey(ctx context.Context, appId string, apiKeyI
 	if err != nil {
 		return err
 	}
+	cache.GetCache().Delete(dashboard.ComputeGetApiKeyAccessCacheKey(appId))
 	recordManagementEvent(ctx, s.onAuditEvent, auditlog.Event{
 		Action:        auditlog.ActionAPIKeyRevoked,
 		TargetType:    "api_key",

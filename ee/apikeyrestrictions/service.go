@@ -12,33 +12,27 @@ import (
 	"strconv"
 	"xprem/ee/licensing"
 	"xprem/internal/auditlog"
+	"xprem/internal/cache"
+	"xprem/internal/dashboard"
 	"xprem/internal/services"
 )
 
-// ApiKeyAccess is everything one API key is allowed to do: the branches it
-// reaches, what it may do there, and the source networks it may be used from.
-// An empty BranchRules means every branch of the app.
+// ApiKeyAccess contains per-domain permissions and permitted source networks.
+// Empty rule lists grant no access to that domain.
 type ApiKeyAccess struct {
 	ApiKeyID    int64
 	AllowedIps  []netip.Prefix
-	BranchRules []BranchRule
+	UpdateRules []UpdateRule
+	BuildRules  []BuildRule
+	SubmitRules []SubmitRule
 }
 
-// CliRequest is one authenticated CLI request, in the terms the access
-// decision is made in.
-type CliRequest struct {
-	AppID    string
-	APIKeyID int64
-	Branch   string
-	Action   Action
-	ClientIP netip.Addr
-}
-
-// ApiKeyAccessRepository persists per-key access. GetAccess is the enforcement
-// read on the CLI request hot path.
+// ApiKeyAccessRepository persists per-key access. GetAccess returns a consistent
+// policy for a live key in the requested app, excluding native rules whose
+// identifier no longer belongs to the app or has an incompatible platform.
 type ApiKeyAccessRepository interface {
 	GetAccessByAppID(ctx context.Context, appID string) ([]ApiKeyAccess, error)
-	GetAccess(ctx context.Context, apiKeyID int64) (ApiKeyAccess, error)
+	GetAccess(ctx context.Context, appID string, apiKeyID int64) (ApiKeyAccess, error)
 	SetAccess(ctx context.Context, appID string, access ApiKeyAccess) error
 	// GetApiKeyName resolves the key's display name for the audit trail.
 	GetApiKeyName(ctx context.Context, appID string, apiKeyID int64) (string, error)
@@ -50,26 +44,10 @@ var (
 	ErrApiKeyNotFound       = errors.New("api key not found")
 	ErrInvalidCidr          = errors.New("invalid IP or CIDR range")
 
-	// Both wrap services.ErrCliAccessDenied so the community handlers can map
+	// Wraps services.ErrCliAccessDenied so the community handlers can map
 	// them to a 403 without knowing anything about this package.
 	ErrIpNotAllowed = fmt.Errorf("%w: this API key cannot be used from this IP address", services.ErrCliAccessDenied)
 )
-
-// deniedError names both the branch and the action so the caller does not
-// have to guess which one failed.
-func deniedError(action Action, branchName string) error {
-	return fmt.Errorf("%w: this API key is not allowed to %s on branch %q", services.ErrCliAccessDenied, action, branchName)
-}
-
-// unjudged turns a repository failure into "could not verify" so an outage
-// reaches the CLI as a 500 rather than an invalid-key error. ErrApiKeyNotFound
-// passes through unchanged since a missing key is not an outage.
-func unjudged(err error) error {
-	if errors.Is(err, ErrApiKeyNotFound) {
-		return err
-	}
-	return fmt.Errorf("%w: %w", services.ErrCliAuthUnavailable, err)
-}
 
 // ApiKeyAccessService owns the management and the enforcement of per-key
 // access. Mutations are license-gated; reads are not.
@@ -103,8 +81,8 @@ func (s *ApiKeyAccessService) GetAccessByApp(ctx context.Context, appID string) 
 
 // SetAccess replaces what one API key is allowed to do. CIDR entries are
 // normalized to satisfy the postgres cidr column, and rules are validated and
-// reordered by NormalizeBranchRules.
-func (s *ApiKeyAccessService) SetAccess(ctx context.Context, appID string, apiKeyID int64, rules []BranchRule, cidrs []string) error {
+// reordered by NormalizeUpdateRules.
+func (s *ApiKeyAccessService) SetAccess(ctx context.Context, appID string, apiKeyID int64, updateRules []UpdateRule, cidrs []string, buildRules []BuildRule, submitRules []SubmitRule) error {
 	if s.repo == nil {
 		return ErrRequiresControlPlane
 	}
@@ -115,18 +93,29 @@ func (s *ApiKeyAccessService) SetAccess(ctx context.Context, appID string, apiKe
 	if err != nil {
 		return err
 	}
-	normalizedRules, err := NormalizeBranchRules(rules)
+	normalizedRules, err := NormalizeUpdateRules(updateRules)
+	if err != nil {
+		return err
+	}
+	normalizedBuild, err := normalizeBuildRules(buildRules)
+	if err != nil {
+		return err
+	}
+	normalizedSubmit, err := normalizeSubmitRules(submitRules)
 	if err != nil {
 		return err
 	}
 	access := ApiKeyAccess{
 		ApiKeyID:    apiKeyID,
 		AllowedIps:  allowedIps,
-		BranchRules: normalizedRules,
+		UpdateRules: normalizedRules,
+		BuildRules:  normalizedBuild,
+		SubmitRules: normalizedSubmit,
 	}
 	if err := s.repo.SetAccess(ctx, appID, access); err != nil {
 		return err
 	}
+	cache.GetCache().Delete(dashboard.ComputeGetApiKeyAccessCacheKey(appID))
 	// CIDRs are recorded in normalized form; rules in the form the dashboard shows.
 	normalizedCidrs := make([]string, len(allowedIps))
 	for i, prefix := range allowedIps {
@@ -143,29 +132,11 @@ func (s *ApiKeyAccessService) SetAccess(ctx context.Context, appID string, apiKe
 	s.recordAccessEvent(ctx, auditlog.ActionAPIKeyRestrictionsUpdated,
 		"api_key", strconv.FormatInt(apiKeyID, 10), targetDisplay, appID,
 		map[string]any{
-			"branch_rules":  describeBranchRules(normalizedRules),
+			"update_rules":  describeUpdateRules(normalizedRules),
+			"build_rules":   describeBuildRules(normalizedBuild),
+			"submit_rules":  describeSubmitRules(normalizedSubmit),
 			"allowed_cidrs": normalizedCidrs,
 		})
-	return nil
-}
-
-// Authorize is the enforcement point for an authenticated CLI request.
-// Without a control plane or an active license, nothing is enforced.
-func (s *ApiKeyAccessService) Authorize(ctx context.Context, req CliRequest) error {
-	if s.repo == nil || !s.licenseValid() {
-		return nil
-	}
-	access, err := s.repo.GetAccess(ctx, req.APIKeyID)
-	if err != nil {
-		return unjudged(err)
-	}
-	if len(access.AllowedIps) > 0 && !ipAllowed(req.ClientIP, access.AllowedIps) {
-		return ipNotAllowedError(req.ClientIP)
-	}
-	if !AllowsBranch(access.BranchRules, req.Branch, req.Action) {
-		return deniedError(req.Action, req.Branch)
-	}
-	// A rule that admits a branch name also admits creating that branch via publish.
 	return nil
 }
 

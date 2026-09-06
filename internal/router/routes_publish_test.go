@@ -18,7 +18,7 @@ import (
 
 // servePublishRequest builds the publish group the way registerPublishRoutes
 // does, with a spy policy, and sends one request at it.
-func servePublishRequest(t *testing.T, method, path, requestPath string, action apikeyrestrictions.Action, policy *recordingPolicy) *httptest.ResponseRecorder {
+func servePublishRequest(t *testing.T, method, path, requestPath string, action apikeyrestrictions.UpdateAction, policy *recordingUpdatePolicy) *httptest.ResponseRecorder {
 	t.Helper()
 	router := mux.NewRouter()
 	group := publishGroup{
@@ -43,15 +43,15 @@ func TestPublishRoutesDeclareTheirAction(t *testing.T) {
 	for _, tc := range []struct {
 		path        string
 		requestPath string
-		action      apikeyrestrictions.Action
+		action      apikeyrestrictions.UpdateAction
 	}{
-		{"/requestUploadUrl/{BRANCH}", "/app-1/requestUploadUrl/production", apikeyrestrictions.ActionPublish},
-		{"/markUpdateAsUploaded/{BRANCH}", "/app-1/markUpdateAsUploaded/production", apikeyrestrictions.ActionPublish},
-		{"/rollback/{BRANCH}", "/app-1/rollback/production", apikeyrestrictions.ActionRollback},
-		{"/republish/{BRANCH}", "/app-1/republish/production", apikeyrestrictions.ActionRollback},
+		{"/requestUploadUrl/{BRANCH}", "/app-1/requestUploadUrl/production", apikeyrestrictions.UpdateActionPublish},
+		{"/markUpdateAsUploaded/{BRANCH}", "/app-1/markUpdateAsUploaded/production", apikeyrestrictions.UpdateActionPublish},
+		{"/rollback/{BRANCH}", "/app-1/rollback/production", apikeyrestrictions.UpdateActionRollback},
+		{"/republish/{BRANCH}", "/app-1/republish/production", apikeyrestrictions.UpdateActionRollback},
 	} {
 		t.Run(tc.path, func(t *testing.T) {
-			policy := &recordingPolicy{}
+			policy := &recordingUpdatePolicy{}
 			w := servePublishRequest(t, http.MethodPost, tc.path, tc.requestPath, tc.action, policy)
 			if w.Code != http.StatusOK {
 				t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
@@ -72,7 +72,7 @@ func TestPublishRoutesDeclareTheirAction(t *testing.T) {
 // TestGuardRefusesARequestWithNoResolvedBranch checks that a resolver naming
 // no branch is refused rather than judged on an empty branch.
 func TestGuardRefusesARequestWithNoResolvedBranch(t *testing.T) {
-	policy := &recordingPolicy{}
+	policy := &recordingUpdatePolicy{}
 	router := mux.NewRouter()
 	group := publishGroup{
 		router:       router.PathPrefix("/{APP_ID}").Subrouter(),
@@ -81,7 +81,7 @@ func TestGuardRefusesARequestWithNoResolvedBranch(t *testing.T) {
 	}
 	emptyResolver := func(*http.Request) string { return "" }
 	group.router.Handle("/publishSomething",
-		group.guard(apikeyrestrictions.ActionPublish, emptyResolver)(
+		group.guard(apikeyrestrictions.UpdateActionPublish, emptyResolver)(
 			http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				t.Error("the handler must not run without an authorized branch")
 			}))).Methods(http.MethodPost)
@@ -104,10 +104,10 @@ func TestGuardRefusesARequestWithNoResolvedBranch(t *testing.T) {
 func TestPublishRouteDeclarationIsCheckedAtBoot(t *testing.T) {
 	for name, register := range map[string]func(g publishGroup){
 		"no branch in the path": func(g publishGroup) {
-			g.route(http.MethodPost, "/uploadSomething", nil, apikeyrestrictions.ActionPublish)
+			g.route(http.MethodPost, "/uploadSomething", nil, apikeyrestrictions.UpdateActionPublish)
 		},
 		"unknown action": func(g publishGroup) {
-			g.route(http.MethodPost, "/rollback/{BRANCH}", nil, apikeyrestrictions.Action("delete"))
+			g.route(http.MethodPost, "/rollback/{BRANCH}", nil, apikeyrestrictions.UpdateAction("delete"))
 		},
 		"branch in the path of an upload-token route": func(g publishGroup) {
 			g.uploadTokenRoute(http.MethodPut, "/uploadLocalFile/{BRANCH}", nil)
@@ -119,7 +119,7 @@ func TestPublishRouteDeclarationIsCheckedAtBoot(t *testing.T) {
 					t.Fatal("expected the registration to panic")
 				}
 			}()
-			register(publishGroup{router: mux.NewRouter(), apiKeyAccess: &recordingPolicy{}})
+			register(publishGroup{router: mux.NewRouter(), apiKeyAccess: &recordingUpdatePolicy{}})
 		})
 	}
 }
@@ -145,7 +145,7 @@ func TestUploadTokenBranchResolution(t *testing.T) {
 		"foreign token": {"?token=" + mintForeignUploadToken(t, "app-1", "production"), "", http.StatusForbidden},
 	} {
 		t.Run(name, func(t *testing.T) {
-			policy := &recordingPolicy{}
+			policy := &recordingUpdatePolicy{}
 			router := mux.NewRouter()
 			group := publishGroup{
 				router:       router.PathPrefix("/{APP_ID}").Subrouter(),
@@ -177,7 +177,7 @@ func TestUploadTokenBranchResolution(t *testing.T) {
 			if got := policy.requests[0].Branch; got != tc.branch {
 				t.Fatalf("expected branch %q, got %q", tc.branch, got)
 			}
-			if got := policy.requests[0].Action; got != apikeyrestrictions.ActionPublish {
+			if got := policy.requests[0].Action; got != apikeyrestrictions.UpdateActionPublish {
 				t.Fatalf("expected the upload to be judged as a publish, got %q", got)
 			}
 		})

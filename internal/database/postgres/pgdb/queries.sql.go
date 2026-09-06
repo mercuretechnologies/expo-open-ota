@@ -474,15 +474,33 @@ func (q *Queries) DeleteAndroidCredentialsByIdentifierID(ctx context.Context, ap
 	return q.db.Exec(ctx, deleteAndroidCredentialsByIdentifierID, appIdentifierID)
 }
 
-const deleteApiKeyBranchRules = `-- name: DeleteApiKeyBranchRules :exec
-DELETE FROM api_key_branch_rules WHERE api_key_id = $1
+const deleteApiKeyBuildRules = `-- name: DeleteApiKeyBuildRules :exec
+DELETE FROM api_key_build_rules WHERE api_key_id = $1
+`
+
+func (q *Queries) DeleteApiKeyBuildRules(ctx context.Context, apiKeyID int64) error {
+	_, err := q.db.Exec(ctx, deleteApiKeyBuildRules, apiKeyID)
+	return err
+}
+
+const deleteApiKeySubmitRules = `-- name: DeleteApiKeySubmitRules :exec
+DELETE FROM api_key_submit_rules WHERE api_key_id = $1
+`
+
+func (q *Queries) DeleteApiKeySubmitRules(ctx context.Context, apiKeyID int64) error {
+	_, err := q.db.Exec(ctx, deleteApiKeySubmitRules, apiKeyID)
+	return err
+}
+
+const deleteApiKeyUpdateRules = `-- name: DeleteApiKeyUpdateRules :exec
+DELETE FROM api_key_update_rules WHERE api_key_id = $1
 `
 
 // The rules of one key are replaced wholesale, inside the same transaction as
 // UpdateApiKeyAccess: a partial write would leave a key granting something
 // nobody asked for.
-func (q *Queries) DeleteApiKeyBranchRules(ctx context.Context, apiKeyID int64) error {
-	_, err := q.db.Exec(ctx, deleteApiKeyBranchRules, apiKeyID)
+func (q *Queries) DeleteApiKeyUpdateRules(ctx context.Context, apiKeyID int64) error {
+	_, err := q.db.Exec(ctx, deleteApiKeyUpdateRules, apiKeyID)
 	return err
 }
 
@@ -944,33 +962,60 @@ func (q *Queries) GetAndroidCredentialsByIdentifierID(ctx context.Context, appId
 
 const getApiKeyAccess = `-- name: GetApiKeyAccess :many
 
-SELECT k.allowed_ips, r.pattern, r.actions
-FROM api_keys k
-LEFT JOIN api_key_branch_rules r ON r.api_key_id = k.id
-WHERE k.id = $1 AND k.revoked_at IS NULL
+WITH active_key AS (
+    SELECT k.id, k.app_id, k.allowed_ips
+    FROM api_keys k
+    WHERE k.id = $1 AND k.app_id = $2 AND k.revoked_at IS NULL
+), rules AS (
+    SELECT 'updates'::TEXT AS domain, r.pattern, NULL::UUID AS app_identifier_id,
+           ''::TEXT AS destination, r.actions
+    FROM api_key_update_rules r
+    JOIN active_key k ON k.id = r.api_key_id
+    UNION ALL
+    SELECT 'build'::TEXT, ''::TEXT, r.app_identifier_id, ''::TEXT, r.actions
+    FROM api_key_build_rules r
+    JOIN active_key k ON k.id = r.api_key_id AND k.app_id = r.app_id
+    JOIN app_identifiers i ON i.id = r.app_identifier_id AND i.app_id = k.app_id
+    UNION ALL
+    SELECT 'submit'::TEXT, ''::TEXT, r.app_identifier_id, r.destination, r.actions
+    FROM api_key_submit_rules r
+    JOIN active_key k ON k.id = r.api_key_id AND k.app_id = r.app_id
+    JOIN app_identifiers i ON i.id = r.app_identifier_id AND i.app_id = k.app_id
+    WHERE (i.platform = 'android' AND r.destination IN ('internal', 'alpha', 'beta', 'production'))
+       OR (i.platform = 'ios' AND r.destination = 'testflight')
+)
+SELECT k.allowed_ips, COALESCE(r.domain, '')::TEXT AS domain,
+       COALESCE(r.pattern, '')::TEXT AS pattern, r.app_identifier_id,
+       COALESCE(r.destination, '')::TEXT AS destination, r.actions
+FROM active_key k
+LEFT JOIN rules r ON TRUE
+ORDER BY r.domain, r.pattern, r.app_identifier_id, r.destination
 `
 
+type GetApiKeyAccessParams struct {
+	ApiKeyID int64       `json:"api_key_id"`
+	AppID    pgtype.UUID `json:"app_id"`
+}
+
 type GetApiKeyAccessRow struct {
-	AllowedIps []netip.Prefix `json:"allowed_ips"`
-	Pattern    *string        `json:"pattern"`
-	Actions    []string       `json:"actions"`
+	AllowedIps      []netip.Prefix `json:"allowed_ips"`
+	Domain          string         `json:"domain"`
+	Pattern         string         `json:"pattern"`
+	AppIdentifierID pgtype.UUID    `json:"app_identifier_id"`
+	Destination     string         `json:"destination"`
+	Actions         []string       `json:"actions"`
 }
 
 // The queries below back the Enterprise Edition per-key access restrictions
 // (ee/apikeyrestrictions). sqlc generates a single package for the whole
 // schema, so the EE feature's SQL lives here like the enterprise license
 // queries above.
-// Enforcement read for one authenticated key on the CLI request hot path: the
-// IP allow-list, the branch-creation flag and the branch rules in one round
-// trip. A key with no rule yields a single row with a NULL pattern, which is
-// the unrestricted default.
-//
-// revoked_at IS NULL is redundant with authentication, which already refuses a
-// revoked key, and it is here anyway: this is the last read before a publish is
-// authorised, so it costs nothing to make "zero rows" mean exactly what the
-// caller treats it as, a key that may no longer act.
-func (q *Queries) GetApiKeyAccess(ctx context.Context, id int64) ([]GetApiKeyAccessRow, error) {
-	rows, err := q.db.Query(ctx, getApiKeyAccess, id)
+// Read a live key and all of its permission domains from one database snapshot.
+// Native rules must still target a registered identifier in this app, and a
+// Submit destination must match that identifier's current platform.
+// A key without rules yields one row with an empty domain; no key yields none.
+func (q *Queries) GetApiKeyAccess(ctx context.Context, arg GetApiKeyAccessParams) ([]GetApiKeyAccessRow, error) {
+	rows, err := q.db.Query(ctx, getApiKeyAccess, arg.ApiKeyID, arg.AppID)
 	if err != nil {
 		return nil, err
 	}
@@ -978,7 +1023,14 @@ func (q *Queries) GetApiKeyAccess(ctx context.Context, id int64) ([]GetApiKeyAcc
 	var items []GetApiKeyAccessRow
 	for rows.Next() {
 		var i GetApiKeyAccessRow
-		if err := rows.Scan(&i.AllowedIps, &i.Pattern, &i.Actions); err != nil {
+		if err := rows.Scan(
+			&i.AllowedIps,
+			&i.Domain,
+			&i.Pattern,
+			&i.AppIdentifierID,
+			&i.Destination,
+			&i.Actions,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -992,7 +1044,7 @@ func (q *Queries) GetApiKeyAccess(ctx context.Context, id int64) ([]GetApiKeyAcc
 const getApiKeyAccessByAppID = `-- name: GetApiKeyAccessByAppID :many
 SELECT k.id, k.allowed_ips, r.pattern, r.actions
 FROM api_keys k
-LEFT JOIN api_key_branch_rules r ON r.api_key_id = k.id
+LEFT JOIN api_key_update_rules r ON r.api_key_id = k.id
 WHERE k.app_id = $1 AND k.revoked_at IS NULL
 ORDER BY k.id, r.id
 `
@@ -1004,8 +1056,8 @@ type GetApiKeyAccessByAppIDRow struct {
 	Actions    []string       `json:"actions"`
 }
 
-// Same shape for the dashboard, over every live key of one app. Ordered so
-// the caller can fold consecutive rows into one key without a map.
+// Updates rules for the dashboard, over every live key of one app. Ordered
+// so the caller can fold consecutive rows into one key without a map.
 func (q *Queries) GetApiKeyAccessByAppID(ctx context.Context, appID pgtype.UUID) ([]GetApiKeyAccessByAppIDRow, error) {
 	rows, err := q.db.Query(ctx, getApiKeyAccessByAppID, appID)
 	if err != nil {
@@ -1021,6 +1073,39 @@ func (q *Queries) GetApiKeyAccessByAppID(ctx context.Context, appID pgtype.UUID)
 			&i.Pattern,
 			&i.Actions,
 		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getApiKeyBuildRulesByAppID = `-- name: GetApiKeyBuildRulesByAppID :many
+SELECT r.api_key_id, r.app_identifier_id, r.actions
+FROM api_key_build_rules r JOIN api_keys k ON k.id = r.api_key_id
+WHERE r.app_id = $1 AND k.revoked_at IS NULL
+ORDER BY r.api_key_id, r.app_identifier_id
+`
+
+type GetApiKeyBuildRulesByAppIDRow struct {
+	ApiKeyID        int64       `json:"api_key_id"`
+	AppIdentifierID pgtype.UUID `json:"app_identifier_id"`
+	Actions         []string    `json:"actions"`
+}
+
+func (q *Queries) GetApiKeyBuildRulesByAppID(ctx context.Context, appID pgtype.UUID) ([]GetApiKeyBuildRulesByAppIDRow, error) {
+	rows, err := q.db.Query(ctx, getApiKeyBuildRulesByAppID, appID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []GetApiKeyBuildRulesByAppIDRow
+	for rows.Next() {
+		var i GetApiKeyBuildRulesByAppIDRow
+		if err := rows.Scan(&i.ApiKeyID, &i.AppIdentifierID, &i.Actions); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -1047,6 +1132,49 @@ func (q *Queries) GetApiKeyNameByID(ctx context.Context, arg GetApiKeyNameByIDPa
 	var name string
 	err := row.Scan(&name)
 	return name, err
+}
+
+const getApiKeySubmitRulesByAppID = `-- name: GetApiKeySubmitRulesByAppID :many
+SELECT r.api_key_id, r.app_identifier_id, r.destination, r.actions
+FROM api_key_submit_rules r
+JOIN api_keys k ON k.id = r.api_key_id AND k.app_id = r.app_id
+JOIN app_identifiers i ON i.id = r.app_identifier_id AND i.app_id = k.app_id
+WHERE r.app_id = $1 AND k.revoked_at IS NULL
+  AND ((i.platform = 'android' AND r.destination IN ('internal', 'alpha', 'beta', 'production'))
+    OR (i.platform = 'ios' AND r.destination = 'testflight'))
+ORDER BY r.api_key_id, r.app_identifier_id, r.destination
+`
+
+type GetApiKeySubmitRulesByAppIDRow struct {
+	ApiKeyID        int64       `json:"api_key_id"`
+	AppIdentifierID pgtype.UUID `json:"app_identifier_id"`
+	Destination     string      `json:"destination"`
+	Actions         []string    `json:"actions"`
+}
+
+func (q *Queries) GetApiKeySubmitRulesByAppID(ctx context.Context, appID pgtype.UUID) ([]GetApiKeySubmitRulesByAppIDRow, error) {
+	rows, err := q.db.Query(ctx, getApiKeySubmitRulesByAppID, appID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []GetApiKeySubmitRulesByAppIDRow
+	for rows.Next() {
+		var i GetApiKeySubmitRulesByAppIDRow
+		if err := rows.Scan(
+			&i.ApiKeyID,
+			&i.AppIdentifierID,
+			&i.Destination,
+			&i.Actions,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const getApiKeysMetadataByAppID = `-- name: GetApiKeysMetadataByAppID :many
@@ -3268,19 +3396,65 @@ func (q *Queries) InsertApiKey(ctx context.Context, arg InsertApiKeyParams) (int
 	return id, err
 }
 
-const insertApiKeyBranchRule = `-- name: InsertApiKeyBranchRule :exec
-INSERT INTO api_key_branch_rules (api_key_id, pattern, actions)
+const insertApiKeyBuildRule = `-- name: InsertApiKeyBuildRule :exec
+INSERT INTO api_key_build_rules (api_key_id, app_id, app_identifier_id, actions)
+VALUES ($1, $2, $3, $4)
+`
+
+type InsertApiKeyBuildRuleParams struct {
+	ApiKeyID        int64       `json:"api_key_id"`
+	AppID           pgtype.UUID `json:"app_id"`
+	AppIdentifierID pgtype.UUID `json:"app_identifier_id"`
+	Actions         []string    `json:"actions"`
+}
+
+func (q *Queries) InsertApiKeyBuildRule(ctx context.Context, arg InsertApiKeyBuildRuleParams) error {
+	_, err := q.db.Exec(ctx, insertApiKeyBuildRule,
+		arg.ApiKeyID,
+		arg.AppID,
+		arg.AppIdentifierID,
+		arg.Actions,
+	)
+	return err
+}
+
+const insertApiKeySubmitRule = `-- name: InsertApiKeySubmitRule :exec
+INSERT INTO api_key_submit_rules (api_key_id, app_id, app_identifier_id, destination, actions)
+VALUES ($1, $2, $3, $4, $5)
+`
+
+type InsertApiKeySubmitRuleParams struct {
+	ApiKeyID        int64       `json:"api_key_id"`
+	AppID           pgtype.UUID `json:"app_id"`
+	AppIdentifierID pgtype.UUID `json:"app_identifier_id"`
+	Destination     string      `json:"destination"`
+	Actions         []string    `json:"actions"`
+}
+
+func (q *Queries) InsertApiKeySubmitRule(ctx context.Context, arg InsertApiKeySubmitRuleParams) error {
+	_, err := q.db.Exec(ctx, insertApiKeySubmitRule,
+		arg.ApiKeyID,
+		arg.AppID,
+		arg.AppIdentifierID,
+		arg.Destination,
+		arg.Actions,
+	)
+	return err
+}
+
+const insertApiKeyUpdateRule = `-- name: InsertApiKeyUpdateRule :exec
+INSERT INTO api_key_update_rules (api_key_id, pattern, actions)
 VALUES ($1, $2, $3)
 `
 
-type InsertApiKeyBranchRuleParams struct {
+type InsertApiKeyUpdateRuleParams struct {
 	ApiKeyID int64    `json:"api_key_id"`
 	Pattern  string   `json:"pattern"`
 	Actions  []string `json:"actions"`
 }
 
-func (q *Queries) InsertApiKeyBranchRule(ctx context.Context, arg InsertApiKeyBranchRuleParams) error {
-	_, err := q.db.Exec(ctx, insertApiKeyBranchRule, arg.ApiKeyID, arg.Pattern, arg.Actions)
+func (q *Queries) InsertApiKeyUpdateRule(ctx context.Context, arg InsertApiKeyUpdateRuleParams) error {
+	_, err := q.db.Exec(ctx, insertApiKeyUpdateRule, arg.ApiKeyID, arg.Pattern, arg.Actions)
 	return err
 }
 

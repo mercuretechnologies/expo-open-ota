@@ -23,7 +23,7 @@ const maxNameLen = 128
 const maxDisplayNameLen = 255
 
 // maxPatternLen caps branch patterns, matching the VARCHAR(255) of
-// api_key_branch_rules.pattern. Wider than maxNameLen so a rule can name a
+// api_key_update_rules.pattern. Wider than maxNameLen so a rule can name a
 // legacy branch that predates the maxNameLen cap.
 const maxPatternLen = 255
 

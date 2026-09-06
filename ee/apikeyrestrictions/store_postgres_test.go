@@ -28,13 +28,13 @@ func TestFoldAccessRows(t *testing.T) {
 	}
 
 	expected := []ApiKeyAccess{
-		{ApiKeyID: 1, AllowedIps: allowed, BranchRules: []BranchRule{
-			{Pattern: "production", Actions: []Action{ActionRead}},
-			{Pattern: "pr-*", Actions: []Action{ActionRead, ActionPublish}},
+		{ApiKeyID: 1, AllowedIps: allowed, UpdateRules: []UpdateRule{
+			{Pattern: "production", Actions: []UpdateAction{UpdateActionRead}},
+			{Pattern: "pr-*", Actions: []UpdateAction{UpdateActionRead, UpdateActionPublish}},
 		}},
 		{ApiKeyID: 2},
-		{ApiKeyID: 3, BranchRules: []BranchRule{
-			{Pattern: "staging", Actions: []Action{ActionRollback}},
+		{ApiKeyID: 3, UpdateRules: []UpdateRule{
+			{Pattern: "staging", Actions: []UpdateAction{UpdateActionRollback}},
 		}},
 	}
 	if got := foldAccessRows(rows); !reflect.DeepEqual(got, expected) {
@@ -57,15 +57,15 @@ func TestFoldAccessRowsDropsUnknownActions(t *testing.T) {
 	}
 	folded := foldAccessRows(rows)
 
-	if want := []Action{ActionPublish}; !reflect.DeepEqual(folded[0].BranchRules[0].Actions, want) {
-		t.Fatalf("expected the unknown action dropped, got %+v", folded[0].BranchRules[0].Actions)
+	if want := []UpdateAction{UpdateActionPublish}; !reflect.DeepEqual(folded[0].UpdateRules[0].Actions, want) {
+		t.Fatalf("expected the unknown action dropped, got %+v", folded[0].UpdateRules[0].Actions)
 	}
-	if len(folded[1].BranchRules[0].Actions) != 0 {
-		t.Fatalf("expected no action to survive, got %+v", folded[1].BranchRules[0].Actions)
+	if len(folded[1].UpdateRules[0].Actions) != 0 {
+		t.Fatalf("expected no action to survive, got %+v", folded[1].UpdateRules[0].Actions)
 	}
 	// A rule left with no action grants nothing.
-	for _, action := range AllActions {
-		if AllowsBranch(folded[1].BranchRules, "staging", action) {
+	for _, action := range AllUpdateActions {
+		if AllowsUpdates(folded[1].UpdateRules, "staging", action) {
 			t.Fatalf("a rule with no surviving action granted %q", action)
 		}
 	}

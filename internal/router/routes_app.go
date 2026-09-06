@@ -74,11 +74,11 @@ func registerAppRoutes(
 	// publishing token may reach: eoas asks which runtime versions a branch
 	// has, then which updates or publish groups that pair already holds.
 	app.route(http.MethodGet, "/branch/{BRANCH}/runtimeVersions", container.BranchHandler.GetRuntimeVersionsHandler,
-		AnyViewerOrToken(apikeyrestrictions.ActionRead))
+		AnyViewerOrUpdateToken(apikeyrestrictions.UpdateActionRead))
 	app.route(http.MethodGet, "/branch/{BRANCH}/runtimeVersion/{RUNTIME_VERSION}/updates", container.UpdateHandler.GetUpdatesHandler,
-		AnyViewerOrToken(apikeyrestrictions.ActionRead))
+		AnyViewerOrUpdateToken(apikeyrestrictions.UpdateActionRead))
 	app.route(http.MethodGet, "/branch/{BRANCH}/runtimeVersion/{RUNTIME_VERSION}/publish-groups", container.UpdateHandler.GetPublishGroupsHandler,
-		AnyViewerOrToken(apikeyrestrictions.ActionRead))
+		AnyViewerOrUpdateToken(apikeyrestrictions.UpdateActionRead))
 	app.route(http.MethodGet, "/updates", container.UpdateHandler.GetUpdateFeedHandler,
 		AnyViewer())
 	app.route(http.MethodGet, "/branch/{BRANCH}/runtimeVersion/{RUNTIME_VERSION}/updates/{UPDATE_ID}", container.UpdateHandler.GetUpdateDetailsHandler,

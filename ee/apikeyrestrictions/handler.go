@@ -7,21 +7,16 @@ package apikeyrestrictions
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"xprem/internal/cache"
+	"xprem/internal/dashboard"
 	"xprem/internal/handlers"
 	"xprem/internal/validation"
-	"xprem/internal/version"
 
 	"github.com/gorilla/mux"
 )
-
-// computeGetApiKeyAccessCacheKey builds the cache key for one app's access list.
-func computeGetApiKeyAccessCacheKey(appId string) string {
-	return fmt.Sprintf("dashboard:%s:%s:request:getApiKeyAccess", version.Version, appId)
-}
 
 // maxAccessBodyBytes bounds the access payload size.
 const maxAccessBodyBytes = 64 << 10
@@ -34,20 +29,23 @@ func NewApiKeyAccessHandler(service *ApiKeyAccessService) *ApiKeyAccessHandler {
 	return &ApiKeyAccessHandler{service: service}
 }
 
-// branchRulePayload is one rule on the wire; actions are plain strings so an
-// unknown one gets a named 400 instead of a decoding error.
-type branchRulePayload struct {
-	Pattern string   `json:"pattern"`
-	Actions []string `json:"actions"`
+type updatesAccessPayload struct {
+	Rules []UpdateRule `json:"rules"`
+}
+type buildAccessPayload struct {
+	Rules []BuildRule `json:"rules"`
+}
+type submitAccessPayload struct {
+	Rules []SubmitRule `json:"rules"`
 }
 
-// ApiKeyAccessResponse mirrors the dashboard's id conventions: ids are
-// strings, like ApiKeyMetadata.ID. An empty branchRules means the key reaches
-// every branch.
+// ApiKeyAccessResponse keeps each permission domain and its resource rules explicit.
 type ApiKeyAccessResponse struct {
-	ApiKeyID    string              `json:"apiKeyId"`
-	BranchRules []branchRulePayload `json:"branchRules"`
-	AllowedIps  []string            `json:"allowedIps"`
+	ApiKeyID   string               `json:"apiKeyId"`
+	Updates    updatesAccessPayload `json:"updates"`
+	Build      buildAccessPayload   `json:"build"`
+	Submit     submitAccessPayload  `json:"submit"`
+	AllowedIps []string             `json:"allowedIps"`
 }
 
 func renderApiKeyAccessServiceError(w http.ResponseWriter, err error) {
@@ -68,8 +66,10 @@ func renderApiKeyAccessServiceError(w http.ResponseWriter, err error) {
 
 func (h *ApiKeyAccessHandler) GetApiKeyAccessHandler(w http.ResponseWriter, r *http.Request) {
 	appId := mux.Vars(r)["APP_ID"]
+	// Cache on the server only; browsers must revalidate after mutations.
+	w.Header().Set("Cache-Control", "no-store")
 	requestCache := cache.GetCache()
-	cacheKey := computeGetApiKeyAccessCacheKey(appId)
+	cacheKey := dashboard.ComputeGetApiKeyAccessCacheKey(appId)
 	if cachedValue := requestCache.Get(cacheKey); cachedValue != "" {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
@@ -84,15 +84,11 @@ func (h *ApiKeyAccessHandler) GetApiKeyAccessHandler(w http.ResponseWriter, r *h
 	response := make([]ApiKeyAccessResponse, 0, len(accesses))
 	for _, access := range accesses {
 		entry := ApiKeyAccessResponse{
-			ApiKeyID:    strconv.FormatInt(access.ApiKeyID, 10),
-			BranchRules: make([]branchRulePayload, 0, len(access.BranchRules)),
-			AllowedIps:  make([]string, 0, len(access.AllowedIps)),
-		}
-		for _, rule := range access.BranchRules {
-			entry.BranchRules = append(entry.BranchRules, branchRulePayload{
-				Pattern: rule.Pattern,
-				Actions: fromActions(rule.Actions),
-			})
+			ApiKeyID:   strconv.FormatInt(access.ApiKeyID, 10),
+			Updates:    updatesAccessPayload{Rules: append([]UpdateRule{}, access.UpdateRules...)},
+			Build:      buildAccessPayload{Rules: append([]BuildRule{}, access.BuildRules...)},
+			Submit:     submitAccessPayload{Rules: append([]SubmitRule{}, access.SubmitRules...)},
+			AllowedIps: []string{},
 		}
 		for _, prefix := range access.AllowedIps {
 			entry.AllowedIps = append(entry.AllowedIps, prefix.String())
@@ -100,12 +96,11 @@ func (h *ApiKeyAccessHandler) GetApiKeyAccessHandler(w http.ResponseWriter, r *h
 		response = append(response, entry)
 	}
 	marshaledResponse, _ := json.Marshal(response)
+	ttl := 60
+	requestCache.Set(cacheKey, string(marshaledResponse), &ttl)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	w.Write(marshaledResponse)
-
-	ttl := 60
-	requestCache.Set(cacheKey, string(marshaledResponse), &ttl)
 }
 
 func (h *ApiKeyAccessHandler) SetApiKeyAccessHandler(w http.ResponseWriter, r *http.Request) {
@@ -117,26 +112,29 @@ func (h *ApiKeyAccessHandler) SetApiKeyAccessHandler(w http.ResponseWriter, r *h
 		return
 	}
 	var req struct {
-		BranchRules []branchRulePayload `json:"branchRules"`
-		AllowedIps  []string            `json:"allowedIps"`
+		Updates    *updatesAccessPayload `json:"updates"`
+		Build      *buildAccessPayload   `json:"build"`
+		Submit     *submitAccessPayload  `json:"submit"`
+		AllowedIps []string              `json:"allowedIps"`
 	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxAccessBodyBytes)).Decode(&req); err != nil {
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxAccessBodyBytes))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
 		handlers.RenderError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
-	rules := make([]BranchRule, 0, len(req.BranchRules))
-	for _, payload := range req.BranchRules {
-		actions := make([]Action, 0, len(payload.Actions))
-		for _, action := range payload.Actions {
-			actions = append(actions, Action(action))
-		}
-		rules = append(rules, BranchRule{Pattern: payload.Pattern, Actions: actions})
+	// Reject stale/partial payloads rather than silently clearing either domain.
+	if req.Updates == nil || req.Build == nil || req.Submit == nil || req.Updates.Rules == nil || req.Build.Rules == nil || req.Submit.Rules == nil || req.AllowedIps == nil {
+		handlers.RenderError(w, http.StatusBadRequest, "updates.rules, build.rules, submit.rules and allowedIps must be provided as arrays")
+		return
 	}
-	if err := h.service.SetAccess(r.Context(), appId, apiKeyID, rules, req.AllowedIps); err != nil {
+	if err := decoder.Decode(new(any)); err != io.EOF {
+		handlers.RenderError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+	if err := h.service.SetAccess(r.Context(), appId, apiKeyID, req.Updates.Rules, req.AllowedIps, req.Build.Rules, req.Submit.Rules); err != nil {
 		renderApiKeyAccessServiceError(w, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
-
-	cache.GetCache().Delete(computeGetApiKeyAccessCacheKey(appId))
 }

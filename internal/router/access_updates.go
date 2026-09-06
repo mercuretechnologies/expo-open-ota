@@ -1,6 +1,7 @@
 package infrastructure
 
 import (
+	"context"
 	"net/http"
 	"strings"
 	"xprem/ee/apikeyrestrictions"
@@ -12,15 +13,53 @@ import (
 	"github.com/gorilla/mux"
 )
 
-// publishGroup registers the CLI write routes.
+// updateAccessPolicy is the Updates authorization contract used by OTA routes.
+type updateAccessPolicy interface {
+	AuthorizeUpdates(ctx context.Context, req apikeyrestrictions.UpdateRequest) error
+}
+
+// authorizeUpdateRequest checks the Updates permission for an authenticated token,
+// writing the response and returning false when the request is refused.
+func authorizeUpdateRequest(
+	policy updateAccessPolicy,
+	w http.ResponseWriter,
+	r *http.Request,
+	credential services.CliCredential,
+	action apikeyrestrictions.UpdateAction,
+	branchName string,
+) bool {
+	if branchName == "" {
+		handlers.RenderError(w, http.StatusForbidden, "This route requires a branch")
+		return false
+	}
+	// KeyID 0 is stateless mode: no API key exists to carry access rules.
+	if credential.KeyID != 0 {
+		err := policy.AuthorizeUpdates(r.Context(), apikeyrestrictions.UpdateRequest{
+			APIKeyContext: apikeyrestrictions.APIKeyContext{
+				AppID:    credential.AppID,
+				APIKeyID: credential.KeyID,
+				ClientIP: helpers.ClientIP(r),
+			},
+			Branch: branchName,
+			Action: action,
+		})
+		if err != nil {
+			handlers.RenderCliAuthError(w, err)
+			return false
+		}
+	}
+	return true
+}
+
+// publishGroup registers the CLI routes that publish or roll back OTA updates.
 type publishGroup struct {
 	router       *mux.Router
 	cliAuth      *services.CliAuthService
-	apiKeyAccess cliAccessPolicy
+	apiKeyAccess updateAccessPolicy
 }
 
-func (g publishGroup) route(method, path string, handler http.HandlerFunc, action apikeyrestrictions.Action) {
-	if !apikeyrestrictions.IsValidAction(string(action)) {
+func (g publishGroup) route(method, path string, handler http.HandlerFunc, action apikeyrestrictions.UpdateAction) {
+	if !apikeyrestrictions.IsValidUpdateAction(string(action)) {
 		panic("router: " + method + " " + path + " was registered with an unknown action " + string(action))
 	}
 	if !strings.Contains(path, branchVar) {
@@ -37,7 +76,7 @@ func (g publishGroup) uploadTokenRoute(method, path string, handler http.Handler
 		panic("router: " + method + " " + path + " names a " + branchVar +
 			", so it must be registered with route(), which judges that branch rather than a token claim")
 	}
-	g.router.Handle(path, g.guard(apikeyrestrictions.ActionPublish, uploadTokenBranch)(handler)).Methods(method)
+	g.router.Handle(path, g.guard(apikeyrestrictions.UpdateActionPublish, uploadTokenBranch)(handler)).Methods(method)
 }
 
 // branchResolver answers which branch a request acts on.
@@ -58,7 +97,7 @@ func uploadTokenBranch(r *http.Request) string {
 	return branchName
 }
 
-func (g publishGroup) guard(action apikeyrestrictions.Action, resolveBranch branchResolver) mux.MiddlewareFunc {
+func (g publishGroup) guard(action apikeyrestrictions.UpdateAction, resolveBranch branchResolver) mux.MiddlewareFunc {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			credential, err := g.cliAuth.AuthenticateCliCredential(r.Context(), mux.Vars(r)["APP_ID"], helpers.GetAuth(r))
@@ -66,7 +105,7 @@ func (g publishGroup) guard(action apikeyrestrictions.Action, resolveBranch bran
 				handlers.RenderCliAuthError(w, err)
 				return
 			}
-			if !authorizeCliRequest(g.apiKeyAccess, w, r, credential, action, resolveBranch(r)) {
+			if !authorizeUpdateRequest(g.apiKeyAccess, w, r, credential, action, resolveBranch(r)) {
 				return
 			}
 			next.ServeHTTP(w, r.WithContext(services.WithCliAuth(r.Context(), credential)))

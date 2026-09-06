@@ -10,8 +10,13 @@ import {
   api,
   ApiKeyRecord,
   ApiKeyAccessRecord,
-  BranchRuleAction,
-  BranchRuleRecord,
+  UpdateAction,
+  BuildAction,
+  BuildRuleRecord,
+  SubmitRuleRecord,
+  SubmitDestination,
+  AppIdentifier,
+  UpdateRuleRecord,
   describeApiError,
 } from '@/lib/api';
 import { useSelectedApp } from '@/lib/SelectedAppContext';
@@ -29,10 +34,8 @@ import { EnterpriseFeatureGate } from '@/ee/components/EnterpriseFeatureGate';
 import { BranchPatternInput } from '@/ee/components/BranchPatternInput';
 import { cn } from '@/lib/utils';
 
-// Side panel to edit what one API token is allowed to do: which branches it
-// reaches and with which actions, whether it may open a branch that does not
-// exist yet, and the source addresses it may be used from. Without a valid
-// license the form is masked by EnterpriseFeatureGate.
+// Edit Updates rules, Build permissions and source IPs independently.
+// Without a valid license the form is masked by EnterpriseFeatureGate.
 export const ApiKeyAccessSheet = ({
   apiKey,
   onClose,
@@ -54,7 +57,7 @@ export const ApiKeyAccessSheet = ({
         <SheetHeader>
           <SheetTitle>Token access</SheetTitle>
           <SheetDescription>
-            Choose which branches “{apiKey?.name}” reaches and what it may do on each of them.
+            Choose what “{apiKey?.name}” can do in Updates, Build and Submit.
           </SheetDescription>
         </SheetHeader>
         <div className="mt-6">
@@ -91,7 +94,7 @@ export const ApiKeyAccessSheet = ({
   );
 };
 
-const ACTION_LABELS: { value: BranchRuleAction; label: string; hint: string }[] = [
+const ACTION_LABELS: { value: UpdateAction; label: string; hint: string }[] = [
   { value: 'read', label: 'Read', hint: 'List runtime versions and shipped updates' },
   { value: 'publish', label: 'Publish', hint: 'Ship a new update' },
   { value: 'rollback', label: 'Rollback', hint: 'Roll back, and republish a past update' },
@@ -117,21 +120,38 @@ const AccessForm = ({
   });
   const branches = (branchesQuery.data ?? []).map(branch => branch.branchName);
 
-  const initialRules = initialAccess?.branchRules ?? [];
-  // No rule stored means every branch, which is what a fresh token holds.
-  const [isScoped, setIsScoped] = useState(initialRules.length > 0);
-  const [rules, setRules] = useState<BranchRuleRecord[]>(initialRules);
+  const initialRules = initialAccess?.updates.rules ?? [];
+  const [updatesMode, setUpdatesMode] = useState<'none' | 'all' | 'custom'>(
+    initialRules.length === 0
+      ? 'none'
+      : initialRules.some(
+            rule =>
+              rule.pattern === '*' &&
+              rule.actions.includes('publish') &&
+              rule.actions.includes('rollback')
+          )
+        ? 'all'
+        : 'custom'
+  );
+  const [rules, setRules] = useState<UpdateRuleRecord[]>(initialRules);
+  const [buildRules, setBuildRules] = useState<BuildRuleRecord[]>(initialAccess?.build.rules ?? []);
+  const [submitRules, setSubmitRules] = useState<SubmitRuleRecord[]>(initialAccess?.submit.rules ?? []);
+  const identifiersQuery = useQuery({
+    queryKey: ['identifiers', selectedAppId],
+    queryFn: () => api.getAppIdentifiers(),
+    enabled: !!selectedAppId,
+  });
   const [allowedIpsText, setAllowedIpsText] = useState(
     (initialAccess?.allowedIps ?? []).join('\n')
   );
   const [error, setError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
 
-  const updateRule = (index: number, patch: Partial<BranchRuleRecord>) => {
+  const updateRule = (index: number, patch: Partial<UpdateRuleRecord>) => {
     setRules(current => current.map((rule, i) => (i === index ? { ...rule, ...patch } : rule)));
   };
 
-  const toggleAction = (index: number, action: BranchRuleAction) => {
+  const toggleAction = (index: number, action: UpdateAction) => {
     const rule = rules[index];
     const next = rule.actions.includes(action)
       ? rule.actions.filter(granted => granted !== action)
@@ -142,8 +162,17 @@ const AccessForm = ({
   // Checked client-side so the operator sees the problem next to the field
   // rather than as a toast carrying the server's version of it.
   const validate = (): string | null => {
-    if (!isScoped) return null;
-    if (rules.length === 0) return 'Add at least one rule, or let the token reach every branch.';
+    for (const [domain, entries] of [['Build', buildRules], ['Submit', submitRules]] as const) {
+      const seen = new Set<string>();
+      for (const rule of entries) {
+        if (!rule.appIdentifierId || !rule.actions.length) return `${domain}: choose an identifier and at least one action.`;
+        const key = rule.appIdentifierId + ('destination' in rule ? ':' + rule.destination : '');
+        if (seen.has(key)) return `${domain}: merge duplicate rules.`;
+        seen.add(key);
+      }
+    }
+    if (updatesMode !== 'custom') return null;
+    if (rules.length === 0) return 'Add at least one rule, or choose No access.';
     const seen = new Set<string>();
     for (const rule of rules) {
       const pattern = rule.pattern.trim();
@@ -175,9 +204,16 @@ const AccessForm = ({
         .map(line => line.trim())
         .filter(Boolean);
       await api.setApiKeyAccess(apiKey.id, {
-        // Unscoped is stored as an empty list, which the server reads as every
-        // branch. The rules kept in local state are not sent in that case.
-        branchRules: isScoped ? rules.map(rule => ({ ...rule, pattern: rule.pattern.trim() })) : [],
+        updates: {
+          rules:
+            updatesMode === 'all'
+              ? [{ pattern: '*', actions: ['read', 'publish', 'rollback'] }]
+              : updatesMode === 'custom'
+                ? rules.map(rule => ({ ...rule, pattern: rule.pattern.trim() }))
+                : [],
+        },
+        build: { rules: buildRules },
+        submit: { rules: submitRules },
         allowedIps,
       });
       queryClient.invalidateQueries({ queryKey: ['apiKeyAccess', selectedAppId] });
@@ -197,18 +233,24 @@ const AccessForm = ({
   return (
     <div className="space-y-6">
       <div className="space-y-2">
-        <p className="text-sm font-medium">Branches</p>
+        <p className="text-sm font-medium">Updates</p>
         <div className="grid gap-2">
           <ScopeChoice
-            selected={!isScoped}
-            onSelect={() => setIsScoped(false)}
+            selected={updatesMode === 'none'}
+            onSelect={() => setUpdatesMode('none')}
+            title="No access"
+            description="The token cannot read, publish or roll back updates."
+          />
+          <ScopeChoice
+            selected={updatesMode === 'all'}
+            onSelect={() => setUpdatesMode('all')}
             title="Every branch"
             description="The token can read, publish and roll back anywhere in this app."
           />
           <ScopeChoice
-            selected={isScoped}
+            selected={updatesMode === 'custom'}
             onSelect={() => {
-              setIsScoped(true);
+              setUpdatesMode('custom');
               if (rules.length === 0) setRules([{ pattern: '', actions: ['read', 'publish'] }]);
             }}
             title="Only the branches I list"
@@ -217,7 +259,7 @@ const AccessForm = ({
         </div>
       </div>
 
-      {isScoped && (
+      {updatesMode === 'custom' && (
         <div className="space-y-3">
           {rules.map((rule, index) => (
             <div key={index} className="space-y-2.5 rounded-lg border p-3">
@@ -253,6 +295,7 @@ const AccessForm = ({
                       key={action.value}
                       type="button"
                       title={action.hint}
+                      aria-pressed={isGranted || impliedByWrite}
                       disabled={isSaving || impliedByWrite}
                       onClick={() => toggleAction(index, action.value)}
                       className={cn(
@@ -283,6 +326,24 @@ const AccessForm = ({
         </div>
       )}
 
+      {identifiersQuery.isError ? (
+        <div className="space-y-2 text-sm text-destructive">
+          <p>Could not load app identifiers.</p>
+          <Button variant="outline" onClick={() => identifiersQuery.refetch()}>Try again</Button>
+        </div>
+      ) : identifiersQuery.isLoading ? <Skeleton className="h-24 w-full" /> : (
+        <>
+          <NativeRulesEditor
+            domain="Build" identifiers={identifiersQuery.data ?? []}
+            rules={buildRules} onChange={setBuildRules} disabled={isSaving}
+          />
+          <NativeRulesEditor
+            domain="Submit" identifiers={identifiersQuery.data ?? []}
+            rules={submitRules} onChange={setSubmitRules} disabled={isSaving}
+          />
+        </>
+      )}
+
       <div className="space-y-2">
         <p className="text-sm font-medium">IP allowlist</p>
         <p className="text-xs text-muted-foreground">
@@ -303,7 +364,7 @@ const AccessForm = ({
       {error && <p className="text-sm text-destructive">{error}</p>}
 
       <div className="flex justify-end">
-        <Button onClick={handleSave} disabled={isSaving}>
+        <Button onClick={handleSave} disabled={isSaving || identifiersQuery.isLoading || identifiersQuery.isError}>
           {isSaving ? 'Saving…' : 'Save access'}
         </Button>
       </div>
@@ -333,3 +394,90 @@ const ScopeChoice = ({
     <span className="mt-0.5 block text-xs text-muted-foreground">{description}</span>
   </button>
 );
+
+const SUBMIT_DESTINATIONS: Record<string, { value: SubmitDestination; label: string }[]> = {
+  android: [
+    { value: 'internal', label: 'Internal testing' },
+    { value: 'alpha', label: 'Alpha testing' },
+    { value: 'beta', label: 'Beta testing' },
+    { value: 'production', label: 'Production' },
+  ],
+  ios: [
+    { value: 'testflight', label: 'TestFlight' },
+  ],
+};
+
+type NativeEditorProps = {
+  identifiers: AppIdentifier[];
+  disabled: boolean;
+} & (
+  | { domain: 'Build'; rules: BuildRuleRecord[]; onChange: (rules: BuildRuleRecord[]) => void }
+  | { domain: 'Submit'; rules: SubmitRuleRecord[]; onChange: (rules: SubmitRuleRecord[]) => void }
+);
+
+const NativeRulesEditor = (props: NativeEditorProps) => {
+  const { domain, identifiers, disabled, rules } = props;
+  const update = (index: number, next: BuildRuleRecord | SubmitRuleRecord) => {
+    if (props.domain === 'Build') {
+      props.onChange(props.rules.map((rule, i) => i === index ? next as BuildRuleRecord : rule));
+    } else {
+      props.onChange(props.rules.map((rule, i) => i === index ? next as SubmitRuleRecord : rule));
+    }
+  };
+  return (
+    <div className="space-y-3">
+      <p className="text-sm font-medium">{domain}</p>
+      <p className="text-xs text-muted-foreground">
+        {domain === 'Build'
+          ? 'Allow builds only for the identifiers listed, with any build profile.'
+          : 'Allow uploads only for the identifiers and destinations listed.'}
+        {' '}An empty list grants no access.
+      </p>
+      {rules.map((rule, index) => {
+        const identifier = identifiers.find(item => item.id === rule.appIdentifierId);
+        return (
+          <div key={index} className="space-y-2 rounded-lg border p-3">
+            <div className="flex gap-2">
+              <select
+                aria-label={`${domain} app identifier`} value={rule.appIdentifierId} disabled={disabled}
+                className="min-w-0 flex-1 rounded-md border bg-background p-2 text-sm"
+                onChange={event => {
+                  const appIdentifierId = event.target.value;
+                  if (domain === 'Build') update(index, { appIdentifierId, actions: rule.actions as BuildAction[] });
+                  else {
+                    const platform = identifiers.find(item => item.id === appIdentifierId)?.platform;
+                    update(index, { appIdentifierId, destination: platform === 'ios' ? 'testflight' : 'internal', actions: ['upload'] });
+                  }
+                }}>
+                <option value="" disabled>Choose an app identifier</option>
+                {rule.appIdentifierId && !identifier && <option value={rule.appIdentifierId}>Unavailable identifier ({rule.appIdentifierId})</option>}
+                {identifiers.map(item => <option key={item.id} value={item.id}>{item.identifier} ({item.platform})</option>)}
+              </select>
+              <Button variant="ghost" size="icon" title={`Remove ${domain} rule`} disabled={disabled}
+                onClick={() => {
+                  if (props.domain === 'Build') props.onChange(props.rules.filter((_, i) => i !== index));
+                  else props.onChange(props.rules.filter((_, i) => i !== index));
+                }}><Trash2 className="h-4 w-4" /></Button>
+            </div>
+            {'destination' in rule && (
+              <select aria-label="Submit destination" value={rule.destination} disabled={disabled || !identifier}
+                className="w-full rounded-md border bg-background p-2 text-sm"
+                onChange={event => update(index, { ...rule, destination: event.target.value as SubmitDestination, actions: ['upload'] })}>
+                {(SUBMIT_DESTINATIONS[identifier?.platform ?? ''] ?? []).map(item => <option key={item.value} value={item.value}>{item.label}</option>)}
+              </select>
+            )}
+            <p className="text-xs text-muted-foreground">
+              {domain === 'Build' ? 'Allows creating builds.' : 'Allows uploading a binary to this destination.'}
+            </p>
+          </div>
+        );
+      })}
+      {!identifiers.length && <p className="text-xs text-muted-foreground">Register an app identifier in Build settings first.</p>}
+      <Button variant="outline" size="sm" disabled={disabled || !identifiers.length || rules.length >= 50}
+        onClick={() => {
+          if (props.domain === 'Build') props.onChange([...props.rules, { appIdentifierId: '', actions: ['create'] }]);
+          else props.onChange([...props.rules, { appIdentifierId: '', destination: 'internal', actions: ['upload'] }]);
+        }}><Plus className="mr-1.5 h-3.5 w-3.5" />Add an identifier</Button>
+    </div>
+  );
+};

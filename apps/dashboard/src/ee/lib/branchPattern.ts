@@ -3,7 +3,7 @@
 // (see ee/LICENSE at the repository root); it is NOT covered by the MIT
 // license of this repository.
 
-// Mirrors matchBranchPattern in ee/apikeyrestrictions/acl.go: "*" stands for
+// Mirrors matchBranchPattern in ee/apikeyrestrictions/update_rules.go: "*" stands for
 // any run of characters, empty included, and nothing else is special. Kept in
 // sync so the preview under the field says what the server will actually
 // decide, rather than an approximation of it.

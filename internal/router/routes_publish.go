@@ -23,13 +23,13 @@ func registerPublishRoutes(r *mux.Router, container *AppContainer) {
 	}
 
 	publish.route(http.MethodPost, "/requestUploadUrl/{BRANCH}", container.UploadHandler.RequestUploadUrlHandler,
-		apikeyrestrictions.ActionPublish)
+		apikeyrestrictions.UpdateActionPublish)
 	publish.route(http.MethodPost, "/markUpdateAsUploaded/{BRANCH}", container.UploadHandler.MarkUpdateAsUploadedHandler,
-		apikeyrestrictions.ActionPublish)
+		apikeyrestrictions.UpdateActionPublish)
 	publish.route(http.MethodPost, "/rollback/{BRANCH}", container.RollbackHandler.HandleRollback,
-		apikeyrestrictions.ActionRollback)
+		apikeyrestrictions.UpdateActionRollback)
 	publish.route(http.MethodPost, "/republish/{BRANCH}", container.RepublishHandler.HandleRepublish,
-		apikeyrestrictions.ActionRollback)
+		apikeyrestrictions.UpdateActionRollback)
 
 	// The local-bucket file upload names no branch in its path; the branch is
 	// a claim of the signed token minted by the upload-url request above.

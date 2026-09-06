@@ -5,6 +5,8 @@ import (
 	"regexp"
 	"time"
 	"xprem/internal/auditlog"
+	"xprem/internal/cache"
+	"xprem/internal/dashboard"
 	"xprem/internal/store"
 	"xprem/internal/validation"
 )
@@ -171,6 +173,7 @@ func (s *AppIdentifierService) DeleteAppIdentifier(ctx context.Context, appId st
 	if err := s.repo.DeleteAppIdentifier(ctx, appId, identifierId); err != nil {
 		return err
 	}
+	cache.GetCache().Delete(dashboard.ComputeGetApiKeyAccessCacheKey(appId))
 	recordManagementEvent(ctx, s.onAuditEvent, auditlog.Event{
 		Action:        auditlog.ActionAppIdentifierDeleted,
 		TargetType:    "app_identifier",
