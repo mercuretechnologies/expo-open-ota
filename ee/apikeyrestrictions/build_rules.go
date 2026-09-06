@@ -5,7 +5,9 @@
 package apikeyrestrictions
 
 import (
+	"fmt"
 	"slices"
+	"strings"
 
 	"xprem/internal/validation"
 )
@@ -73,4 +75,17 @@ func normalizeBuildActions(actions []BuildAction) ([]BuildAction, error) {
 		}
 	}
 	return normalized, nil
+}
+
+// describeBuildRules renders a rule list for the audit trail.
+func describeBuildRules(rules []BuildRule) []string {
+	described := make([]string, 0, len(rules))
+	for _, rule := range rules {
+		actions := make([]string, 0, len(rule.Actions))
+		for _, action := range rule.Actions {
+			actions = append(actions, string(action))
+		}
+		described = append(described, fmt.Sprintf("%s:%s", rule.AppIdentifierID, strings.Join(actions, "+")))
+	}
+	return described
 }

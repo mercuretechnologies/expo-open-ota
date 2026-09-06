@@ -7,6 +7,8 @@ import (
 	"context"
 	"testing"
 	"xprem/internal/auditlog"
+	"xprem/internal/cache"
+	"xprem/internal/dashboard"
 	"xprem/internal/store"
 	"xprem/internal/validation"
 
@@ -62,7 +64,7 @@ func TestCreateAppIdentifierValidatesPerPlatform(t *testing.T) {
 	assert.NoError(t, err)
 }
 
-func TestAppIdentifierAuditEvents(t *testing.T) {
+func TestAppIdentifierAuditEventsAndInvalidatesAccessCache(t *testing.T) {
 	service := NewAppIdentifierService(&fakeAppIdentifierRepo{})
 	var recorded []auditlog.Event
 	service.SetOnAuditEvent(func(_ context.Context, event auditlog.Event) {
@@ -71,7 +73,12 @@ func TestAppIdentifierAuditEvents(t *testing.T) {
 
 	_, err := service.CreateAppIdentifier(context.Background(), "app-1", PlatformAndroid, "com.example.app")
 	require.NoError(t, err)
+	accessCache := cache.GetCache()
+	accessKey := dashboard.ComputeGetApiKeyAccessCacheKey("app-1")
+	t.Cleanup(func() { accessCache.Delete(accessKey) })
+	require.NoError(t, accessCache.Set(accessKey, "stale", nil))
 	require.NoError(t, service.DeleteAppIdentifier(context.Background(), "app-1", "id-1"))
+	assert.Empty(t, accessCache.Get(accessKey))
 
 	require.Len(t, recorded, 2)
 	assert.Equal(t, auditlog.ActionAppIdentifierCreated, recorded[0].Action)

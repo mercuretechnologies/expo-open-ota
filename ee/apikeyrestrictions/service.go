@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"xprem/ee/licensing"
 	"xprem/internal/auditlog"
+	"xprem/internal/cache"
+	"xprem/internal/dashboard"
 	"xprem/internal/services"
 )
 
@@ -138,6 +140,7 @@ func (s *ApiKeyAccessService) SetAccess(ctx context.Context, appID string, apiKe
 	if err := s.repo.SetAccess(ctx, appID, access); err != nil {
 		return err
 	}
+	cache.GetCache().Delete(dashboard.ComputeGetApiKeyAccessCacheKey(appID))
 	// CIDRs are recorded in normalized form; rules in the form the dashboard shows.
 	normalizedCidrs := make([]string, len(allowedIps))
 	for i, prefix := range allowedIps {
@@ -155,8 +158,8 @@ func (s *ApiKeyAccessService) SetAccess(ctx context.Context, appID string, apiKe
 		"api_key", strconv.FormatInt(apiKeyID, 10), targetDisplay, appID,
 		map[string]any{
 			"update_rules":  describeUpdateRules(normalizedRules),
-			"build_rules":   normalizedBuild,
-			"submit_rules":  normalizedSubmit,
+			"build_rules":   describeBuildRules(normalizedBuild),
+			"submit_rules":  describeSubmitRules(normalizedSubmit),
 			"allowed_cidrs": normalizedCidrs,
 		})
 	return nil

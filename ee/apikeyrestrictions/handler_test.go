@@ -5,10 +5,13 @@
 package apikeyrestrictions
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"xprem/internal/cache"
+	"xprem/internal/dashboard"
 
 	"github.com/gorilla/mux"
 	"github.com/stretchr/testify/assert"
@@ -56,4 +59,33 @@ func TestAccessPayloadRoundTrip(t *testing.T) {
 			assert.JSONEq(t, `[{"apiKeyId":"42",`+tc.body[1:]+`]`, response.Body.String())
 		})
 	}
+}
+
+func TestAccessCacheRefreshesAfterPermissionChanges(t *testing.T) {
+	appID := t.Name()
+	key := dashboard.ComputeGetApiKeyAccessCacheKey(appID)
+	t.Cleanup(func() { cache.GetCache().Delete(key) })
+	repo := &fakeAccessRepo{access: map[int64]ApiKeyAccess{42: {ApiKeyID: 42}}}
+	service := serviceWith(repo, true)
+	handler := NewApiKeyAccessHandler(service)
+	read := func() string {
+		request := mux.SetURLVars(httptest.NewRequest(http.MethodGet, "/", nil), map[string]string{"APP_ID": appID})
+		response := httptest.NewRecorder()
+		handler.GetApiKeyAccessHandler(response, request)
+		require.Equal(t, http.StatusOK, response.Code)
+		assert.Equal(t, "no-store", response.Header().Get("Cache-Control"))
+		return response.Body.String()
+	}
+	initial := read()
+	assert.Equal(t, initial, read())
+	require.Equal(t, 1, repo.getCalls, "second request should use the cache")
+	require.NoError(t, service.SetAccess(context.Background(), appID, 42,
+		[]UpdateRule{{Pattern: "staging", Actions: []UpdateAction{UpdateActionPublish}}}, nil, nil, nil))
+	repo.access[42] = repo.setAccess
+	refreshed := read()
+	assert.Contains(t, refreshed, "staging")
+	assert.NotEqual(t, initial, refreshed)
+	assert.Equal(t, 2, repo.getCalls)
+	assert.Equal(t, refreshed, read())
+	assert.Equal(t, 2, repo.getCalls)
 }

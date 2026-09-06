@@ -21,9 +21,11 @@ type fakeAccessRepo struct {
 
 	setAccess ApiKeyAccess
 	setCalls  int
+	getCalls  int
 }
 
 func (f *fakeAccessRepo) GetAccessByAppID(_ context.Context, _ string) ([]ApiKeyAccess, error) {
+	f.getCalls++
 	var out []ApiKeyAccess
 	for _, access := range f.access {
 		out = append(out, access)

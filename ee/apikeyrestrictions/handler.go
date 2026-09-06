@@ -10,6 +10,8 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"xprem/internal/cache"
+	"xprem/internal/dashboard"
 	"xprem/internal/handlers"
 	"xprem/internal/validation"
 
@@ -64,6 +66,16 @@ func renderApiKeyAccessServiceError(w http.ResponseWriter, err error) {
 
 func (h *ApiKeyAccessHandler) GetApiKeyAccessHandler(w http.ResponseWriter, r *http.Request) {
 	appId := mux.Vars(r)["APP_ID"]
+	// Cache on the server only; browsers must revalidate after mutations.
+	w.Header().Set("Cache-Control", "no-store")
+	requestCache := cache.GetCache()
+	cacheKey := dashboard.ComputeGetApiKeyAccessCacheKey(appId)
+	if cachedValue := requestCache.Get(cacheKey); cachedValue != "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(cachedValue))
+		return
+	}
 	accesses, err := h.service.GetAccessByApp(r.Context(), appId)
 	if err != nil {
 		renderApiKeyAccessServiceError(w, err)
@@ -84,8 +96,8 @@ func (h *ApiKeyAccessHandler) GetApiKeyAccessHandler(w http.ResponseWriter, r *h
 		response = append(response, entry)
 	}
 	marshaledResponse, _ := json.Marshal(response)
-	// Permission editing must reflect newly created/revoked keys immediately.
-	w.Header().Set("Cache-Control", "no-store")
+	ttl := 60
+	requestCache.Set(cacheKey, string(marshaledResponse), &ttl)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	w.Write(marshaledResponse)

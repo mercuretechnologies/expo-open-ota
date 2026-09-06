@@ -40,3 +40,8 @@ func ComputeGetUpdateDetailsCacheKey(appId, branch, runtimeVersion, updateID str
 func ComputeGetApiKeysCacheKey(appId string) string {
 	return fmt.Sprintf("dashboard:%s:%s:request:getApiKeys", version.Version, appId)
 }
+
+// ComputeGetApiKeyAccessCacheKey scopes the dashboard permission list to one app.
+func ComputeGetApiKeyAccessCacheKey(appId string) string {
+	return fmt.Sprintf("dashboard:%s:%s:request:getApiKeyAccess", version.Version, appId)
+}

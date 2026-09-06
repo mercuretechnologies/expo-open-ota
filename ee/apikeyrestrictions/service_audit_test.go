@@ -30,7 +30,9 @@ func TestAccessChangesEmitAuditEvents(t *testing.T) {
 	// Unmasked input on purpose; the event must carry the normalized form.
 	require.NoError(t, service.SetAccess(ctx, "app-1", 42,
 		[]UpdateRule{{Pattern: "pr-*", Actions: []UpdateAction{UpdateActionPublish, UpdateActionRead}}},
-		[]string{"10.0.0.5/8"}, nil, nil))
+		[]string{"10.0.0.5/8"},
+		[]BuildRule{{AppIdentifierID: "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA", Actions: []BuildAction{BuildActionCreate, BuildActionCreate}}},
+		[]SubmitRule{{AppIdentifierID: "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA", Destination: SubmitDestinationInternal, Actions: []SubmitAction{SubmitActionUpload}}}))
 	require.Len(t, recorder.events, 1)
 	restricted := recorder.events[0]
 	assert.Equal(t, auditlog.ActionAPIKeyRestrictionsUpdated, restricted.Action)
@@ -42,8 +44,8 @@ func TestAccessChangesEmitAuditEvents(t *testing.T) {
 	// Rules land in the form the dashboard shows, and in catalog order.
 	assert.Equal(t, map[string]any{
 		"update_rules":  []string{"pr-*:read+publish"},
-		"build_rules":   []BuildRule{},
-		"submit_rules":  []SubmitRule{},
+		"build_rules":   []string{"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa:create"},
+		"submit_rules":  []string{"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa:internal:upload"},
 		"allowed_cidrs": []string{"10.0.0.0/8"},
 	}, restricted.Metadata)
 

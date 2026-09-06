@@ -5,7 +5,9 @@
 package apikeyrestrictions
 
 import (
+	"fmt"
 	"slices"
+	"strings"
 
 	"xprem/internal/validation"
 )
@@ -85,4 +87,17 @@ func normalizeSubmitRules(rules []SubmitRule) ([]SubmitRule, error) {
 		result = append(result, SubmitRule{AppIdentifierID: id, Destination: rule.Destination, Actions: actions})
 	}
 	return result, nil
+}
+
+// describeSubmitRules renders a rule list for the audit trail.
+func describeSubmitRules(rules []SubmitRule) []string {
+	described := make([]string, 0, len(rules))
+	for _, rule := range rules {
+		actions := make([]string, 0, len(rule.Actions))
+		for _, action := range rule.Actions {
+			actions = append(actions, string(action))
+		}
+		described = append(described, fmt.Sprintf("%s:%s:%s", rule.AppIdentifierID, rule.Destination, strings.Join(actions, "+")))
+	}
+	return described
 }

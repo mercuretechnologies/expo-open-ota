@@ -5,6 +5,8 @@ import (
 	"errors"
 	"testing"
 	"xprem/internal/auditlog"
+	"xprem/internal/cache"
+	"xprem/internal/dashboard"
 	"xprem/internal/types"
 
 	"github.com/stretchr/testify/assert"
@@ -85,15 +87,23 @@ func TestAuthenticateCliCredentialSkipsLookupWhenAuditInactive(t *testing.T) {
 	assert.Zero(t, repo.nameQueries)
 }
 
-func TestApiKeyLifecycleEmitsAuditEvents(t *testing.T) {
+func TestApiKeyLifecycleEmitsAuditEventsAndInvalidatesAccessCache(t *testing.T) {
 	repo := &fakeCliAuthRepo{keyID: 42}
 	recorder := &fakeAuditRecorder{}
 	cliAuth := NewCliAuthService(repo)
 	cliAuth.SetOnAuditEvent(recorder.Record)
 	ctx := adminManagementCtx()
 
+	accessCache := cache.GetCache()
+	accessKey := dashboard.ComputeGetApiKeyAccessCacheKey("app-1")
+	otherKey := dashboard.ComputeGetApiKeyAccessCacheKey("other-app")
+	t.Cleanup(func() { accessCache.Delete(accessKey); accessCache.Delete(otherKey) })
+	require.NoError(t, accessCache.Set(accessKey, "stale", nil))
+	require.NoError(t, accessCache.Set(otherKey, "unrelated", nil))
 	_, err := cliAuth.GenerateAPIKey(ctx, "app-1", "deploy key")
 	require.NoError(t, err)
+	assert.Empty(t, accessCache.Get(accessKey))
+	assert.Equal(t, "unrelated", accessCache.Get(otherKey))
 	require.Len(t, recorder.events, 1)
 	created := recorder.events[0]
 	assert.Equal(t, auditlog.ActionAPIKeyCreated, created.Action)
@@ -103,7 +113,10 @@ func TestApiKeyLifecycleEmitsAuditEvents(t *testing.T) {
 	assert.NotEmpty(t, created.Metadata["hint"])
 
 	// The revocation entry names the key it removed: read before the delete.
+	require.NoError(t, accessCache.Set(accessKey, "stale", nil))
 	require.NoError(t, cliAuth.RevokeApiKey(ctx, "app-1", "42"))
+	assert.Empty(t, accessCache.Get(accessKey))
+	assert.Equal(t, "unrelated", accessCache.Get(otherKey))
 	require.Len(t, recorder.events, 2)
 	revoked := recorder.events[1]
 	assert.Equal(t, auditlog.ActionAPIKeyRevoked, revoked.Action)
