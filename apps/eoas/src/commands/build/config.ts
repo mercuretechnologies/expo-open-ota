@@ -28,10 +28,15 @@ export default class BuildConfig extends Command {
       Log.error(`Invalid ${CONFIG_FILENAME}: ${(error as Error).message}`);
       this.exit(2);
     });
-    const output = flags.profile ? config.profiles[flags.profile] : config;
-    if (!output) {
-      Log.error(`Build profile "${flags.profile}" was not found in ${CONFIG_FILENAME}.`);
-      this.exit(2);
+    let output: unknown = config;
+    if (flags.profile) {
+      // Own-property check: the parsed object inherits Object.prototype, so a
+      // name like "constructor" would otherwise resolve to a function.
+      if (!Object.prototype.hasOwnProperty.call(config.profiles, flags.profile)) {
+        Log.error(`Build profile "${flags.profile}" was not found in ${CONFIG_FILENAME}.`);
+        this.exit(2);
+      }
+      output = config.profiles[flags.profile];
     }
     const serialized = JSON.stringify(output, null, 2);
     if (flags.json) {

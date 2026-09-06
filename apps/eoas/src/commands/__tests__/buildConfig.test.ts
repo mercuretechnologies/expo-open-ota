@@ -58,4 +58,18 @@ describe('build commands', () => {
     await fs.writeJson(path.join(directory, 'xprem.json'), { schemaVersion: 999, profiles: {} });
     await expect(BuildConfig.run([], eoasRoot)).rejects.toThrow(/EEXIT/);
   });
+
+  it('treats inherited object names as missing profiles', async () => {
+    await fs.writeJson(path.join(directory, 'xprem.json'), {
+      schemaVersion: 1,
+      profiles: {
+        qa: { android: { applicationId: 'com.example.qa', mode: 'release', artifact: 'apk' } },
+      },
+    });
+    for (const name of ['constructor', '__proto__', 'missing']) {
+      await expect(BuildConfig.run(['--profile', name, '--json'], eoasRoot)).rejects.toThrow(
+        /EEXIT/
+      );
+    }
+  });
 });
