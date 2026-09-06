@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 
 import { createOrModifyExpoConfigAsync } from '../expoConfig';
 
-// eoas init has to declare these, because expo-updates only accepts a runtime
+// eoas update:configure has to declare these, because expo-updates only accepts a runtime
 // override for header keys that existed at build time. A build missing one can
 // be sent into a state where every poll loses that header for good.
 const updates = {

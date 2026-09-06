@@ -6,22 +6,20 @@ import {
   createOrModifyExpoConfigAsync,
   getExpoConfigUpdateUrl,
   getPrivateExpoConfigAsync,
-} from '../lib/expoConfig';
-import Log from '../lib/log';
-import { ora } from '../lib/ora';
-import { isExpoInstalled } from '../lib/package';
-import { confirmAsync, promptAsync } from '../lib/prompts';
-import { ensurePrivateKeyIgnored, isValidUpdateUrl } from '../lib/utils';
+} from '../../lib/expoConfig';
+import Log from '../../lib/log';
+import { ora } from '../../lib/ora';
+import { isExpoInstalled } from '../../lib/package';
+import { confirmAsync, promptAsync } from '../../lib/prompts';
+import { ensurePrivateKeyIgnored, isValidUpdateUrl } from '../../lib/utils';
 
-export default class Init extends Command {
-  static override args = {};
-  static override description = 'Configure your existing expo project with xprem';
+export default class UpdateConfigure extends Command {
+  static override description = 'Configure an existing Expo project to use xprem updates';
   static override examples = ['<%= config.bin %> <%= command.id %>'];
-  static override flags = {};
+
   public async run(): Promise<void> {
     const projectDir = process.cwd();
-    const hasExpo = isExpoInstalled(projectDir);
-    if (!hasExpo) {
+    if (!isExpoInstalled(projectDir)) {
       Log.error('Expo is not installed in this project. Please install Expo first.');
       return;
     }
@@ -32,16 +30,13 @@ export default class Init extends Command {
       );
       return;
     }
-    const detectedAppId = (config.extra as { eas?: { projectId?: string } } | undefined)?.eas
-      ?.projectId;
     const { appId } = await promptAsync({
       message:
-        'Enter the project id for this project (sent as the expo-app-id header).\n' +
+        'Enter the xprem application ID (sent as the expo-app-id header).\n' +
         '  See https://mercure-technologies.gitbook.io/xprem/stateless-mode/getting-started for details.',
       name: 'appId',
       type: 'text',
-      initial: detectedAppId,
-      validate: v => !!v,
+      validate: value => !!value,
     });
     const { updateUrl: promptedUrl } = await promptAsync({
       message:
@@ -49,28 +44,26 @@ export default class Init extends Command {
       name: 'updateUrl',
       type: 'text',
       initial: (getExpoConfigUpdateUrl(config) || '').replace(/\/manifest$/, ''),
-      validate: v => {
-        return !!v && isValidUpdateUrl(v);
-      },
+      validate: value => !!value && isValidUpdateUrl(value),
     });
     let manifestEndpoint = `${promptedUrl.replace(/\/+$/, '')}/manifest`;
     const updateUrl = getExpoConfigUpdateUrl(config);
     if (updateUrl && !updateUrl.includes('expo.dev')) {
-      const confirmed = await confirmAsync({
+      const replace = await confirmAsync({
         message: `Expo config already has an update URL set to ${updateUrl}. Do you want to replace it?`,
         name: 'replace',
         type: 'confirm',
       });
-      if (!confirmed) {
+      if (!replace) {
         manifestEndpoint = updateUrl;
       }
     }
-    const confirmed = await confirmAsync({
+    const hasCertificates = await confirmAsync({
       message: 'Do you have already generated your certificates for code signing?',
       name: 'certificates',
       type: 'confirm',
     });
-    if (!confirmed) {
+    if (!hasCertificates) {
       Log.fail('You need to generate your certificates first by using npx eoas generate-certs');
       return;
     }
@@ -79,19 +72,17 @@ export default class Init extends Command {
       name: 'codeSigningCertificatePath',
       type: 'text',
       initial: './certs/certificate.pem',
-      validate: v => {
+      validate: value => {
         try {
-          const fullPath = path.resolve(projectDir, v);
-          // eslint-disable-next-line
-          const fileExists = fs.existsSync(fullPath);
-          if (!fileExists) {
+          const fullPath = path.resolve(projectDir, value);
+          // eslint-disable-next-line node/no-sync
+          if (!fs.existsSync(fullPath)) {
             Log.newLine();
             Log.error('File does not exist');
             return false;
           }
-          // eslint-disable-next-line
-          const key = fs.readFileSync(fullPath, 'utf8');
-          if (!key) {
+          // eslint-disable-next-line node/no-sync
+          if (!fs.readFileSync(fullPath, 'utf8')) {
             Log.error('Empty key');
             return false;
           }
@@ -101,10 +92,7 @@ export default class Init extends Command {
         }
       },
     });
-    // The code signing fields are guarded so the dev server can run without the
-    // private key: DISABLE_CODE_SIGNING=true expo start --dev-client. The strings
-    // are emitted as raw expressions by createOrModifyExpoConfigAsync.
-    const newUpdateConfig = {
+    const updates = {
       url: manifestEndpoint,
       codeSigningMetadata:
         "process.env.DISABLE_CODE_SIGNING ? undefined : { keyid: 'main', alg: 'rsa-v1_5-sha256' }",
@@ -112,12 +100,6 @@ export default class Init extends Command {
         .replace(/\\/g, '\\\\')
         .replace(/'/g, "\\'")}'`,
       enabled: true,
-      // Branch surfing: a build on a channel that allows it can be pointed at
-      // another branch at runtime, and expo-updates only accepts an override for
-      // header keys that already existed at build time — so these have to be
-      // declared here even when the value is empty. Dropping one of them does not
-      // disable the feature, it strips that header from every poll for the rest of
-      // the install; the picker refuses to appear rather than let that happen.
       requestHeaders: {
         'expo-channel-name': {
           __comment: 'Declare as a literal if you surf branches: see xprem-branch below.',
@@ -130,18 +112,16 @@ export default class Init extends Command {
         },
       },
     };
-    const updateConfigSpinner = ora('Updating Expo config').start();
+    ensurePrivateKeyIgnored(projectDir);
+    const spinner = ora('Updating Expo config').start();
     try {
-      await createOrModifyExpoConfigAsync(projectDir, {
-        updates: newUpdateConfig,
-      });
-      updateConfigSpinner.succeed(
+      await createOrModifyExpoConfigAsync(projectDir, { updates });
+      spinner.succeed(
         'Expo config successfully updated do not forget to format the file with prettier or eslint'
       );
-    } catch (e) {
-      updateConfigSpinner.fail('Failed to update Expo config');
-      Log.error(e);
+    } catch (error) {
+      spinner.fail('Failed to update Expo config');
+      throw error;
     }
-    ensurePrivateKeyIgnored(projectDir);
   }
 }

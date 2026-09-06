@@ -173,7 +173,7 @@ export function requireExpoAppId(config: ExpoConfig): string {
       "This usually means you're running eoas v2+ against a v1-style single-app config or your config is missing the 'expo-app-id' entry."
     );
     Log.error(
-      "Fix: run 'npx eoas init' to migrate, or pin to the previous CLI via 'npx eoas@1 ...'."
+      "Fix: run 'npx eoas update:configure' to migrate, or pin to the previous CLI via 'npx eoas@1 ...'."
     );
     process.exit(1);
   }
@@ -431,7 +431,7 @@ export async function resolveServerUrl(
   const updateUrl = customServerUrl ?? getExpoConfigUpdateUrl(config);
   if (!updateUrl) {
     throw new Error(
-      "Update url is not setup in your config. Please run 'eoas init' to setup the update url, or pass --serverUrl"
+      "Update url is not setup in your config. Please run 'eoas update:configure' to setup the update url, or pass --serverUrl"
     );
   }
   try {
