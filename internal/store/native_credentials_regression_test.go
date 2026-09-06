@@ -60,7 +60,7 @@ func TestVaultUUIDAliasesRoundTrip(t *testing.T) {
 	}
 }
 
-func TestDeleteIdentifierPreservesConcurrentCredentials(t *testing.T) {
+func TestDeleteIdentifierRemovesConcurrentCredentials(t *testing.T) {
 	_, identifiers, pool := setupCredentialsStores(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -84,13 +84,12 @@ func TestDeleteIdentifierPreservesConcurrentCredentials(t *testing.T) {
 		return err == nil && blocked
 	}, 5*time.Second, 10*time.Millisecond, "delete must be blocked behind credentials insert before commit")
 	require.NoError(t, insertTx.Commit(ctx))
-	deleteErr := <-done
-	var remaining int
-	require.NoError(t, pool.QueryRow(ctx, "SELECT count(*) FROM android_credentials WHERE app_identifier_id=$1", identifierId).Scan(&remaining))
-	t.Logf("delete error=%v, credentials remaining=%d", deleteErr, remaining)
-	var hasCredentials *store.ErrIdentifierHasCredentials
-	require.ErrorAs(t, deleteErr, &hasCredentials)
-	require.Equal(t, 1, remaining)
+	require.NoError(t, <-done)
+	var remainingCredentials, remainingIdentifiers int
+	require.NoError(t, pool.QueryRow(ctx, "SELECT count(*) FROM android_credentials WHERE app_identifier_id=$1", identifierId).Scan(&remainingCredentials))
+	require.NoError(t, pool.QueryRow(ctx, "SELECT count(*) FROM app_identifiers WHERE id=$1", identifierId).Scan(&remainingIdentifiers))
+	require.Equal(t, 0, remainingCredentials)
+	require.Equal(t, 0, remainingIdentifiers)
 }
 
 func TestDeleteAppWithBoundEnvironment(t *testing.T) {

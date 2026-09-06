@@ -70,11 +70,13 @@ export const FilePickerRow = ({
   fileName,
   onPick,
   onClear,
+  disabled = false,
 }: {
   accept: string;
   fileName: string | null;
   onPick: (file: File) => void;
   onClear: () => void;
+  disabled?: boolean;
 }) => {
   const inputRef = useRef<HTMLInputElement>(null);
   return (
@@ -86,6 +88,7 @@ export const FilePickerRow = ({
             <button
               type="button"
               onClick={onClear}
+              disabled={disabled}
               aria-label="Remove file"
               className="text-muted-foreground hover:text-foreground">
               <X className="h-3.5 w-3.5" />
@@ -99,6 +102,7 @@ export const FilePickerRow = ({
         ref={inputRef}
         type="file"
         accept={accept}
+        disabled={disabled}
         className="hidden"
         onChange={e => {
           const file = e.target.files?.[0];
@@ -106,7 +110,11 @@ export const FilePickerRow = ({
           e.target.value = '';
         }}
       />
-      <Button type="button" variant="outline" onClick={() => inputRef.current?.click()}>
+      <Button
+        type="button"
+        variant="outline"
+        onClick={() => inputRef.current?.click()}
+        disabled={disabled}>
         <Upload className="h-4 w-4" /> Choose file
       </Button>
     </div>
@@ -236,7 +244,7 @@ export const AndroidCredentialsForm = ({
                   xprem generates the key, alias and passwords, then encrypts them at rest.
                 </p>
               </div>
-              <Button type="button" onClick={handleGenerate} disabled={isGenerating}>
+              <Button type="button" onClick={handleGenerate} disabled={isSaving || isGenerating}>
                 {isGenerating ? 'Generating…' : 'Generate keystore'}
               </Button>
             </div>

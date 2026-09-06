@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { CheckCircle2, ExternalLink, Pencil, Trash2 } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, ExternalLink, Pencil, Trash2 } from 'lucide-react';
 import { api, describeApiError } from '@/lib/api';
 import { useToast } from '@/hooks/use-toast';
 import { Button } from '@/components/ui/button';
@@ -17,6 +17,7 @@ type Props = {
   serviceAccountEmail?: string;
   projectId?: string;
   canManage: boolean;
+  disabledReason?: string;
   onChanged: () => void;
 };
 
@@ -49,6 +50,7 @@ export const GooglePlayServiceAccountCard = ({
   serviceAccountEmail,
   projectId,
   canManage,
+  disabledReason,
   onChanged,
 }: Props) => {
   const { toast } = useToast();
@@ -65,6 +67,7 @@ export const GooglePlayServiceAccountCard = ({
   };
 
   const handlePick = async (file: File) => {
+    if (disabledReason) return;
     const contents = await file.text();
     try {
       JSON.parse(contents);
@@ -81,7 +84,7 @@ export const GooglePlayServiceAccountCard = ({
   };
 
   const handleSave = async () => {
-    if (!serviceAccountKey) return;
+    if (disabledReason || !serviceAccountKey) return;
     setIsSaving(true);
     try {
       await api.saveGooglePlayServiceAccountKey(identifierId, serviceAccountKey);
@@ -124,7 +127,7 @@ export const GooglePlayServiceAccountCard = ({
 
   return (
     <>
-      <Card>
+      <Card className={disabledReason ? 'opacity-60' : undefined}>
         <CardHeader className="flex-row items-center justify-between space-y-0 border-b py-4">
           <div className="flex items-center gap-3">
             <CardTitle className="text-base">Google Play service account</CardTitle>
@@ -152,6 +155,14 @@ export const GooglePlayServiceAccountCard = ({
           )}
         </CardHeader>
         <CardContent className="pt-2">
+          {disabledReason && (
+            <div
+              role="alert"
+              className="mt-3 flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-900 dark:text-amber-200">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+              <span>{disabledReason}</span>
+            </div>
+          )}
           {!showEditor ? (
             <div className="divide-y">
               {serviceAccountEmail && (
@@ -173,6 +184,7 @@ export const GooglePlayServiceAccountCard = ({
                     fileName={fileName}
                     onPick={handlePick}
                     onClear={clearSelection}
+                    disabled={!!disabledReason}
                   />
                   <div className="flex justify-end gap-2">
                     {isReplacing && (
@@ -185,7 +197,9 @@ export const GooglePlayServiceAccountCard = ({
                         Cancel
                       </Button>
                     )}
-                    <Button onClick={handleSave} disabled={!serviceAccountKey || isSaving}>
+                    <Button
+                      onClick={handleSave}
+                      disabled={!!disabledReason || !serviceAccountKey || isSaving}>
                       {isSaving ? 'Saving…' : isReplacing ? 'Replace key' : 'Save key'}
                     </Button>
                   </div>

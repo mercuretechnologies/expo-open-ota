@@ -60,27 +60,58 @@ func SigningCertificatePEM(data []byte, keystorePassword, keyPassword, keyAlias 
 		if err != nil {
 			return nil, fmt.Errorf("read validated PKCS12 certificate: %w", err)
 		}
-		var keyID string
-		for _, block := range blocks {
-			if block.Type == "PRIVATE KEY" && strings.EqualFold(block.Headers["friendlyName"], keyAlias) {
-				keyID = block.Headers["localKeyId"]
-				break
-			}
-		}
-		for _, block := range blocks {
-			if block.Type != "CERTIFICATE" {
-				continue
-			}
-			if strings.EqualFold(block.Headers["friendlyName"], keyAlias) || (keyID != "" && block.Headers["localKeyId"] == keyID) {
-				certificateDER = block.Bytes
-				break
-			}
-		}
-		if len(certificateDER) == 0 {
-			return nil, fmt.Errorf("certificate for alias %q not found in validated PKCS12 keystore", keyAlias)
+		certificateDER, err = signingCertificateDER(blocks, keyAlias)
+		if err != nil {
+			return nil, err
 		}
 	}
 	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certificateDER}), nil
+}
+
+func signingCertificateDER(blocks []*pem.Block, keyAlias string) ([]byte, error) {
+	var publicKey []byte
+	for _, block := range blocks {
+		if block.Type != "PRIVATE KEY" || !strings.EqualFold(block.Headers["friendlyName"], keyAlias) {
+			continue
+		}
+		signer, err := parsePrivateKeySigner(block.Bytes)
+		if err != nil {
+			return nil, fmt.Errorf("parse private key for alias %q: %w", keyAlias, err)
+		}
+		publicKey, err = x509.MarshalPKIXPublicKey(signer.Public())
+		if err != nil {
+			return nil, fmt.Errorf("read public key for alias %q: %w", keyAlias, err)
+		}
+		break
+	}
+	for _, block := range blocks {
+		if block.Type != "CERTIFICATE" {
+			continue
+		}
+		certificate, err := x509.ParseCertificate(block.Bytes)
+		if err != nil {
+			return nil, fmt.Errorf("parse certificate in PKCS12 keystore: %w", err)
+		}
+		if bytes.Equal(publicKey, certificate.RawSubjectPublicKeyInfo) {
+			return block.Bytes, nil
+		}
+	}
+	return nil, fmt.Errorf("certificate for alias %q not found in validated PKCS12 keystore", keyAlias)
+}
+
+func parsePrivateKeySigner(der []byte) (crypto.Signer, error) {
+	if key, err := x509.ParsePKCS8PrivateKey(der); err == nil {
+		if signer, ok := key.(crypto.Signer); ok {
+			return signer, nil
+		}
+	}
+	if key, err := x509.ParsePKCS1PrivateKey(der); err == nil {
+		return key, nil
+	}
+	if key, err := x509.ParseECPrivateKey(der); err == nil {
+		return key, nil
+	}
+	return nil, errors.New("unsupported private key encoding")
 }
 
 func validateJKS(data []byte, keystorePassword, keyPassword, keyAlias string) error {

@@ -74,7 +74,9 @@ func TestAndroidKeystoreUpsertPreservesServiceAccount(t *testing.T) {
 
 	require.NoError(t, credentialsStore.UpsertAndroidCredentials(ctx, identifierId, sealedFixture("v1")))
 	gsa := "sealed-gsa-v2"
-	require.NoError(t, credentialsStore.UpdateGooglePlayServiceAccountKey(ctx, identifierId, &gsa))
+	email := "publisher@example.com"
+	projectID := "play-project"
+	require.NoError(t, credentialsStore.UpdateGooglePlayServiceAccountKey(ctx, identifierId, &gsa, &email, &projectID))
 	require.NoError(t, credentialsStore.UpsertAndroidCredentials(ctx, identifierId, sealedFixture("v2")))
 
 	var count int
@@ -87,12 +89,18 @@ func TestAndroidKeystoreUpsertPreservesServiceAccount(t *testing.T) {
 	assert.Equal(t, "sealed-keystore-v2", stored.SealedKeystore)
 	require.NotNil(t, stored.SealedGoogleServiceAccountKey)
 	assert.Equal(t, "sealed-gsa-v2", *stored.SealedGoogleServiceAccountKey)
+	require.NotNil(t, stored.GoogleServiceAccountEmail)
+	assert.Equal(t, email, *stored.GoogleServiceAccountEmail)
+	require.NotNil(t, stored.GoogleServiceAccountProjectID)
+	assert.Equal(t, projectID, *stored.GoogleServiceAccountProjectID)
 
-	require.NoError(t, credentialsStore.UpdateGooglePlayServiceAccountKey(ctx, identifierId, nil))
+	require.NoError(t, credentialsStore.UpdateGooglePlayServiceAccountKey(ctx, identifierId, nil, nil, nil))
 	stored, err = credentialsStore.GetAndroidCredentials(ctx, identifierId)
 	require.NoError(t, err)
 	require.NotNil(t, stored)
 	assert.Nil(t, stored.SealedGoogleServiceAccountKey)
+	assert.Nil(t, stored.GoogleServiceAccountEmail)
+	assert.Nil(t, stored.GoogleServiceAccountProjectID)
 }
 
 func TestAndroidCredentialsGetReturnsNilWhenAbsent(t *testing.T) {

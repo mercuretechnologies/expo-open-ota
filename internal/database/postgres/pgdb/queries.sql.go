@@ -516,9 +516,6 @@ func (q *Queries) DeleteAppByID(ctx context.Context, id pgtype.UUID) (pgconn.Com
 const deleteAppIdentifierByID = `-- name: DeleteAppIdentifierByID :execresult
 DELETE FROM app_identifiers
 WHERE app_identifiers.app_id = $1 AND app_identifiers.id = $2
-  AND NOT EXISTS (
-      SELECT 1 FROM android_credentials ac WHERE ac.app_identifier_id = app_identifiers.id
-  )
 `
 
 type DeleteAppIdentifierByIDParams struct {
@@ -526,9 +523,7 @@ type DeleteAppIdentifierByIDParams struct {
 	ID    pgtype.UUID `json:"id"`
 }
 
-// Guarded: an identifier still holding credentials is NOT deleted, its
-// keystore must be removed explicitly first. The caller disambiguates the
-// 0-rows result into has-credentials vs not-found.
+// Credential rows are removed atomically by their ON DELETE CASCADE FK.
 func (q *Queries) DeleteAppIdentifierByID(ctx context.Context, arg DeleteAppIdentifierByIDParams) (pgconn.CommandTag, error) {
 	return q.db.Exec(ctx, deleteAppIdentifierByID, arg.AppID, arg.ID)
 }
@@ -938,7 +933,9 @@ func (q *Queries) GetActiveRolloutUpdates(ctx context.Context, arg GetActiveRoll
 const getAndroidCredentialsByIdentifierID = `-- name: GetAndroidCredentialsByIdentifierID :one
 SELECT id, app_identifier_id, key_alias,
        sealed_keystore, sealed_keystore_password, sealed_key_password,
-       sealed_google_service_account_key, created_at, updated_at
+       sealed_google_service_account_key,
+       google_service_account_email, google_service_account_project_id,
+       created_at, updated_at
 FROM android_credentials
 WHERE app_identifier_id = $1
 `
@@ -954,6 +951,8 @@ func (q *Queries) GetAndroidCredentialsByIdentifierID(ctx context.Context, appId
 		&i.SealedKeystorePassword,
 		&i.SealedKeyPassword,
 		&i.SealedGoogleServiceAccountKey,
+		&i.GoogleServiceAccountEmail,
+		&i.GoogleServiceAccountProjectID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -5244,8 +5243,8 @@ type LockAppIdentifierByIDParams struct {
 	ID    pgtype.UUID `json:"id"`
 }
 
-// Lock separately from the guarded DELETE so its next READ COMMITTED snapshot
-// sees credentials inserted by a transaction we waited for (FK KEY SHARE).
+// Lock before DELETE so a concurrent credential insert settles before the
+// identifier and its credentials are removed by the cascade.
 func (q *Queries) LockAppIdentifierByID(ctx context.Context, arg LockAppIdentifierByIDParams) (string, error) {
 	row := q.db.QueryRow(ctx, lockAppIdentifierByID, arg.AppID, arg.ID)
 	var identifier string
@@ -6790,17 +6789,28 @@ func (q *Queries) UpdateFailureBreakdownByIDs(ctx context.Context, arg UpdateFai
 
 const updateGooglePlayServiceAccountKey = `-- name: UpdateGooglePlayServiceAccountKey :execresult
 UPDATE android_credentials
-SET sealed_google_service_account_key = $2
+SET sealed_google_service_account_key = $2,
+    google_service_account_email = $3,
+    google_service_account_project_id = $4
 WHERE app_identifier_id = $1
 `
 
 type UpdateGooglePlayServiceAccountKeyParams struct {
 	AppIdentifierID               pgtype.UUID `json:"app_identifier_id"`
 	SealedGoogleServiceAccountKey *string     `json:"sealed_google_service_account_key"`
+	GoogleServiceAccountEmail     *string     `json:"google_service_account_email"`
+	GoogleServiceAccountProjectID *string     `json:"google_service_account_project_id"`
 }
 
+// updated_at belongs to the signing keystore shown in the dashboard; changing
+// the independently managed service account must not make that timestamp lie.
 func (q *Queries) UpdateGooglePlayServiceAccountKey(ctx context.Context, arg UpdateGooglePlayServiceAccountKeyParams) (pgconn.CommandTag, error) {
-	return q.db.Exec(ctx, updateGooglePlayServiceAccountKey, arg.AppIdentifierID, arg.SealedGoogleServiceAccountKey)
+	return q.db.Exec(ctx, updateGooglePlayServiceAccountKey,
+		arg.AppIdentifierID,
+		arg.SealedGoogleServiceAccountKey,
+		arg.GoogleServiceAccountEmail,
+		arg.GoogleServiceAccountProjectID,
+	)
 }
 
 const updateRole = `-- name: UpdateRole :execresult

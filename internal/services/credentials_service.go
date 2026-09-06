@@ -23,7 +23,7 @@ type CredentialsRepository interface {
 	// the separately managed Google Play service account key is preserved.
 	UpsertAndroidCredentials(ctx context.Context, identifierId string, credentials store.SealedAndroidCredentials) error
 	GetAndroidCredentials(ctx context.Context, identifierId string) (*store.SealedAndroidCredentials, error)
-	UpdateGooglePlayServiceAccountKey(ctx context.Context, identifierId string, sealedKey *string) error
+	UpdateGooglePlayServiceAccountKey(ctx context.Context, identifierId string, sealedKey, email, projectID *string) error
 	DeleteAndroidCredentials(ctx context.Context, identifierId string) error
 }
 
@@ -236,7 +236,7 @@ func (s *CredentialsService) SaveGooglePlayServiceAccountKey(ctx context.Context
 	if err != nil {
 		return fmt.Errorf("failed to seal google play service account key: %w", err)
 	}
-	if err := s.repo.UpdateGooglePlayServiceAccountKey(ctx, identifierId, &sealedKey); err != nil {
+	if err := s.repo.UpdateGooglePlayServiceAccountKey(ctx, identifierId, &sealedKey, &serviceAccountKey.ClientEmail, &serviceAccountKey.ProjectID); err != nil {
 		return err
 	}
 	recordManagementEvent(ctx, s.onAuditEvent, auditlog.Event{
@@ -255,7 +255,7 @@ func (s *CredentialsService) DeleteGooglePlayServiceAccountKey(ctx context.Conte
 		return err
 	}
 	identifierId = ref.Id
-	if err := s.repo.UpdateGooglePlayServiceAccountKey(ctx, identifierId, nil); err != nil {
+	if err := s.repo.UpdateGooglePlayServiceAccountKey(ctx, identifierId, nil, nil, nil); err != nil {
 		return err
 	}
 	recordManagementEvent(ctx, s.onAuditEvent, auditlog.Event{
@@ -340,21 +340,11 @@ func (s *CredentialsService) GetAndroidCredentialsMetadata(ctx context.Context, 
 		CreatedAt:                  credentials.CreatedAt.UTC().Format(time.RFC3339),
 		UpdatedAt:                  credentials.UpdatedAt.UTC().Format(time.RFC3339),
 	}
-	if credentials.SealedGoogleServiceAccountKey != nil {
-		decrypted, err := crypto.UnsealAESGCM(
-			*credentials.SealedGoogleServiceAccountKey,
-			[]byte(keyStore.ReadDBKeysMasterKey()),
-			androidCredentialAAD(identifierId, "google_service_account_key"),
-		)
-		if err != nil {
-			return nil, fmt.Errorf("failed to unseal google play service account metadata: %w", err)
-		}
-		var serviceAccountKey googlePlayServiceAccountKey
-		if err := json.Unmarshal(decrypted, &serviceAccountKey); err != nil {
-			return nil, fmt.Errorf("failed to read google play service account metadata: %w", err)
-		}
-		metadata.GoogleServiceAccountEmail = serviceAccountKey.ClientEmail
-		metadata.GoogleServiceAccountProjectID = serviceAccountKey.ProjectID
+	if credentials.GoogleServiceAccountEmail != nil {
+		metadata.GoogleServiceAccountEmail = *credentials.GoogleServiceAccountEmail
+	}
+	if credentials.GoogleServiceAccountProjectID != nil {
+		metadata.GoogleServiceAccountProjectID = *credentials.GoogleServiceAccountProjectID
 	}
 	return metadata, nil
 }

@@ -72,6 +72,8 @@ func newFakeCredentialsRepo() *fakeCredentialsRepo {
 func (f *fakeCredentialsRepo) UpsertAndroidCredentials(_ context.Context, identifierId string, credentials store.SealedAndroidCredentials) error {
 	if existing, ok := f.byIdentifierId[identifierId]; ok {
 		credentials.SealedGoogleServiceAccountKey = existing.SealedGoogleServiceAccountKey
+		credentials.GoogleServiceAccountEmail = existing.GoogleServiceAccountEmail
+		credentials.GoogleServiceAccountProjectID = existing.GoogleServiceAccountProjectID
 	}
 	f.byIdentifierId[identifierId] = credentials
 	return nil
@@ -85,12 +87,14 @@ func (f *fakeCredentialsRepo) GetAndroidCredentials(_ context.Context, identifie
 	return &credentials, nil
 }
 
-func (f *fakeCredentialsRepo) UpdateGooglePlayServiceAccountKey(_ context.Context, identifierId string, sealedKey *string) error {
+func (f *fakeCredentialsRepo) UpdateGooglePlayServiceAccountKey(_ context.Context, identifierId string, sealedKey, email, projectID *string) error {
 	credentials, ok := f.byIdentifierId[identifierId]
 	if !ok {
 		return &store.ErrResourceNotFound{Resource: "android credentials", Identifier: identifierId}
 	}
 	credentials.SealedGoogleServiceAccountKey = sealedKey
+	credentials.GoogleServiceAccountEmail = email
+	credentials.GoogleServiceAccountProjectID = projectID
 	f.byIdentifierId[identifierId] = credentials
 	return nil
 }
@@ -104,7 +108,8 @@ func (f *fakeCredentialsRepo) DeleteAndroidCredentials(_ context.Context, identi
 }
 
 const testMasterKey = "0123456789abcdef0123456789abcdef"
-const validServiceAccountKey = `{"type":"service_account","project_id":"play-project","client_email":"publisher@play-project.iam.gserviceaccount.com","private_key":"secret"}`
+const testServiceAccountPrivateKey = "secret"
+const validServiceAccountKey = `{"type":"service_account","project_id":"play-project","client_email":"publisher@play-project.iam.gserviceaccount.com","private_key":"` + testServiceAccountPrivateKey + `"}`
 
 const (
 	testAppId        = "app-1"
@@ -226,7 +231,26 @@ func TestAndroidCredentialsMetadataCarriesNoSecret(t *testing.T) {
 	encoded, err := json.Marshal(metadata)
 	require.NoError(t, err)
 	assert.NotContains(t, string(encoded), "private_key")
-	assert.NotContains(t, string(encoded), "secret")
+	assert.NotContains(t, string(encoded), testServiceAccountPrivateKey)
+}
+
+func TestAndroidCredentialsMetadataDoesNotDecryptServiceAccountKey(t *testing.T) {
+	service, repo, _ := newCredentialsFixture()
+	email := "publisher@play-project.iam.gserviceaccount.com"
+	projectID := "play-project"
+	invalidCiphertext := "not-a-sealed-service-account"
+	repo.byIdentifierId[testIdentifierId] = store.SealedAndroidCredentials{
+		KeyAlias:                      "upload",
+		SealedGoogleServiceAccountKey: &invalidCiphertext,
+		GoogleServiceAccountEmail:     &email,
+		GoogleServiceAccountProjectID: &projectID,
+	}
+
+	metadata, err := service.GetAndroidCredentialsMetadata(context.Background(), testAppId, testIdentifierId)
+	require.NoError(t, err)
+	require.NotNil(t, metadata)
+	assert.Equal(t, email, metadata.GoogleServiceAccountEmail)
+	assert.Equal(t, projectID, metadata.GoogleServiceAccountProjectID)
 }
 
 func TestGenerateAndroidCredentialsReplacesKeystoreAndPreservesServiceAccount(t *testing.T) {

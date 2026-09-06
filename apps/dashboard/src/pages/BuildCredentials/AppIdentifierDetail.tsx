@@ -129,20 +129,39 @@ const AndroidCredentialsSection = ({
 
   const metadata: AndroidCredentialsMetadata | null | undefined = credentialsQuery.data;
 
-  if (!metadata && !canManage) {
+  if (!metadata) {
     return (
-      <div className="rounded-xl border border-dashed bg-muted/30 p-8 text-center text-sm text-muted-foreground">
-        No build credentials are configured for this identifier yet. Ask an admin to set them up.
+      <div className="space-y-4">
+        {canManage ? (
+          <AndroidCredentialsForm
+            identifierId={identifier.id}
+            mode="setup"
+            onSaved={() => setIsReplacing(false)}
+          />
+        ) : (
+          <div className="rounded-xl border border-dashed bg-muted/30 p-8 text-center text-sm text-muted-foreground">
+            No build credentials are configured for this identifier yet. Ask an admin to set them
+            up.
+          </div>
+        )}
+        <GooglePlayServiceAccountCard
+          identifierId={identifier.id}
+          identifier={identifier.identifier}
+          hasKey={false}
+          canManage={canManage}
+          disabledReason="Configure an Android signing keystore before adding a Google Play service account."
+          onChanged={invalidate}
+        />
       </div>
     );
   }
 
-  if (!metadata || isReplacing) {
+  if (isReplacing) {
     return (
       <AndroidCredentialsForm
         identifierId={identifier.id}
-        mode={metadata ? 'replace' : 'setup'}
-        initialKeyAlias={metadata?.keyAlias}
+        mode="replace"
+        initialKeyAlias={metadata.keyAlias}
         onCancel={() => setIsReplacing(false)}
         onSaved={() => setIsReplacing(false)}
       />

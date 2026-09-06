@@ -1,6 +1,8 @@
 package android
 
 import (
+	"bytes"
+	"encoding/pem"
 	"os"
 	"testing"
 	"xprem/internal/android/androidtest"
@@ -8,6 +10,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	pkcs12 "software.sslmate.com/src/go-pkcs12"
 )
 
 func assertFieldError(t *testing.T, err error, field string) {
@@ -67,6 +70,34 @@ func TestValidateAndroidKeystorePKCS12FromKeytool(t *testing.T) {
 	assertFieldError(t, err, "keyAlias")
 	assert.Contains(t, err.Error(), "upload")
 	assert.Contains(t, err.Error(), "release")
+}
+
+func TestPKCS12CertificateSelectionMatchesThePrivateKey(t *testing.T) {
+	blocks, err := pkcs12.ToPEM(readTestdata(t, "multi.p12"), "store-pass")
+	require.NoError(t, err)
+
+	var uploadCertificate, releaseCertificate *pem.Block
+	for _, block := range blocks {
+		if block.Type != "CERTIFICATE" {
+			continue
+		}
+		switch block.Headers["friendlyName"] {
+		case "upload":
+			uploadCertificate = block
+		case "release":
+			releaseCertificate = block
+		}
+	}
+	require.NotNil(t, uploadCertificate)
+	require.NotNil(t, releaseCertificate)
+
+	mislabelled := *releaseCertificate
+	mislabelled.Headers = map[string]string{"friendlyName": "upload"}
+	blocks = append([]*pem.Block{&mislabelled}, blocks...)
+
+	selected, err := signingCertificateDER(blocks, "upload")
+	require.NoError(t, err)
+	assert.True(t, bytes.Equal(uploadCertificate.Bytes, selected))
 }
 
 // go-pkcs12 writes no friendlyName, so the alias cannot be checked.
