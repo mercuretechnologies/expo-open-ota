@@ -14,7 +14,7 @@ import (
 // maxBranchRules bounds the number of rules a single API key may hold.
 const maxBranchRules = 50
 
-// Action is what a CLI request does to the branch it names.
+// Action is what an Updates CLI request does to the branch it names.
 type Action string
 
 const (
@@ -46,8 +46,8 @@ func (a Action) Implies(b Action) bool {
 }
 
 // BranchRule grants a set of actions on every branch matching Pattern, where
-// "*" stands for any run of characters. An API key holding no rules reaches
-// every branch of its app.
+// "*" stands for any run of characters. An API key holding no rules has
+// no Updates access.
 type BranchRule struct {
 	Pattern string
 	Actions []Action
@@ -65,12 +65,8 @@ func (rule BranchRule) Allows(branchName string, action Action) bool {
 	return false
 }
 
-// AllowsBranch is the decision for a whole rule list. An empty branchName is
-// refused whenever the key has any rules.
+// AllowsBranch requires an explicit grant and a nonempty Updates branch.
 func AllowsBranch(rules []BranchRule, branchName string, action Action) bool {
-	if len(rules) == 0 {
-		return true
-	}
 	if branchName == "" {
 		return false
 	}

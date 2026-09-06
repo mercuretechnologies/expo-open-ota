@@ -944,16 +944,17 @@ func (q *Queries) GetAndroidCredentialsByIdentifierID(ctx context.Context, appId
 
 const getApiKeyAccess = `-- name: GetApiKeyAccess :many
 
-SELECT k.allowed_ips, r.pattern, r.actions
+SELECT k.allowed_ips, k.build_actions, r.pattern, r.actions
 FROM api_keys k
 LEFT JOIN api_key_branch_rules r ON r.api_key_id = k.id
 WHERE k.id = $1 AND k.revoked_at IS NULL
 `
 
 type GetApiKeyAccessRow struct {
-	AllowedIps []netip.Prefix `json:"allowed_ips"`
-	Pattern    *string        `json:"pattern"`
-	Actions    []string       `json:"actions"`
+	AllowedIps   []netip.Prefix `json:"allowed_ips"`
+	BuildActions []string       `json:"build_actions"`
+	Pattern      *string        `json:"pattern"`
+	Actions      []string       `json:"actions"`
 }
 
 // The queries below back the Enterprise Edition per-key access restrictions
@@ -961,9 +962,8 @@ type GetApiKeyAccessRow struct {
 // schema, so the EE feature's SQL lives here like the enterprise license
 // queries above.
 // Enforcement read for one authenticated key on the CLI request hot path: the
-// IP allow-list, the branch-creation flag and the branch rules in one round
-// trip. A key with no rule yields a single row with a NULL pattern, which is
-// the unrestricted default.
+// IP allow-list, Build actions and Updates branch rules in one round trip.
+// A key with no rule yields a single row with a NULL pattern: no Updates access.
 //
 // revoked_at IS NULL is redundant with authentication, which already refuses a
 // revoked key, and it is here anyway: this is the last read before a publish is
@@ -978,7 +978,12 @@ func (q *Queries) GetApiKeyAccess(ctx context.Context, id int64) ([]GetApiKeyAcc
 	var items []GetApiKeyAccessRow
 	for rows.Next() {
 		var i GetApiKeyAccessRow
-		if err := rows.Scan(&i.AllowedIps, &i.Pattern, &i.Actions); err != nil {
+		if err := rows.Scan(
+			&i.AllowedIps,
+			&i.BuildActions,
+			&i.Pattern,
+			&i.Actions,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -990,7 +995,7 @@ func (q *Queries) GetApiKeyAccess(ctx context.Context, id int64) ([]GetApiKeyAcc
 }
 
 const getApiKeyAccessByAppID = `-- name: GetApiKeyAccessByAppID :many
-SELECT k.id, k.allowed_ips, r.pattern, r.actions
+SELECT k.id, k.allowed_ips, k.build_actions, r.pattern, r.actions
 FROM api_keys k
 LEFT JOIN api_key_branch_rules r ON r.api_key_id = k.id
 WHERE k.app_id = $1 AND k.revoked_at IS NULL
@@ -998,10 +1003,11 @@ ORDER BY k.id, r.id
 `
 
 type GetApiKeyAccessByAppIDRow struct {
-	ID         int64          `json:"id"`
-	AllowedIps []netip.Prefix `json:"allowed_ips"`
-	Pattern    *string        `json:"pattern"`
-	Actions    []string       `json:"actions"`
+	ID           int64          `json:"id"`
+	AllowedIps   []netip.Prefix `json:"allowed_ips"`
+	BuildActions []string       `json:"build_actions"`
+	Pattern      *string        `json:"pattern"`
+	Actions      []string       `json:"actions"`
 }
 
 // Same shape for the dashboard, over every live key of one app. Ordered so
@@ -1018,6 +1024,7 @@ func (q *Queries) GetApiKeyAccessByAppID(ctx context.Context, appID pgtype.UUID)
 		if err := rows.Scan(
 			&i.ID,
 			&i.AllowedIps,
+			&i.BuildActions,
 			&i.Pattern,
 			&i.Actions,
 		); err != nil {
@@ -6317,18 +6324,24 @@ func (q *Queries) TouchUserLastConnectedAt(ctx context.Context, id pgtype.UUID) 
 
 const updateApiKeyAccess = `-- name: UpdateApiKeyAccess :execrows
 UPDATE api_keys
-SET allowed_ips = $1
-WHERE id = $2 AND app_id = $3 AND revoked_at IS NULL
+SET allowed_ips = $1, build_actions = $2
+WHERE id = $3 AND app_id = $4 AND revoked_at IS NULL
 `
 
 type UpdateApiKeyAccessParams struct {
-	AllowedIps []netip.Prefix `json:"allowed_ips"`
-	ID         int64          `json:"id"`
-	AppID      pgtype.UUID    `json:"app_id"`
+	AllowedIps   []netip.Prefix `json:"allowed_ips"`
+	BuildActions []string       `json:"build_actions"`
+	ID           int64          `json:"id"`
+	AppID        pgtype.UUID    `json:"app_id"`
 }
 
 func (q *Queries) UpdateApiKeyAccess(ctx context.Context, arg UpdateApiKeyAccessParams) (int64, error) {
-	result, err := q.db.Exec(ctx, updateApiKeyAccess, arg.AllowedIps, arg.ID, arg.AppID)
+	result, err := q.db.Exec(ctx, updateApiKeyAccess,
+		arg.AllowedIps,
+		arg.BuildActions,
+		arg.ID,
+		arg.AppID,
+	)
 	if err != nil {
 		return 0, err
 	}

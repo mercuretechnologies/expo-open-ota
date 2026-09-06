@@ -949,15 +949,14 @@ WHERE issuer = $1 AND subject = $2;
 
 -- name: GetApiKeyAccess :many
 -- Enforcement read for one authenticated key on the CLI request hot path: the
--- IP allow-list, the branch-creation flag and the branch rules in one round
--- trip. A key with no rule yields a single row with a NULL pattern, which is
--- the unrestricted default.
+-- IP allow-list, Build actions and Updates branch rules in one round trip.
+-- A key with no rule yields a single row with a NULL pattern: no Updates access.
 --
 -- revoked_at IS NULL is redundant with authentication, which already refuses a
 -- revoked key, and it is here anyway: this is the last read before a publish is
 -- authorised, so it costs nothing to make "zero rows" mean exactly what the
 -- caller treats it as, a key that may no longer act.
-SELECT k.allowed_ips, r.pattern, r.actions
+SELECT k.allowed_ips, k.build_actions, r.pattern, r.actions
 FROM api_keys k
 LEFT JOIN api_key_branch_rules r ON r.api_key_id = k.id
 WHERE k.id = $1 AND k.revoked_at IS NULL;
@@ -965,7 +964,7 @@ WHERE k.id = $1 AND k.revoked_at IS NULL;
 -- name: GetApiKeyAccessByAppID :many
 -- Same shape for the dashboard, over every live key of one app. Ordered so
 -- the caller can fold consecutive rows into one key without a map.
-SELECT k.id, k.allowed_ips, r.pattern, r.actions
+SELECT k.id, k.allowed_ips, k.build_actions, r.pattern, r.actions
 FROM api_keys k
 LEFT JOIN api_key_branch_rules r ON r.api_key_id = k.id
 WHERE k.app_id = $1 AND k.revoked_at IS NULL
@@ -973,8 +972,8 @@ ORDER BY k.id, r.id;
 
 -- name: UpdateApiKeyAccess :execrows
 UPDATE api_keys
-SET allowed_ips = $1
-WHERE id = $2 AND app_id = $3 AND revoked_at IS NULL;
+SET allowed_ips = $1, build_actions = $2
+WHERE id = $3 AND app_id = $4 AND revoked_at IS NULL;
 
 -- name: DeleteApiKeyBranchRules :exec
 -- The rules of one key are replaced wholesale, inside the same transaction as

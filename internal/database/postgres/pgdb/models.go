@@ -24,15 +24,16 @@ type AndroidCredential struct {
 }
 
 type ApiKey struct {
-	ID         int64              `json:"id"`
-	AppID      pgtype.UUID        `json:"app_id"`
-	Name       string             `json:"name"`
-	Hint       string             `json:"hint"`
-	HashedKey  string             `json:"hashed_key"`
-	CreatedAt  pgtype.Timestamptz `json:"created_at"`
-	LastUsedAt pgtype.Timestamptz `json:"last_used_at"`
-	RevokedAt  pgtype.Timestamptz `json:"revoked_at"`
-	AllowedIps []netip.Prefix     `json:"allowed_ips"`
+	ID           int64              `json:"id"`
+	AppID        pgtype.UUID        `json:"app_id"`
+	Name         string             `json:"name"`
+	Hint         string             `json:"hint"`
+	HashedKey    string             `json:"hashed_key"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+	LastUsedAt   pgtype.Timestamptz `json:"last_used_at"`
+	RevokedAt    pgtype.Timestamptz `json:"revoked_at"`
+	AllowedIps   []netip.Prefix     `json:"allowed_ips"`
+	BuildActions []string           `json:"build_actions"`
 }
 
 type ApiKeyBranchRule struct {

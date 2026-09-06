@@ -17,11 +17,12 @@ import (
 
 // ApiKeyAccess is everything one API key is allowed to do: the branches it
 // reaches, what it may do there, and the source networks it may be used from.
-// An empty BranchRules means every branch of the app.
+// Empty BranchRules or BuildActions grants no access to that domain.
 type ApiKeyAccess struct {
-	ApiKeyID    int64
-	AllowedIps  []netip.Prefix
-	BranchRules []BranchRule
+	ApiKeyID     int64
+	AllowedIps   []netip.Prefix
+	BranchRules  []BranchRule
+	BuildActions []BuildAction
 }
 
 // CliRequest is one authenticated CLI request, in the terms the access
@@ -104,7 +105,7 @@ func (s *ApiKeyAccessService) GetAccessByApp(ctx context.Context, appID string) 
 // SetAccess replaces what one API key is allowed to do. CIDR entries are
 // normalized to satisfy the postgres cidr column, and rules are validated and
 // reordered by NormalizeBranchRules.
-func (s *ApiKeyAccessService) SetAccess(ctx context.Context, appID string, apiKeyID int64, rules []BranchRule, cidrs []string) error {
+func (s *ApiKeyAccessService) SetAccess(ctx context.Context, appID string, apiKeyID int64, rules []BranchRule, cidrs []string, buildActions []BuildAction) error {
 	if s.repo == nil {
 		return ErrRequiresControlPlane
 	}
@@ -119,10 +120,15 @@ func (s *ApiKeyAccessService) SetAccess(ctx context.Context, appID string, apiKe
 	if err != nil {
 		return err
 	}
+	normalizedBuild, err := normalizeBuildActions(buildActions)
+	if err != nil {
+		return err
+	}
 	access := ApiKeyAccess{
-		ApiKeyID:    apiKeyID,
-		AllowedIps:  allowedIps,
-		BranchRules: normalizedRules,
+		ApiKeyID:     apiKeyID,
+		AllowedIps:   allowedIps,
+		BranchRules:  normalizedRules,
+		BuildActions: normalizedBuild,
 	}
 	if err := s.repo.SetAccess(ctx, appID, access); err != nil {
 		return err
@@ -144,6 +150,7 @@ func (s *ApiKeyAccessService) SetAccess(ctx context.Context, appID string, apiKe
 		"api_key", strconv.FormatInt(apiKeyID, 10), targetDisplay, appID,
 		map[string]any{
 			"branch_rules":  describeBranchRules(normalizedRules),
+			"build_actions": normalizedBuild,
 			"allowed_cidrs": normalizedCidrs,
 		})
 	return nil

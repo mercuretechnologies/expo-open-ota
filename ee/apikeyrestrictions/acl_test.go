@@ -46,10 +46,10 @@ func TestMatchBranchPattern(t *testing.T) {
 	}
 }
 
-func TestAllowsBranch_NoRulesMeansEveryBranch(t *testing.T) {
+func TestAllowsBranch_NoRulesMeansNoAccess(t *testing.T) {
 	for _, action := range AllActions {
-		assert.True(t, AllowsBranch(nil, "production", action))
-		assert.True(t, AllowsBranch([]BranchRule{}, "production", action))
+		assert.False(t, AllowsBranch(nil, "production", action))
+		assert.False(t, AllowsBranch([]BranchRule{}, "production", action))
 	}
 }
 
@@ -83,7 +83,7 @@ func TestAllowsBranch_WriteImpliesRead(t *testing.T) {
 func TestAllowsBranch_ScopedKeyIsRefusedWithoutABranch(t *testing.T) {
 	rules := []BranchRule{{Pattern: "*", Actions: []Action{ActionPublish}}}
 	assert.False(t, AllowsBranch(rules, "", ActionPublish))
-	assert.True(t, AllowsBranch(nil, "", ActionPublish))
+	assert.False(t, AllowsBranch(nil, "", ActionPublish))
 }
 
 func TestImplies_UnknownActionGrantsNothing(t *testing.T) {

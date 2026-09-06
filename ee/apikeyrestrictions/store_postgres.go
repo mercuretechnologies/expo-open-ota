@@ -38,7 +38,7 @@ func (s *PostgresApiKeyAccessStore) GetAccess(ctx context.Context, apiKeyID int6
 	if len(rows) == 0 {
 		return ApiKeyAccess{}, ErrApiKeyNotFound
 	}
-	access := ApiKeyAccess{ApiKeyID: apiKeyID, AllowedIps: rows[0].AllowedIps}
+	access := ApiKeyAccess{ApiKeyID: apiKeyID, AllowedIps: rows[0].AllowedIps, BuildActions: toBuildActions(rows[0].BuildActions)}
 	for _, row := range rows {
 		if row.Pattern == nil {
 			continue
@@ -68,7 +68,7 @@ func foldAccessRows(rows []pgdb.GetApiKeyAccessByAppIDRow) []ApiKeyAccess {
 	result := make([]ApiKeyAccess, 0, len(rows))
 	for _, row := range rows {
 		if len(result) == 0 || result[len(result)-1].ApiKeyID != row.ID {
-			result = append(result, ApiKeyAccess{ApiKeyID: row.ID, AllowedIps: row.AllowedIps})
+			result = append(result, ApiKeyAccess{ApiKeyID: row.ID, AllowedIps: row.AllowedIps, BuildActions: toBuildActions(row.BuildActions)})
 		}
 		if row.Pattern == nil {
 			continue
@@ -90,9 +90,10 @@ func foldAccessRows(rows []pgdb.GetApiKeyAccessByAppIDRow) []ApiKeyAccess {
 func (s *PostgresApiKeyAccessStore) SetAccess(ctx context.Context, appID string, access ApiKeyAccess) error {
 	return s.engine.WithTx(ctx, func(q *pgdb.Queries) error {
 		updated, err := q.UpdateApiKeyAccess(ctx, pgdb.UpdateApiKeyAccessParams{
-			AllowedIps: access.AllowedIps,
-			ID:         access.ApiKeyID,
-			AppID:      store.ToPgUUID(appID),
+			AllowedIps:   access.AllowedIps,
+			BuildActions: fromBuildActions(access.BuildActions),
+			ID:           access.ApiKeyID,
+			AppID:        store.ToPgUUID(appID),
 		})
 		if err != nil {
 			return fmt.Errorf("failed to update api key access: %w", err)
@@ -131,6 +132,26 @@ func toActions(raw []string) []Action {
 }
 
 func fromActions(actions []Action) []string {
+	raw := make([]string, 0, len(actions))
+	for _, action := range actions {
+		raw = append(raw, string(action))
+	}
+	return raw
+}
+
+// Unknown stored actions cannot become a grant.
+func toBuildActions(raw []string) []BuildAction {
+	var actions []BuildAction
+	for _, value := range raw {
+		switch action := BuildAction(value); action {
+		case BuildActionRead, BuildActionCreate, BuildActionCancel:
+			actions = append(actions, action)
+		}
+	}
+	return actions
+}
+
+func fromBuildActions(actions []BuildAction) []string {
 	raw := make([]string, 0, len(actions))
 	for _, action := range actions {
 		raw = append(raw, string(action))

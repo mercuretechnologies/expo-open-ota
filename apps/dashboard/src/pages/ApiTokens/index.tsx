@@ -47,17 +47,27 @@ export const ApiTokens = () => {
     (apiKeyAccessQuery.data ?? []).map(access => [access.apiKeyId, access])
   );
 
-  // Empty means the token is at its default, which is full access to the app.
-  // Saying "Every branch" rather than nothing keeps the two states apart at a
-  // glance, since one of them is the permissive one.
+  const licenseQuery = useQuery({
+    queryKey: ['license'],
+    queryFn: () => api.getLicense(),
+    enabled: CONTROL_PLANE_ENABLED,
+  });
+
   const describeAccess = (apiKeyId: string) => {
+    if (!licenseQuery.data) return licenseQuery.isError ? 'Access unavailable' : 'Loading access…';
+    if (!licenseQuery.data.valid) return 'Unrestricted';
     const access = accessByKeyId.get(apiKeyId);
-    const parts: string[] = [];
-    const ruleCount = access?.branchRules.length ?? 0;
-    if (ruleCount > 0) {
-      parts.push(`${ruleCount} branch rule${ruleCount > 1 ? 's' : ''}`);
-    }
-    if (access?.allowedIps.length) {
+    if (!access) return apiKeyAccessQuery.isError ? 'Access unavailable' : 'Loading access…';
+    const ruleCount = access.updates.branchRules.length;
+    const parts = [
+      ruleCount > 0
+        ? `Updates: ${ruleCount} branch rule${ruleCount > 1 ? 's' : ''}`
+        : 'Updates: no access',
+    ];
+    parts.push(
+      access.build.actions.length ? `Build: ${access.build.actions.join(', ')}` : 'Build: no access'
+    );
+    if (access.allowedIps.length) {
       parts.push(`${access.allowedIps.length} IP${access.allowedIps.length > 1 ? 's' : ''}`);
     }
     return parts.join(' · ');
@@ -71,6 +81,7 @@ export const ApiTokens = () => {
       setGeneratedToken(response.apiKey);
       setNewKeyName('');
       queryClient.invalidateQueries({ queryKey: ['apiKeys', selectedAppId] });
+      queryClient.invalidateQueries({ queryKey: ['apiKeyAccess', selectedAppId] });
     } catch (error) {
       let errorTitle = 'Error creating token';
       let errorMessage = 'An unexpected error occurred.';
@@ -92,6 +103,7 @@ export const ApiTokens = () => {
     try {
       await api.revokeApiKey(keyToRevoke.id);
       queryClient.invalidateQueries({ queryKey: ['apiKeys', selectedAppId] });
+      queryClient.invalidateQueries({ queryKey: ['apiKeyAccess', selectedAppId] });
       toast({
         title: 'Token revoked',
         description: `"${keyToRevoke.name}" can no longer be used.`,
@@ -168,6 +180,8 @@ export const ApiTokens = () => {
             <p className="text-sm font-medium">Here is your new token</p>
             <p className="mt-0.5 text-xs text-muted-foreground">
               Copy it now, it will not be shown again.
+              {licenseQuery.data?.valid &&
+                ' New tokens have no access. Use Edit in the Access column to grant permissions.'}
             </p>
             <div className="mt-3 flex items-center gap-2">
               <code className="flex-1 select-all break-all rounded-lg border bg-background p-2.5 font-mono text-xs">
@@ -231,7 +245,7 @@ export const ApiTokens = () => {
                     {summary}
                   </span>
                 ) : (
-                  <span className="text-sm text-muted-foreground/60">Every branch</span>
+                  <span className="text-sm text-muted-foreground/60">Access unavailable</span>
                 );
                 if (!canManageApiKeys) {
                   return state;

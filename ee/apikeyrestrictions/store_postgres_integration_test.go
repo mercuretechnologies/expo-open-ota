@@ -87,15 +87,17 @@ func TestAccessRoundTripsThroughPostgres(t *testing.T) {
 	appID := insertTestApp(t, pool)
 	apiKeyID := insertTestApiKey(t, pool, appID, "ci")
 
-	// A fresh key is unrestricted: one row comes back, with no rule.
+	// A fresh key has no permissions: one row comes back, with no rule.
 	access, err := store.GetAccess(ctx, apiKeyID)
 	require.NoError(t, err)
 	assert.Empty(t, access.BranchRules)
+	assert.Empty(t, access.BuildActions)
 	assert.Empty(t, access.AllowedIps)
 
 	require.NoError(t, store.SetAccess(ctx, appID, ApiKeyAccess{
-		ApiKeyID:   apiKeyID,
-		AllowedIps: []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8")},
+		ApiKeyID:     apiKeyID,
+		AllowedIps:   []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8")},
+		BuildActions: []BuildAction{BuildActionCreate},
 		BranchRules: []BranchRule{
 			{Pattern: "production", Actions: []Action{ActionRead}},
 			{Pattern: "pr-*", Actions: []Action{ActionRead, ActionPublish}},
@@ -105,6 +107,7 @@ func TestAccessRoundTripsThroughPostgres(t *testing.T) {
 	access, err = store.GetAccess(ctx, apiKeyID)
 	require.NoError(t, err)
 	assert.Equal(t, []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8")}, access.AllowedIps)
+	assert.Equal(t, []BuildAction{BuildActionCreate}, access.BuildActions)
 	require.Len(t, access.BranchRules, 2)
 	assert.ElementsMatch(t,
 		[]string{"production", "pr-*"},
@@ -117,6 +120,7 @@ func TestAccessRoundTripsThroughPostgres(t *testing.T) {
 	}))
 	access, err = store.GetAccess(ctx, apiKeyID)
 	require.NoError(t, err)
+	assert.Empty(t, access.BuildActions)
 	require.Len(t, access.BranchRules, 1)
 	assert.Equal(t, "staging", access.BranchRules[0].Pattern)
 	assert.Empty(t, access.AllowedIps)
@@ -232,7 +236,7 @@ func TestAuthorizeAgainstPostgres(t *testing.T) {
 			{Pattern: "pr-*", Actions: []Action{ActionPublish}},
 			{Pattern: "staging", Actions: []Action{ActionPublish}},
 		},
-		[]string{"10.0.0.0/8"},
+		[]string{"10.0.0.0/8"}, nil,
 	))
 
 	request := func(branch string, action Action, ip string) CliRequest {

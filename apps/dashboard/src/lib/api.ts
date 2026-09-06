@@ -746,20 +746,16 @@ export type CreateApiKeyResponse = {
   apiKey: string;
 };
 
-// What one API token is allowed to do (/apiKeys/access, control-plane only).
-//
-// An empty branchRules means the token reaches EVERY branch, which is the
-// default of a fresh token and the only state a community deployment sees.
-// Empty allowedIps means it can be used from any source address.
-//
-// There is no separate say over creating a branch: publishing to a branch that
-// does not exist is how the CLI opens one, so a rule that admits the name
-// admits the creation.
+// Enterprise token permissions. Empty action/rule lists grant no access;
+// an empty IP allowlist permits any source address. MIT ignores these restrictions.
 export type ApiKeyAccessRecord = {
   apiKeyId: string;
-  branchRules: BranchRuleRecord[];
+  updates: { branchRules: BranchRuleRecord[] };
+  build: { actions: BuildAction[] };
   allowedIps: string[];
 };
+
+export type BuildAction = 'read' | 'create' | 'cancel';
 
 // One rule: a branch name or a "*" pattern, and what the token may do there.
 // Both writes imply read on the server, so a rule granting publish also grants
@@ -1482,16 +1478,8 @@ export class ApiClient {
     });
   }
 
-  // The whole access of a token is replaced at once, so every field has to be
-  // sent every time: an omitted branchRules would not mean "leave them alone",
-  // it would clear the list, which the server reads as "every branch".
-  public async setApiKeyAccess(
-    apiKeyId: string,
-    access: {
-      branchRules: BranchRuleRecord[];
-      allowedIps: string[];
-    }
-  ) {
+  // Replace both permission domains and the IP allowlist together.
+  public async setApiKeyAccess(apiKeyId: string, access: Omit<ApiKeyAccessRecord, 'apiKeyId'>) {
     return this.request<void>(`${this.appScope()}/apiKeys/${encodeURIComponent(apiKeyId)}/access`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },

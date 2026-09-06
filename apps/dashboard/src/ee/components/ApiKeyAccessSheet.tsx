@@ -11,6 +11,7 @@ import {
   ApiKeyRecord,
   ApiKeyAccessRecord,
   BranchRuleAction,
+  BuildAction,
   BranchRuleRecord,
   describeApiError,
 } from '@/lib/api';
@@ -29,10 +30,8 @@ import { EnterpriseFeatureGate } from '@/ee/components/EnterpriseFeatureGate';
 import { BranchPatternInput } from '@/ee/components/BranchPatternInput';
 import { cn } from '@/lib/utils';
 
-// Side panel to edit what one API token is allowed to do: which branches it
-// reaches and with which actions, whether it may open a branch that does not
-// exist yet, and the source addresses it may be used from. Without a valid
-// license the form is masked by EnterpriseFeatureGate.
+// Edit Updates rules, Build permissions and source IPs independently.
+// Without a valid license the form is masked by EnterpriseFeatureGate.
 export const ApiKeyAccessSheet = ({
   apiKey,
   onClose,
@@ -54,7 +53,7 @@ export const ApiKeyAccessSheet = ({
         <SheetHeader>
           <SheetTitle>Token access</SheetTitle>
           <SheetDescription>
-            Choose which branches “{apiKey?.name}” reaches and what it may do on each of them.
+            Choose what “{apiKey?.name}” can do in Updates and Build.
           </SheetDescription>
         </SheetHeader>
         <div className="mt-6">
@@ -97,6 +96,12 @@ const ACTION_LABELS: { value: BranchRuleAction; label: string; hint: string }[] 
   { value: 'rollback', label: 'Rollback', hint: 'Roll back, and republish a past update' },
 ];
 
+const BUILD_ACTION_LABELS: { value: BuildAction; label: string; hint: string }[] = [
+  { value: 'read', label: 'Read', hint: 'View builds, logs and download artifacts' },
+  { value: 'create', label: 'Create', hint: 'Start a build; includes read access' },
+  { value: 'cancel', label: 'Cancel', hint: 'Cancel a build; includes read access' },
+];
+
 const AccessForm = ({
   apiKey,
   initialAccess,
@@ -117,10 +122,23 @@ const AccessForm = ({
   });
   const branches = (branchesQuery.data ?? []).map(branch => branch.branchName);
 
-  const initialRules = initialAccess?.branchRules ?? [];
-  // No rule stored means every branch, which is what a fresh token holds.
-  const [isScoped, setIsScoped] = useState(initialRules.length > 0);
+  const initialRules = initialAccess?.updates.branchRules ?? [];
+  const [updatesMode, setUpdatesMode] = useState<'none' | 'all' | 'custom'>(
+    initialRules.length === 0
+      ? 'none'
+      : initialRules.some(
+            rule =>
+              rule.pattern === '*' &&
+              rule.actions.includes('publish') &&
+              rule.actions.includes('rollback')
+          )
+        ? 'all'
+        : 'custom'
+  );
   const [rules, setRules] = useState<BranchRuleRecord[]>(initialRules);
+  const [buildActions, setBuildActions] = useState<BuildAction[]>(
+    initialAccess?.build.actions ?? []
+  );
   const [allowedIpsText, setAllowedIpsText] = useState(
     (initialAccess?.allowedIps ?? []).join('\n')
   );
@@ -142,8 +160,8 @@ const AccessForm = ({
   // Checked client-side so the operator sees the problem next to the field
   // rather than as a toast carrying the server's version of it.
   const validate = (): string | null => {
-    if (!isScoped) return null;
-    if (rules.length === 0) return 'Add at least one rule, or let the token reach every branch.';
+    if (updatesMode !== 'custom') return null;
+    if (rules.length === 0) return 'Add at least one rule, or choose No access.';
     const seen = new Set<string>();
     for (const rule of rules) {
       const pattern = rule.pattern.trim();
@@ -175,9 +193,15 @@ const AccessForm = ({
         .map(line => line.trim())
         .filter(Boolean);
       await api.setApiKeyAccess(apiKey.id, {
-        // Unscoped is stored as an empty list, which the server reads as every
-        // branch. The rules kept in local state are not sent in that case.
-        branchRules: isScoped ? rules.map(rule => ({ ...rule, pattern: rule.pattern.trim() })) : [],
+        updates: {
+          branchRules:
+            updatesMode === 'all'
+              ? [{ pattern: '*', actions: ['read', 'publish', 'rollback'] }]
+              : updatesMode === 'custom'
+                ? rules.map(rule => ({ ...rule, pattern: rule.pattern.trim() }))
+                : [],
+        },
+        build: { actions: buildActions },
         allowedIps,
       });
       queryClient.invalidateQueries({ queryKey: ['apiKeyAccess', selectedAppId] });
@@ -197,18 +221,24 @@ const AccessForm = ({
   return (
     <div className="space-y-6">
       <div className="space-y-2">
-        <p className="text-sm font-medium">Branches</p>
+        <p className="text-sm font-medium">Updates</p>
         <div className="grid gap-2">
           <ScopeChoice
-            selected={!isScoped}
-            onSelect={() => setIsScoped(false)}
+            selected={updatesMode === 'none'}
+            onSelect={() => setUpdatesMode('none')}
+            title="No access"
+            description="The token cannot read, publish or roll back updates."
+          />
+          <ScopeChoice
+            selected={updatesMode === 'all'}
+            onSelect={() => setUpdatesMode('all')}
             title="Every branch"
             description="The token can read, publish and roll back anywhere in this app."
           />
           <ScopeChoice
-            selected={isScoped}
+            selected={updatesMode === 'custom'}
             onSelect={() => {
-              setIsScoped(true);
+              setUpdatesMode('custom');
               if (rules.length === 0) setRules([{ pattern: '', actions: ['read', 'publish'] }]);
             }}
             title="Only the branches I list"
@@ -217,7 +247,7 @@ const AccessForm = ({
         </div>
       </div>
 
-      {isScoped && (
+      {updatesMode === 'custom' && (
         <div className="space-y-3">
           {rules.map((rule, index) => (
             <div key={index} className="space-y-2.5 rounded-lg border p-3">
@@ -253,6 +283,7 @@ const AccessForm = ({
                       key={action.value}
                       type="button"
                       title={action.hint}
+                      aria-pressed={isGranted || impliedByWrite}
                       disabled={isSaving || impliedByWrite}
                       onClick={() => toggleAction(index, action.value)}
                       className={cn(
@@ -282,6 +313,47 @@ const AccessForm = ({
           </Button>
         </div>
       )}
+
+      <div className="space-y-2">
+        <p className="text-sm font-medium">Build</p>
+        <p className="text-xs text-muted-foreground">
+          Applies to builds in this app, independently of Updates. Leave all actions off for no
+          access.
+        </p>
+        <div className="flex flex-wrap gap-1.5">
+          {BUILD_ACTION_LABELS.map(action => {
+            const impliedRead =
+              action.value === 'read' &&
+              (buildActions.includes('create') || buildActions.includes('cancel'));
+            const granted = buildActions.includes(action.value) || impliedRead;
+            return (
+              <button
+                key={action.value}
+                type="button"
+                title={action.hint}
+                aria-pressed={granted}
+                disabled={isSaving || impliedRead}
+                onClick={() =>
+                  setBuildActions(current =>
+                    current.includes(action.value)
+                      ? current.filter(value => value !== action.value)
+                      : [...current, action.value]
+                  )
+                }
+                className={cn(
+                  'rounded-md border px-2.5 py-1 text-xs font-medium transition-colors',
+                  granted
+                    ? 'border-primary/40 bg-primary/10 text-primary'
+                    : 'text-muted-foreground hover:bg-muted/50',
+                  impliedRead && 'cursor-default opacity-80'
+                )}>
+                {action.label}
+                {impliedRead && ' (implied)'}
+              </button>
+            );
+          })}
+        </div>
+      </div>
 
       <div className="space-y-2">
         <p className="text-sm font-medium">IP allowlist</p>
