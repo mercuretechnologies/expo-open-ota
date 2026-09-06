@@ -368,14 +368,20 @@ func TestNativeRulesRejectOtherAppsAndPlatformsAtomically(t *testing.T) {
 	require.Error(t, err)
 	_, err = pool.Exec(ctx, "INSERT INTO api_key_submit_rules (api_key_id,app_id,app_identifier_id,destination,actions) VALUES ($1,$2,$3,'internal',ARRAY['upload'])", key, otherAppID, otherID)
 	require.Error(t, err)
-	// Enforcement also rejects a destination/platform mismatch inserted outside
-	// SetAccess, while preserving the valid Build grant for that identifier.
+	// Enforcement and management reads reject a destination/platform mismatch
+	// inserted outside SetAccess, while preserving the valid grants.
 	_, err = pool.Exec(ctx, "INSERT INTO api_key_submit_rules (api_key_id,app_id,app_identifier_id,destination,actions) VALUES ($1,$2,$3,'testflight',ARRAY['upload'])", key, appID, ownID)
 	require.NoError(t, err)
 	actual, err := store.GetAccess(ctx, appID, key)
 	require.NoError(t, err)
 	assert.Equal(t, original.BuildRules, actual.BuildRules)
 	assert.Equal(t, original.SubmitRules, actual.SubmitRules)
+	listed, err := store.GetAccessByAppID(ctx, appID)
+	require.NoError(t, err)
+	require.Len(t, listed, 1)
+	assert.Equal(t, key, listed[0].ApiKeyID)
+	assert.Equal(t, original.BuildRules, listed[0].BuildRules)
+	assert.Equal(t, original.SubmitRules, listed[0].SubmitRules)
 	otherSubmit = submitRequest
 	otherSubmit.Destination = SubmitDestinationTestFlight
 	require.ErrorIs(t, service.AuthorizeSubmit(ctx, otherSubmit), services.ErrCliAccessDenied)

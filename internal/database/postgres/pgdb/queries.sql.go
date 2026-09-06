@@ -1136,8 +1136,12 @@ func (q *Queries) GetApiKeyNameByID(ctx context.Context, arg GetApiKeyNameByIDPa
 
 const getApiKeySubmitRulesByAppID = `-- name: GetApiKeySubmitRulesByAppID :many
 SELECT r.api_key_id, r.app_identifier_id, r.destination, r.actions
-FROM api_key_submit_rules r JOIN api_keys k ON k.id = r.api_key_id
+FROM api_key_submit_rules r
+JOIN api_keys k ON k.id = r.api_key_id AND k.app_id = r.app_id
+JOIN app_identifiers i ON i.id = r.app_identifier_id AND i.app_id = k.app_id
 WHERE r.app_id = $1 AND k.revoked_at IS NULL
+  AND ((i.platform = 'android' AND r.destination IN ('internal', 'alpha', 'beta', 'production'))
+    OR (i.platform = 'ios' AND r.destination = 'testflight'))
 ORDER BY r.api_key_id, r.app_identifier_id, r.destination
 `
 
