@@ -82,7 +82,7 @@ func (s *ApiKeyAccessService) GetAccessByApp(ctx context.Context, appID string) 
 // SetAccess replaces what one API key is allowed to do. CIDR entries are
 // normalized to satisfy the postgres cidr column, and rules are validated and
 // reordered by NormalizeUpdateRules.
-func (s *ApiKeyAccessService) SetAccess(ctx context.Context, appID string, apiKeyID int64, rules []UpdateRule, cidrs []string, buildRules []BuildRule, submitRules []SubmitRule) error {
+func (s *ApiKeyAccessService) SetAccess(ctx context.Context, appID string, apiKeyID int64, updateRules []UpdateRule, cidrs []string, buildRules []BuildRule, submitRules []SubmitRule) error {
 	if s.repo == nil {
 		return ErrRequiresControlPlane
 	}
@@ -93,7 +93,7 @@ func (s *ApiKeyAccessService) SetAccess(ctx context.Context, appID string, apiKe
 	if err != nil {
 		return err
 	}
-	normalizedRules, err := NormalizeUpdateRules(rules)
+	normalizedRules, err := NormalizeUpdateRules(updateRules)
 	if err != nil {
 		return err
 	}

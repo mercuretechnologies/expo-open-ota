@@ -99,9 +99,7 @@ func NormalizeUpdateRules(rules []UpdateRule) ([]UpdateRule, error) {
 		if err := validation.NamePattern("pattern", rule.Pattern); err != nil {
 			return nil, err
 		}
-		// "*" and "**" mean the same set of branches, so patterns are collapsed
-		// before the duplicate check below.
-		pattern := collapseWildcards(rule.Pattern)
+		pattern := branch.CollapseWildcards(rule.Pattern)
 		if _, duplicate := seen[pattern]; duplicate {
 			return nil, validation.Errorf("pattern", "%q appears in more than one rule; merge them into one", pattern)
 		}
@@ -115,10 +113,6 @@ func NormalizeUpdateRules(rules []UpdateRule) ([]UpdateRule, error) {
 	return normalized, nil
 }
 
-// collapseWildcards rewrites any run of "*" as a single one.
-func collapseWildcards(pattern string) string {
-	return branch.CollapseWildcards(pattern)
-}
 
 func normalizeUpdateActions(pattern string, actions []UpdateAction) ([]UpdateAction, error) {
 	granted := make(map[UpdateAction]struct{}, len(actions))
