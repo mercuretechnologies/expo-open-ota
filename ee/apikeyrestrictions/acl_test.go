@@ -47,84 +47,84 @@ func TestMatchBranchPattern(t *testing.T) {
 }
 
 func TestAllowsBranch_NoRulesMeansNoAccess(t *testing.T) {
-	for _, action := range AllActions {
-		assert.False(t, AllowsBranch(nil, "production", action))
-		assert.False(t, AllowsBranch([]BranchRule{}, "production", action))
+	for _, action := range AllUpdateActions {
+		assert.False(t, AllowsUpdates(nil, "production", action))
+		assert.False(t, AllowsUpdates([]UpdateRule{}, "production", action))
 	}
 }
 
 func TestAllowsBranch_ScopedKey(t *testing.T) {
-	rules := []BranchRule{
-		{Pattern: "production", Actions: []Action{ActionRead}},
-		{Pattern: "staging", Actions: []Action{ActionPublish}},
-		{Pattern: "pr-*", Actions: []Action{ActionPublish, ActionRollback}},
+	rules := []UpdateRule{
+		{Pattern: "production", Actions: []UpdateAction{UpdateActionRead}},
+		{Pattern: "staging", Actions: []UpdateAction{UpdateActionPublish}},
+		{Pattern: "pr-*", Actions: []UpdateAction{UpdateActionPublish, UpdateActionRollback}},
 	}
 
-	assert.True(t, AllowsBranch(rules, "production", ActionRead))
-	assert.False(t, AllowsBranch(rules, "production", ActionPublish))
-	assert.False(t, AllowsBranch(rules, "production", ActionRollback))
+	assert.True(t, AllowsUpdates(rules, "production", UpdateActionRead))
+	assert.False(t, AllowsUpdates(rules, "production", UpdateActionPublish))
+	assert.False(t, AllowsUpdates(rules, "production", UpdateActionRollback))
 
-	assert.True(t, AllowsBranch(rules, "staging", ActionPublish))
-	assert.False(t, AllowsBranch(rules, "staging", ActionRollback))
+	assert.True(t, AllowsUpdates(rules, "staging", UpdateActionPublish))
+	assert.False(t, AllowsUpdates(rules, "staging", UpdateActionRollback))
 
-	assert.True(t, AllowsBranch(rules, "pr-482", ActionRollback))
-	assert.False(t, AllowsBranch(rules, "develop", ActionRead))
+	assert.True(t, AllowsUpdates(rules, "pr-482", UpdateActionRollback))
+	assert.False(t, AllowsUpdates(rules, "develop", UpdateActionRead))
 }
 
 func TestAllowsBranch_WriteImpliesRead(t *testing.T) {
-	rules := []BranchRule{{Pattern: "staging", Actions: []Action{ActionPublish}}}
-	assert.True(t, AllowsBranch(rules, "staging", ActionRead))
+	rules := []UpdateRule{{Pattern: "staging", Actions: []UpdateAction{UpdateActionPublish}}}
+	assert.True(t, AllowsUpdates(rules, "staging", UpdateActionRead))
 
-	rollbackOnly := []BranchRule{{Pattern: "staging", Actions: []Action{ActionRollback}}}
-	assert.True(t, AllowsBranch(rollbackOnly, "staging", ActionRead))
-	assert.False(t, AllowsBranch(rollbackOnly, "staging", ActionPublish))
+	rollbackOnly := []UpdateRule{{Pattern: "staging", Actions: []UpdateAction{UpdateActionRollback}}}
+	assert.True(t, AllowsUpdates(rollbackOnly, "staging", UpdateActionRead))
+	assert.False(t, AllowsUpdates(rollbackOnly, "staging", UpdateActionPublish))
 }
 
 func TestAllowsBranch_ScopedKeyIsRefusedWithoutABranch(t *testing.T) {
-	rules := []BranchRule{{Pattern: "*", Actions: []Action{ActionPublish}}}
-	assert.False(t, AllowsBranch(rules, "", ActionPublish))
-	assert.False(t, AllowsBranch(nil, "", ActionPublish))
+	rules := []UpdateRule{{Pattern: "*", Actions: []UpdateAction{UpdateActionPublish}}}
+	assert.False(t, AllowsUpdates(rules, "", UpdateActionPublish))
+	assert.False(t, AllowsUpdates(nil, "", UpdateActionPublish))
 }
 
 func TestImplies_UnknownActionGrantsNothing(t *testing.T) {
-	rules := []BranchRule{{Pattern: "production", Actions: []Action{"delete"}}}
-	for _, action := range AllActions {
-		assert.False(t, AllowsBranch(rules, "production", action),
+	rules := []UpdateRule{{Pattern: "production", Actions: []UpdateAction{"delete"}}}
+	for _, action := range AllUpdateActions {
+		assert.False(t, AllowsUpdates(rules, "production", action),
 			"an unrecognised action must not grant %q", action)
 	}
 }
 
-func TestNormalizeBranchRules_OrdersAndDeduplicatesActions(t *testing.T) {
-	normalized, err := NormalizeBranchRules([]BranchRule{{
+func TestNormalizeUpdateRules_OrdersAndDeduplicatesActions(t *testing.T) {
+	normalized, err := NormalizeUpdateRules([]UpdateRule{{
 		Pattern: "staging",
-		Actions: []Action{ActionRollback, ActionRead, ActionRollback},
+		Actions: []UpdateAction{UpdateActionRollback, UpdateActionRead, UpdateActionRollback},
 	}})
 	require.NoError(t, err)
 	require.Len(t, normalized, 1)
-	assert.Equal(t, []Action{ActionRead, ActionRollback}, normalized[0].Actions)
+	assert.Equal(t, []UpdateAction{UpdateActionRead, UpdateActionRollback}, normalized[0].Actions)
 }
 
-func TestNormalizeBranchRules_Rejects(t *testing.T) {
-	tooMany := make([]BranchRule, maxBranchRules+1)
+func TestNormalizeUpdateRules_Rejects(t *testing.T) {
+	tooMany := make([]UpdateRule, maxUpdateRules+1)
 	for i := range tooMany {
-		tooMany[i] = BranchRule{Pattern: string(rune('a' + i%26)), Actions: []Action{ActionRead}}
+		tooMany[i] = UpdateRule{Pattern: string(rune('a' + i%26)), Actions: []UpdateAction{UpdateActionRead}}
 	}
 
-	cases := map[string][]BranchRule{
-		"empty pattern":     {{Pattern: "", Actions: []Action{ActionRead}}},
-		"path separator":    {{Pattern: "feature/x", Actions: []Action{ActionRead}}},
-		"control character": {{Pattern: "bad\nname", Actions: []Action{ActionRead}}},
+	cases := map[string][]UpdateRule{
+		"empty pattern":     {{Pattern: "", Actions: []UpdateAction{UpdateActionRead}}},
+		"path separator":    {{Pattern: "feature/x", Actions: []UpdateAction{UpdateActionRead}}},
+		"control character": {{Pattern: "bad\nname", Actions: []UpdateAction{UpdateActionRead}}},
 		"no action":         {{Pattern: "staging"}},
-		"unknown action":    {{Pattern: "staging", Actions: []Action{"delete"}}},
+		"unknown action":    {{Pattern: "staging", Actions: []UpdateAction{"delete"}}},
 		"duplicate pattern": {
-			{Pattern: "staging", Actions: []Action{ActionRead}},
-			{Pattern: "staging", Actions: []Action{ActionPublish}},
+			{Pattern: "staging", Actions: []UpdateAction{UpdateActionRead}},
+			{Pattern: "staging", Actions: []UpdateAction{UpdateActionPublish}},
 		},
 		"too many rules": tooMany,
 	}
 	for name, rules := range cases {
 		t.Run(name, func(t *testing.T) {
-			_, err := NormalizeBranchRules(rules)
+			_, err := NormalizeUpdateRules(rules)
 			require.Error(t, err)
 			// Must be a validation error so the handler answers 400.
 			assert.True(t, validation.IsValidationError(err))
@@ -132,34 +132,34 @@ func TestNormalizeBranchRules_Rejects(t *testing.T) {
 	}
 }
 
-func TestNormalizeBranchRules_AcceptsWildcards(t *testing.T) {
-	normalized, err := NormalizeBranchRules([]BranchRule{
-		{Pattern: "*", Actions: []Action{ActionRead}},
-		{Pattern: "pr-*", Actions: []Action{ActionPublish}},
+func TestNormalizeUpdateRules_AcceptsWildcards(t *testing.T) {
+	normalized, err := NormalizeUpdateRules([]UpdateRule{
+		{Pattern: "*", Actions: []UpdateAction{UpdateActionRead}},
+		{Pattern: "pr-*", Actions: []UpdateAction{UpdateActionPublish}},
 	})
 	require.NoError(t, err)
 	assert.Len(t, normalized, 2)
 }
 
 // "*" and "**" are the same set of branches, so they collapse to one rule.
-func TestNormalizeBranchRules_CollapsesWildcardRuns(t *testing.T) {
-	normalized, err := NormalizeBranchRules([]BranchRule{
-		{Pattern: "a**b", Actions: []Action{ActionRead}},
+func TestNormalizeUpdateRules_CollapsesWildcardRuns(t *testing.T) {
+	normalized, err := NormalizeUpdateRules([]UpdateRule{
+		{Pattern: "a**b", Actions: []UpdateAction{UpdateActionRead}},
 	})
 	require.NoError(t, err)
 	assert.Equal(t, "a*b", normalized[0].Pattern)
 
-	_, err = NormalizeBranchRules([]BranchRule{
-		{Pattern: "*", Actions: []Action{ActionRead}},
-		{Pattern: "***", Actions: []Action{ActionPublish}},
+	_, err = NormalizeUpdateRules([]UpdateRule{
+		{Pattern: "*", Actions: []UpdateAction{UpdateActionRead}},
+		{Pattern: "***", Actions: []UpdateAction{UpdateActionPublish}},
 	})
 	require.Error(t, err)
 	assert.True(t, validation.IsValidationError(err))
 }
 
-func TestDescribeBranchRules(t *testing.T) {
-	described := describeBranchRules([]BranchRule{
-		{Pattern: "pr-*", Actions: []Action{ActionRead, ActionPublish}},
+func TestDescribeUpdateRules(t *testing.T) {
+	described := describeUpdateRules([]UpdateRule{
+		{Pattern: "pr-*", Actions: []UpdateAction{UpdateActionRead, UpdateActionPublish}},
 	})
 	assert.Equal(t, []string{"pr-*:read+publish"}, described)
 }

@@ -750,22 +750,31 @@ export type CreateApiKeyResponse = {
 // an empty IP allowlist permits any source address. MIT ignores these restrictions.
 export type ApiKeyAccessRecord = {
   apiKeyId: string;
-  updates: { branchRules: BranchRuleRecord[] };
-  build: { actions: BuildAction[] };
+  updates: { rules: UpdateRuleRecord[] };
+  build: { rules: BuildRuleRecord[] };
+  submit: { rules: SubmitRuleRecord[] };
   allowedIps: string[];
 };
 
 export type BuildAction = 'read' | 'create' | 'cancel';
+export type BuildRuleRecord = { appIdentifierId: string; actions: BuildAction[] };
+export type SubmitAction = 'read' | 'upload' | 'review' | 'release';
+export type SubmitDestination = 'internal' | 'alpha' | 'beta' | 'production' | 'testflight' | 'app-store';
+export type SubmitRuleRecord = {
+  appIdentifierId: string;
+  destination: SubmitDestination;
+  actions: SubmitAction[];
+};
 
 // One rule: a branch name or a "*" pattern, and what the token may do there.
 // Both writes imply read on the server, so a rule granting publish also grants
 // the reads eoas performs before publishing.
-export type BranchRuleRecord = {
+export type UpdateRuleRecord = {
   pattern: string;
-  actions: BranchRuleAction[];
+  actions: UpdateAction[];
 };
 
-export type BranchRuleAction = 'read' | 'publish' | 'rollback';
+export type UpdateAction = 'read' | 'publish' | 'rollback';
 
 // A dashboard user account. `id` is empty in stateless mode, where the only
 // account comes from ADMIN_EMAIL and is not a database row. `lastConnectedAt`

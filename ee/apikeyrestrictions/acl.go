@@ -11,23 +11,23 @@ import (
 	"xprem/internal/validation"
 )
 
-// maxBranchRules bounds the number of rules a single API key may hold.
-const maxBranchRules = 50
+// maxUpdateRules bounds the number of rules a single API key may hold.
+const maxUpdateRules = 50
 
-// Action is what an Updates CLI request does to the branch it names.
-type Action string
+// UpdateAction is what an Updates CLI request does to the branch it names.
+type UpdateAction string
 
 const (
-	ActionRead     Action = "read"
-	ActionPublish  Action = "publish"
-	ActionRollback Action = "rollback"
+	UpdateActionRead     UpdateAction = "read"
+	UpdateActionPublish  UpdateAction = "publish"
+	UpdateActionRollback UpdateAction = "rollback"
 )
 
-// AllActions is the catalog, in increasing order of trust.
-var AllActions = []Action{ActionRead, ActionPublish, ActionRollback}
+// AllUpdateActions is the catalog, in increasing order of trust.
+var AllUpdateActions = []UpdateAction{UpdateActionRead, UpdateActionPublish, UpdateActionRollback}
 
-func IsValidAction(action string) bool {
-	for _, known := range AllActions {
+func IsValidUpdateAction(action string) bool {
+	for _, known := range AllUpdateActions {
 		if string(known) == action {
 			return true
 		}
@@ -35,25 +35,25 @@ func IsValidAction(action string) bool {
 	return false
 }
 
-// Implies reports whether granting a covers a request for b. ActionPublish and
-// ActionRollback both imply ActionRead, but ActionPublish does not imply
-// ActionRollback.
-func (a Action) Implies(b Action) bool {
+// Implies reports whether granting a covers a request for b. UpdateActionPublish and
+// UpdateActionRollback both imply UpdateActionRead, but UpdateActionPublish does not imply
+// UpdateActionRollback.
+func (a UpdateAction) Implies(b UpdateAction) bool {
 	if a == b {
 		return true
 	}
-	return b == ActionRead && (a == ActionPublish || a == ActionRollback)
+	return b == UpdateActionRead && (a == UpdateActionPublish || a == UpdateActionRollback)
 }
 
-// BranchRule grants a set of actions on every branch matching Pattern, where
+// UpdateRule grants a set of actions on every branch matching Pattern, where
 // "*" stands for any run of characters. An API key holding no rules has
 // no Updates access.
-type BranchRule struct {
-	Pattern string
-	Actions []Action
+type UpdateRule struct {
+	Pattern string         `json:"pattern"`
+	Actions []UpdateAction `json:"actions"`
 }
 
-func (rule BranchRule) Allows(branchName string, action Action) bool {
+func (rule UpdateRule) Allows(branchName string, action UpdateAction) bool {
 	if !matchBranchPattern(rule.Pattern, branchName) {
 		return false
 	}
@@ -65,8 +65,8 @@ func (rule BranchRule) Allows(branchName string, action Action) bool {
 	return false
 }
 
-// AllowsBranch requires an explicit grant and a nonempty Updates branch.
-func AllowsBranch(rules []BranchRule, branchName string, action Action) bool {
+// AllowsUpdates requires an explicit grant and a nonempty Updates branch.
+func AllowsUpdates(rules []UpdateRule, branchName string, action UpdateAction) bool {
 	if branchName == "" {
 		return false
 	}
@@ -78,13 +78,13 @@ func AllowsBranch(rules []BranchRule, branchName string, action Action) bool {
 	return false
 }
 
-// NormalizeBranchRules validates the given rules and returns the form to
+// NormalizeUpdateRules validates the given rules and returns the form to
 // persist, with actions deduplicated and reordered into catalog order.
-func NormalizeBranchRules(rules []BranchRule) ([]BranchRule, error) {
-	if len(rules) > maxBranchRules {
-		return nil, validation.Errorf("rules", "a key cannot hold more than %d access rules", maxBranchRules)
+func NormalizeUpdateRules(rules []UpdateRule) ([]UpdateRule, error) {
+	if len(rules) > maxUpdateRules {
+		return nil, validation.Errorf("rules", "a key cannot hold more than %d access rules", maxUpdateRules)
 	}
-	normalized := make([]BranchRule, 0, len(rules))
+	normalized := make([]UpdateRule, 0, len(rules))
 	seen := make(map[string]struct{}, len(rules))
 	for _, rule := range rules {
 		if err := validation.NamePattern("pattern", rule.Pattern); err != nil {
@@ -97,11 +97,11 @@ func NormalizeBranchRules(rules []BranchRule) ([]BranchRule, error) {
 			return nil, validation.Errorf("pattern", "%q appears in more than one rule; merge them into one", pattern)
 		}
 		seen[pattern] = struct{}{}
-		actions, err := normalizeActions(pattern, rule.Actions)
+		actions, err := normalizeUpdateActions(pattern, rule.Actions)
 		if err != nil {
 			return nil, err
 		}
-		normalized = append(normalized, BranchRule{Pattern: pattern, Actions: actions})
+		normalized = append(normalized, UpdateRule{Pattern: pattern, Actions: actions})
 	}
 	return normalized, nil
 }
@@ -111,10 +111,10 @@ func collapseWildcards(pattern string) string {
 	return branch.CollapseWildcards(pattern)
 }
 
-func normalizeActions(pattern string, actions []Action) ([]Action, error) {
-	granted := make(map[Action]struct{}, len(actions))
+func normalizeUpdateActions(pattern string, actions []UpdateAction) ([]UpdateAction, error) {
+	granted := make(map[UpdateAction]struct{}, len(actions))
 	for _, action := range actions {
-		if !IsValidAction(string(action)) {
+		if !IsValidUpdateAction(string(action)) {
 			return nil, validation.Errorf("actions", "unknown action %q on rule %q", string(action), pattern)
 		}
 		granted[action] = struct{}{}
@@ -122,8 +122,8 @@ func normalizeActions(pattern string, actions []Action) ([]Action, error) {
 	if len(granted) == 0 {
 		return nil, validation.Errorf("actions", "rule %q grants no action; delete the rule instead", pattern)
 	}
-	ordered := make([]Action, 0, len(granted))
-	for _, action := range AllActions {
+	ordered := make([]UpdateAction, 0, len(granted))
+	for _, action := range AllUpdateActions {
 		if _, ok := granted[action]; ok {
 			ordered = append(ordered, action)
 		}
@@ -137,8 +137,8 @@ func matchBranchPattern(pattern, name string) bool {
 	return branch.MatchPattern(pattern, name)
 }
 
-// describeBranchRules renders a rule list for the audit trail.
-func describeBranchRules(rules []BranchRule) []string {
+// describeUpdateRules renders a rule list for the audit trail.
+func describeUpdateRules(rules []UpdateRule) []string {
 	described := make([]string, 0, len(rules))
 	for _, rule := range rules {
 		actions := make([]string, 0, len(rule.Actions))

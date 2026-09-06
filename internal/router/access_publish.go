@@ -19,8 +19,8 @@ type publishGroup struct {
 	apiKeyAccess cliAccessPolicy
 }
 
-func (g publishGroup) route(method, path string, handler http.HandlerFunc, action apikeyrestrictions.Action) {
-	if !apikeyrestrictions.IsValidAction(string(action)) {
+func (g publishGroup) route(method, path string, handler http.HandlerFunc, action apikeyrestrictions.UpdateAction) {
+	if !apikeyrestrictions.IsValidUpdateAction(string(action)) {
 		panic("router: " + method + " " + path + " was registered with an unknown action " + string(action))
 	}
 	if !strings.Contains(path, branchVar) {
@@ -37,7 +37,7 @@ func (g publishGroup) uploadTokenRoute(method, path string, handler http.Handler
 		panic("router: " + method + " " + path + " names a " + branchVar +
 			", so it must be registered with route(), which judges that branch rather than a token claim")
 	}
-	g.router.Handle(path, g.guard(apikeyrestrictions.ActionPublish, uploadTokenBranch)(handler)).Methods(method)
+	g.router.Handle(path, g.guard(apikeyrestrictions.UpdateActionPublish, uploadTokenBranch)(handler)).Methods(method)
 }
 
 // branchResolver answers which branch a request acts on.
@@ -58,7 +58,7 @@ func uploadTokenBranch(r *http.Request) string {
 	return branchName
 }
 
-func (g publishGroup) guard(action apikeyrestrictions.Action, resolveBranch branchResolver) mux.MiddlewareFunc {
+func (g publishGroup) guard(action apikeyrestrictions.UpdateAction, resolveBranch branchResolver) mux.MiddlewareFunc {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			credential, err := g.cliAuth.AuthenticateCliCredential(r.Context(), mux.Vars(r)["APP_ID"], helpers.GetAuth(r))

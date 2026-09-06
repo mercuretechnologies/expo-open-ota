@@ -16,7 +16,7 @@ import (
 // token may reach it, and what a member needs when RBAC is enforced or not.
 type AppAccess struct {
 	token       bool
-	tokenAction apikeyrestrictions.Action
+	tokenAction apikeyrestrictions.UpdateAction
 	perm        rbac.Permission
 	fallback    rbac.Fallback
 	// declared distinguishes a real declaration from the zero value.
@@ -30,8 +30,8 @@ func AnyViewer() AppAccess {
 
 // AnyViewerOrToken is AnyViewer, plus a publishing credential authorized for
 // action on the route's {BRANCH}.
-func AnyViewerOrToken(action apikeyrestrictions.Action) AppAccess {
-	if !apikeyrestrictions.IsValidAction(string(action)) {
+func AnyViewerOrToken(action apikeyrestrictions.UpdateAction) AppAccess {
+	if !apikeyrestrictions.IsValidUpdateAction(string(action)) {
 		panic("router: AnyViewerOrToken called with an unknown action " + string(action))
 	}
 	return AppAccess{declared: true, perm: rbac.NoPermission, token: true, tokenAction: action}

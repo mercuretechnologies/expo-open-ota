@@ -70,7 +70,7 @@ func mustAddr(t *testing.T, value string) netip.Addr {
 // publish is the request most tests are about; the fields that vary are set
 // by the caller.
 func publishOn(branchName string) CliRequest {
-	return CliRequest{AppID: "app", APIKeyID: 1, Branch: branchName, Action: ActionPublish}
+	return CliRequest{AppID: "app", APIKeyID: 1, Branch: branchName, Action: UpdateActionPublish}
 }
 
 func TestStatelessModeAnswersControlPlaneError(t *testing.T) {
@@ -78,7 +78,7 @@ func TestStatelessModeAnswersControlPlaneError(t *testing.T) {
 	if _, err := service.GetAccessByApp(context.Background(), "app"); !errors.Is(err, ErrRequiresControlPlane) {
 		t.Fatalf("expected ErrRequiresControlPlane, got %v", err)
 	}
-	if err := service.SetAccess(context.Background(), "app", 1, nil, nil, nil); !errors.Is(err, ErrRequiresControlPlane) {
+	if err := service.SetAccess(context.Background(), "app", 1, nil, nil, nil, nil); !errors.Is(err, ErrRequiresControlPlane) {
 		t.Fatalf("expected ErrRequiresControlPlane, got %v", err)
 	}
 	// Enforcement is a no-op in stateless mode, never an error.
@@ -90,7 +90,7 @@ func TestStatelessModeAnswersControlPlaneError(t *testing.T) {
 func TestMutationsRequireValidLicense(t *testing.T) {
 	repo := &fakeAccessRepo{}
 	service := serviceWith(repo, false)
-	if err := service.SetAccess(context.Background(), "app", 1, nil, nil, nil); !errors.Is(err, ErrRequiresValidLicense) {
+	if err := service.SetAccess(context.Background(), "app", 1, nil, nil, nil, nil); !errors.Is(err, ErrRequiresValidLicense) {
 		t.Fatalf("expected ErrRequiresValidLicense, got %v", err)
 	}
 	if repo.setCalls != 0 {
@@ -116,9 +116,9 @@ func TestSetAccessPersistsNormalizedInput(t *testing.T) {
 	repo := &fakeAccessRepo{}
 	service := serviceWith(repo, true)
 	err := service.SetAccess(context.Background(), "app", 1,
-		[]BranchRule{{Pattern: "staging", Actions: []Action{ActionRollback, ActionRead}}},
+		[]UpdateRule{{Pattern: "staging", Actions: []UpdateAction{UpdateActionRollback, UpdateActionRead}}},
 		[]string{"192.168.1.5/24", "::ffff:10.1.2.3"}, nil,
-	)
+		nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -130,9 +130,9 @@ func TestSetAccessPersistsNormalizedInput(t *testing.T) {
 		t.Fatalf("unexpected allowed ips: %v", repo.setAccess.AllowedIps)
 	}
 	// Actions come back in catalog order, whatever order they were sent in.
-	expectedRules := []BranchRule{{Pattern: "staging", Actions: []Action{ActionRead, ActionRollback}}}
-	if !reflect.DeepEqual(repo.setAccess.BranchRules, expectedRules) {
-		t.Fatalf("unexpected rules: %+v", repo.setAccess.BranchRules)
+	expectedRules := []UpdateRule{{Pattern: "staging", Actions: []UpdateAction{UpdateActionRead, UpdateActionRollback}}}
+	if !reflect.DeepEqual(repo.setAccess.UpdateRules, expectedRules) {
+		t.Fatalf("unexpected rules: %+v", repo.setAccess.UpdateRules)
 	}
 }
 
@@ -140,13 +140,13 @@ func TestSetAccessRejectsInvalidInput(t *testing.T) {
 	repo := &fakeAccessRepo{}
 	service := serviceWith(repo, true)
 
-	err := service.SetAccess(context.Background(), "app", 1, nil, []string{"not-an-ip"}, nil)
+	err := service.SetAccess(context.Background(), "app", 1, nil, []string{"not-an-ip"}, nil, nil)
 	if !errors.Is(err, ErrInvalidCidr) {
 		t.Fatalf("expected ErrInvalidCidr, got %v", err)
 	}
 	// A malformed rule must also surface as a validation error, not a 500.
 	err = service.SetAccess(context.Background(), "app", 1,
-		[]BranchRule{{Pattern: "feature/x", Actions: []Action{ActionRead}}}, nil, nil)
+		[]UpdateRule{{Pattern: "feature/x", Actions: []UpdateAction{UpdateActionRead}}}, nil, nil, nil)
 	if !validation.IsValidationError(err) {
 		t.Fatalf("expected a validation error, got %v", err)
 	}
@@ -159,7 +159,7 @@ func TestSetAccessRejectsInvalidInput(t *testing.T) {
 func TestSetAccessEmptyAllowlistIsNil(t *testing.T) {
 	repo := &fakeAccessRepo{}
 	service := serviceWith(repo, true)
-	if err := service.SetAccess(context.Background(), "app", 1, nil, []string{"", "  "}, nil); err != nil {
+	if err := service.SetAccess(context.Background(), "app", 1, nil, []string{"", "  "}, nil, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if repo.setAccess.AllowedIps != nil {
@@ -171,7 +171,7 @@ func TestAuthorizeEnforcesIpAllowlist(t *testing.T) {
 	repo := &fakeAccessRepo{
 		access: map[int64]ApiKeyAccess{1: {
 			ApiKeyID:    1,
-			BranchRules: []BranchRule{{Pattern: "*", Actions: AllActions}},
+			UpdateRules: []UpdateRule{{Pattern: "*", Actions: AllUpdateActions}},
 			AllowedIps:  []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8")},
 		}},
 	}
@@ -212,12 +212,12 @@ func TestAuthorizeMatchesAllowlistEnteredInMappedForm(t *testing.T) {
 	service := serviceWith(repo, true)
 	err := service.SetAccess(context.Background(), "app", 1, nil,
 		[]string{"::ffff:203.0.113.7", "::ffff:10.0.0.0/104"}, nil,
-	)
+		nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	// The fake repo does not wire Set to Get, so feed the stored prefixes back manually.
-	repo.access[1] = ApiKeyAccess{ApiKeyID: 1, AllowedIps: repo.setAccess.AllowedIps, BranchRules: []BranchRule{{Pattern: "*", Actions: AllActions}}}
+	repo.access[1] = ApiKeyAccess{ApiKeyID: 1, AllowedIps: repo.setAccess.AllowedIps, UpdateRules: []UpdateRule{{Pattern: "*", Actions: AllUpdateActions}}}
 
 	for _, caller := range []string{"203.0.113.7", "::ffff:203.0.113.7", "10.20.30.40"} {
 		request := publishOn("main")
@@ -239,7 +239,7 @@ func TestAuthorizeMatchesAllowlistEnteredInMappedForm(t *testing.T) {
 func TestAuthorizeDeniesEverythingWithoutRules(t *testing.T) {
 	repo := &fakeAccessRepo{access: map[int64]ApiKeyAccess{1: {ApiKeyID: 1}}}
 	service := serviceWith(repo, true)
-	for _, action := range AllActions {
+	for _, action := range AllUpdateActions {
 		request := publishOn("production")
 		request.Action = action
 		if err := service.Authorize(context.Background(), request); !errors.Is(err, services.ErrCliAccessDenied) {
@@ -248,13 +248,13 @@ func TestAuthorizeDeniesEverythingWithoutRules(t *testing.T) {
 	}
 }
 
-func TestAuthorizeEnforcesBranchRules(t *testing.T) {
+func TestAuthorizeEnforcesUpdateRules(t *testing.T) {
 	repo := &fakeAccessRepo{
 		access: map[int64]ApiKeyAccess{1: {
 			ApiKeyID: 1,
-			BranchRules: []BranchRule{
-				{Pattern: "production", Actions: []Action{ActionRead}},
-				{Pattern: "pr-*", Actions: []Action{ActionPublish}},
+			UpdateRules: []UpdateRule{
+				{Pattern: "production", Actions: []UpdateAction{UpdateActionRead}},
+				{Pattern: "pr-*", Actions: []UpdateAction{UpdateActionPublish}},
 			},
 		}},
 	}
@@ -278,7 +278,7 @@ func TestAuthorizeEnforcesBranchRules(t *testing.T) {
 	}
 	// Reading production is granted by the rule.
 	read := publishOn("production")
-	read.Action = ActionRead
+	read.Action = UpdateActionRead
 	if err := service.Authorize(context.Background(), read); err != nil {
 		t.Fatalf("unexpected error on a granted read: %v", err)
 	}
@@ -288,7 +288,7 @@ func TestAuthorizeEnforcesBranchRules(t *testing.T) {
 func TestAuthorizeRefusesBranchlessRequestForScopedKey(t *testing.T) {
 	repo := &fakeAccessRepo{
 		access: map[int64]ApiKeyAccess{
-			1: {ApiKeyID: 1, BranchRules: []BranchRule{{Pattern: "*", Actions: []Action{ActionPublish}}}},
+			1: {ApiKeyID: 1, UpdateRules: []UpdateRule{{Pattern: "*", Actions: []UpdateAction{UpdateActionPublish}}}},
 			2: {ApiKeyID: 2},
 		},
 	}
@@ -310,8 +310,8 @@ func TestAuthorizeIsNoOpWithoutValidLicense(t *testing.T) {
 		access: map[int64]ApiKeyAccess{1: {
 			ApiKeyID:   1,
 			AllowedIps: []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8")},
-			BranchRules: []BranchRule{
-				{Pattern: "staging", Actions: []Action{ActionRead}},
+			UpdateRules: []UpdateRule{
+				{Pattern: "staging", Actions: []UpdateAction{UpdateActionRead}},
 			},
 		}},
 	}

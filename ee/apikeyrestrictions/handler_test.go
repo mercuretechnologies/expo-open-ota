@@ -18,17 +18,21 @@ import (
 // The management API replaces a whole policy. Old or partial payloads must
 // never silently erase permissions when a dashboard stays open across deploys.
 func TestAccessPayloadRoundTrip(t *testing.T) {
-	const policy = `{"updates":{"branchRules":[{"pattern":"staging","actions":["publish"]}]},"build":{"actions":[]},"allowedIps":[]}`
+	const policy = `{"updates":{"rules":[{"pattern":"staging","actions":["publish"]}]},"build":{"rules":[]},"submit":{"rules":[]},"allowedIps":[]}`
 	cases := []struct {
 		name, body string
 		status     int
 	}{
 		{"explicit policy", policy, http.StatusNoContent},
-		{"no access", `{"updates":{"branchRules":[]},"build":{"actions":[]},"allowedIps":[]}`, http.StatusNoContent},
+		{"native policy", `{"updates":{"rules":[]},"build":{"rules":[{"appIdentifierId":"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa","actions":["create"]}]},"submit":{"rules":[{"appIdentifierId":"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa","destination":"internal","actions":["upload"]}]},"allowedIps":[]}`, http.StatusNoContent},
+		{"previous flat build shape", `{"updates":{"branchRules":[]},"build":{"actions":["create"]},"allowedIps":[]}`, http.StatusBadRequest},
+		{"missing submit", `{"updates":{"rules":[]},"build":{"rules":[]},"allowedIps":[]}`, http.StatusBadRequest},
+		{"null submit", `{"updates":{"rules":[]},"build":{"rules":[]},"submit":{"rules":null},"allowedIps":[]}`, http.StatusBadRequest},
+		{"no access", `{"updates":{"rules":[]},"build":{"rules":[]},"submit":{"rules":[]},"allowedIps":[]}`, http.StatusNoContent},
 		{"old shape", `{"branchRules":[],"allowedIps":[]}`, http.StatusBadRequest},
-		{"missing group", `{"updates":{"branchRules":[]},"allowedIps":[]}`, http.StatusBadRequest},
-		{"missing rules", `{"updates":{},"build":{"actions":[]},"allowedIps":[]}`, http.StatusBadRequest},
-		{"null actions", `{"updates":{"branchRules":[]},"build":{"actions":null},"allowedIps":[]}`, http.StatusBadRequest},
+		{"missing group", `{"updates":{"rules":[]},"allowedIps":[]}`, http.StatusBadRequest},
+		{"missing rules", `{"updates":{},"build":{"rules":[]},"submit":{"rules":[]},"allowedIps":[]}`, http.StatusBadRequest},
+		{"null actions", `{"updates":{"rules":[]},"build":{"rules":null},"submit":{"rules":[]},"allowedIps":[]}`, http.StatusBadRequest},
 		{"unknown action", strings.Replace(policy, `"publish"`, `"create"`, 1), http.StatusBadRequest},
 		{"trailing payload", policy + `{}`, http.StatusBadRequest},
 	}

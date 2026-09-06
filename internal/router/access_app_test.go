@@ -59,7 +59,7 @@ func TestTokenRouteMustNameABranch(t *testing.T) {
 			}()
 			group := appGroup{router: mux.NewRouter(), apiKeyAccess: &recordingPolicy{}}
 			group.route(http.MethodGet, path, func(http.ResponseWriter, *http.Request) {},
-				AnyViewerOrToken(apikeyrestrictions.ActionRead))
+				AnyViewerOrToken(apikeyrestrictions.UpdateActionRead))
 		})
 	}
 }
@@ -83,7 +83,7 @@ func TestTokenRouteAsksThePolicyWithItsBranchAndAction(t *testing.T) {
 	policy := &recordingPolicy{}
 	w, credential := serveTokenRequest(t, "/branch/{BRANCH}/runtimeVersions",
 		"/apps/app-1/branch/production/runtimeVersions",
-		AnyViewerOrToken(apikeyrestrictions.ActionRead), policy)
+		AnyViewerOrToken(apikeyrestrictions.UpdateActionRead), policy)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
@@ -95,7 +95,7 @@ func TestTokenRouteAsksThePolicyWithItsBranchAndAction(t *testing.T) {
 	if request.Branch != "production" {
 		t.Fatalf("expected the route's branch, got %q", request.Branch)
 	}
-	if request.Action != apikeyrestrictions.ActionRead {
+	if request.Action != apikeyrestrictions.UpdateActionRead {
 		t.Fatalf("expected the route's action, got %q", request.Action)
 	}
 	if request.APIKeyID != 42 || request.AppID != "app-1" {
@@ -110,7 +110,7 @@ func TestTokenRouteRefusesWhatThePolicyDenies(t *testing.T) {
 	policy := &recordingPolicy{deny: services.ErrCliAccessDenied}
 	w, _ := serveTokenRequest(t, "/branch/{BRANCH}/runtimeVersions",
 		"/apps/app-1/branch/production/runtimeVersions",
-		AnyViewerOrToken(apikeyrestrictions.ActionRead), policy)
+		AnyViewerOrToken(apikeyrestrictions.UpdateActionRead), policy)
 
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("expected 403, got %d", w.Code)
@@ -125,7 +125,7 @@ func TestStatelessCredentialSkipsThePolicy(t *testing.T) {
 	group := appGroup{router: router.PathPrefix("/apps/{APP_ID}").Subrouter(), apiKeyAccess: policy}
 	group.route(http.MethodGet, "/branch/{BRANCH}/runtimeVersions", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-	}, AnyViewerOrToken(apikeyrestrictions.ActionRead))
+	}, AnyViewerOrToken(apikeyrestrictions.UpdateActionRead))
 
 	r := httptest.NewRequest(http.MethodGet, "/apps/app-1/branch/production/runtimeVersions", nil)
 	r = r.WithContext(services.WithCliAuth(r.Context(), services.CliCredential{AppID: "app-1"}))

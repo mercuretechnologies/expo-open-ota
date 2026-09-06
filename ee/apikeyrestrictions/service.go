@@ -15,14 +15,14 @@ import (
 	"xprem/internal/services"
 )
 
-// ApiKeyAccess is everything one API key is allowed to do: the branches it
-// reaches, what it may do there, and the source networks it may be used from.
-// Empty BranchRules or BuildActions grants no access to that domain.
+// ApiKeyAccess contains per-domain permissions and permitted source networks.
+// Empty rule lists grant no access to that domain.
 type ApiKeyAccess struct {
-	ApiKeyID     int64
-	AllowedIps   []netip.Prefix
-	BranchRules  []BranchRule
-	BuildActions []BuildAction
+	ApiKeyID    int64
+	AllowedIps  []netip.Prefix
+	UpdateRules []UpdateRule
+	BuildRules  []BuildRule
+	SubmitRules []SubmitRule
 }
 
 // CliRequest is one authenticated CLI request, in the terms the access
@@ -31,7 +31,7 @@ type CliRequest struct {
 	AppID    string
 	APIKeyID int64
 	Branch   string
-	Action   Action
+	Action   UpdateAction
 	ClientIP netip.Addr
 }
 
@@ -58,7 +58,7 @@ var (
 
 // deniedError names both the branch and the action so the caller does not
 // have to guess which one failed.
-func deniedError(action Action, branchName string) error {
+func deniedError(action UpdateAction, branchName string) error {
 	return fmt.Errorf("%w: this API key is not allowed to %s on branch %q", services.ErrCliAccessDenied, action, branchName)
 }
 
@@ -104,8 +104,8 @@ func (s *ApiKeyAccessService) GetAccessByApp(ctx context.Context, appID string) 
 
 // SetAccess replaces what one API key is allowed to do. CIDR entries are
 // normalized to satisfy the postgres cidr column, and rules are validated and
-// reordered by NormalizeBranchRules.
-func (s *ApiKeyAccessService) SetAccess(ctx context.Context, appID string, apiKeyID int64, rules []BranchRule, cidrs []string, buildActions []BuildAction) error {
+// reordered by NormalizeUpdateRules.
+func (s *ApiKeyAccessService) SetAccess(ctx context.Context, appID string, apiKeyID int64, rules []UpdateRule, cidrs []string, buildRules []BuildRule, submitRules []SubmitRule) error {
 	if s.repo == nil {
 		return ErrRequiresControlPlane
 	}
@@ -116,19 +116,24 @@ func (s *ApiKeyAccessService) SetAccess(ctx context.Context, appID string, apiKe
 	if err != nil {
 		return err
 	}
-	normalizedRules, err := NormalizeBranchRules(rules)
+	normalizedRules, err := NormalizeUpdateRules(rules)
 	if err != nil {
 		return err
 	}
-	normalizedBuild, err := normalizeBuildActions(buildActions)
+	normalizedBuild, err := normalizeBuildRules(buildRules)
+	if err != nil {
+		return err
+	}
+	normalizedSubmit, err := normalizeSubmitRules(submitRules)
 	if err != nil {
 		return err
 	}
 	access := ApiKeyAccess{
-		ApiKeyID:     apiKeyID,
-		AllowedIps:   allowedIps,
-		BranchRules:  normalizedRules,
-		BuildActions: normalizedBuild,
+		ApiKeyID:    apiKeyID,
+		AllowedIps:  allowedIps,
+		UpdateRules: normalizedRules,
+		BuildRules:  normalizedBuild,
+		SubmitRules: normalizedSubmit,
 	}
 	if err := s.repo.SetAccess(ctx, appID, access); err != nil {
 		return err
@@ -149,8 +154,9 @@ func (s *ApiKeyAccessService) SetAccess(ctx context.Context, appID string, apiKe
 	s.recordAccessEvent(ctx, auditlog.ActionAPIKeyRestrictionsUpdated,
 		"api_key", strconv.FormatInt(apiKeyID, 10), targetDisplay, appID,
 		map[string]any{
-			"branch_rules":  describeBranchRules(normalizedRules),
-			"build_actions": normalizedBuild,
+			"update_rules":  describeUpdateRules(normalizedRules),
+			"build_rules":   normalizedBuild,
+			"submit_rules":  normalizedSubmit,
 			"allowed_cidrs": normalizedCidrs,
 		})
 	return nil
@@ -169,7 +175,7 @@ func (s *ApiKeyAccessService) Authorize(ctx context.Context, req CliRequest) err
 	if len(access.AllowedIps) > 0 && !ipAllowed(req.ClientIP, access.AllowedIps) {
 		return ipNotAllowedError(req.ClientIP)
 	}
-	if !AllowsBranch(access.BranchRules, req.Branch, req.Action) {
+	if !AllowsUpdates(access.UpdateRules, req.Branch, req.Action) {
 		return deniedError(req.Action, req.Branch)
 	}
 	// A rule that admits a branch name also admits creating that branch via publish.

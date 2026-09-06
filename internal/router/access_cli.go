@@ -15,7 +15,7 @@ func authorizeCliRequest(
 	w http.ResponseWriter,
 	r *http.Request,
 	credential services.CliCredential,
-	action apikeyrestrictions.Action,
+	action apikeyrestrictions.UpdateAction,
 	branchName string,
 ) bool {
 	if branchName == "" {

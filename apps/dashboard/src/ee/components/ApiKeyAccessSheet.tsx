@@ -10,9 +10,14 @@ import {
   api,
   ApiKeyRecord,
   ApiKeyAccessRecord,
-  BranchRuleAction,
+  UpdateAction,
   BuildAction,
-  BranchRuleRecord,
+  BuildRuleRecord,
+  SubmitRuleRecord,
+  SubmitAction,
+  SubmitDestination,
+  AppIdentifier,
+  UpdateRuleRecord,
   describeApiError,
 } from '@/lib/api';
 import { useSelectedApp } from '@/lib/SelectedAppContext';
@@ -53,7 +58,7 @@ export const ApiKeyAccessSheet = ({
         <SheetHeader>
           <SheetTitle>Token access</SheetTitle>
           <SheetDescription>
-            Choose what “{apiKey?.name}” can do in Updates and Build.
+            Choose what “{apiKey?.name}” can do in Updates, Build and Submit.
           </SheetDescription>
         </SheetHeader>
         <div className="mt-6">
@@ -90,7 +95,7 @@ export const ApiKeyAccessSheet = ({
   );
 };
 
-const ACTION_LABELS: { value: BranchRuleAction; label: string; hint: string }[] = [
+const ACTION_LABELS: { value: UpdateAction; label: string; hint: string }[] = [
   { value: 'read', label: 'Read', hint: 'List runtime versions and shipped updates' },
   { value: 'publish', label: 'Publish', hint: 'Ship a new update' },
   { value: 'rollback', label: 'Rollback', hint: 'Roll back, and republish a past update' },
@@ -122,7 +127,7 @@ const AccessForm = ({
   });
   const branches = (branchesQuery.data ?? []).map(branch => branch.branchName);
 
-  const initialRules = initialAccess?.updates.branchRules ?? [];
+  const initialRules = initialAccess?.updates.rules ?? [];
   const [updatesMode, setUpdatesMode] = useState<'none' | 'all' | 'custom'>(
     initialRules.length === 0
       ? 'none'
@@ -135,21 +140,25 @@ const AccessForm = ({
         ? 'all'
         : 'custom'
   );
-  const [rules, setRules] = useState<BranchRuleRecord[]>(initialRules);
-  const [buildActions, setBuildActions] = useState<BuildAction[]>(
-    initialAccess?.build.actions ?? []
-  );
+  const [rules, setRules] = useState<UpdateRuleRecord[]>(initialRules);
+  const [buildRules, setBuildRules] = useState<BuildRuleRecord[]>(initialAccess?.build.rules ?? []);
+  const [submitRules, setSubmitRules] = useState<SubmitRuleRecord[]>(initialAccess?.submit.rules ?? []);
+  const identifiersQuery = useQuery({
+    queryKey: ['identifiers', selectedAppId],
+    queryFn: () => api.getAppIdentifiers(),
+    enabled: !!selectedAppId,
+  });
   const [allowedIpsText, setAllowedIpsText] = useState(
     (initialAccess?.allowedIps ?? []).join('\n')
   );
   const [error, setError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
 
-  const updateRule = (index: number, patch: Partial<BranchRuleRecord>) => {
+  const updateRule = (index: number, patch: Partial<UpdateRuleRecord>) => {
     setRules(current => current.map((rule, i) => (i === index ? { ...rule, ...patch } : rule)));
   };
 
-  const toggleAction = (index: number, action: BranchRuleAction) => {
+  const toggleAction = (index: number, action: UpdateAction) => {
     const rule = rules[index];
     const next = rule.actions.includes(action)
       ? rule.actions.filter(granted => granted !== action)
@@ -160,6 +169,15 @@ const AccessForm = ({
   // Checked client-side so the operator sees the problem next to the field
   // rather than as a toast carrying the server's version of it.
   const validate = (): string | null => {
+    for (const [domain, entries] of [['Build', buildRules], ['Submit', submitRules]] as const) {
+      const seen = new Set<string>();
+      for (const rule of entries) {
+        if (!rule.appIdentifierId || !rule.actions.length) return `${domain}: choose an identifier and at least one action.`;
+        const key = rule.appIdentifierId + ('destination' in rule ? ':' + rule.destination : '');
+        if (seen.has(key)) return `${domain}: merge duplicate rules.`;
+        seen.add(key);
+      }
+    }
     if (updatesMode !== 'custom') return null;
     if (rules.length === 0) return 'Add at least one rule, or choose No access.';
     const seen = new Set<string>();
@@ -194,14 +212,15 @@ const AccessForm = ({
         .filter(Boolean);
       await api.setApiKeyAccess(apiKey.id, {
         updates: {
-          branchRules:
+          rules:
             updatesMode === 'all'
               ? [{ pattern: '*', actions: ['read', 'publish', 'rollback'] }]
               : updatesMode === 'custom'
                 ? rules.map(rule => ({ ...rule, pattern: rule.pattern.trim() }))
                 : [],
         },
-        build: { actions: buildActions },
+        build: { rules: buildRules },
+        submit: { rules: submitRules },
         allowedIps,
       });
       queryClient.invalidateQueries({ queryKey: ['apiKeyAccess', selectedAppId] });
@@ -314,46 +333,23 @@ const AccessForm = ({
         </div>
       )}
 
-      <div className="space-y-2">
-        <p className="text-sm font-medium">Build</p>
-        <p className="text-xs text-muted-foreground">
-          Applies to builds in this app, independently of Updates. Leave all actions off for no
-          access.
-        </p>
-        <div className="flex flex-wrap gap-1.5">
-          {BUILD_ACTION_LABELS.map(action => {
-            const impliedRead =
-              action.value === 'read' &&
-              (buildActions.includes('create') || buildActions.includes('cancel'));
-            const granted = buildActions.includes(action.value) || impliedRead;
-            return (
-              <button
-                key={action.value}
-                type="button"
-                title={action.hint}
-                aria-pressed={granted}
-                disabled={isSaving || impliedRead}
-                onClick={() =>
-                  setBuildActions(current =>
-                    current.includes(action.value)
-                      ? current.filter(value => value !== action.value)
-                      : [...current, action.value]
-                  )
-                }
-                className={cn(
-                  'rounded-md border px-2.5 py-1 text-xs font-medium transition-colors',
-                  granted
-                    ? 'border-primary/40 bg-primary/10 text-primary'
-                    : 'text-muted-foreground hover:bg-muted/50',
-                  impliedRead && 'cursor-default opacity-80'
-                )}>
-                {action.label}
-                {impliedRead && ' (implied)'}
-              </button>
-            );
-          })}
+      {identifiersQuery.isError ? (
+        <div className="space-y-2 text-sm text-destructive">
+          <p>Could not load app identifiers.</p>
+          <Button variant="outline" onClick={() => identifiersQuery.refetch()}>Try again</Button>
         </div>
-      </div>
+      ) : identifiersQuery.isLoading ? <Skeleton className="h-24 w-full" /> : (
+        <>
+          <NativeRulesEditor
+            domain="Build" identifiers={identifiersQuery.data ?? []}
+            rules={buildRules} onChange={setBuildRules} disabled={isSaving}
+          />
+          <NativeRulesEditor
+            domain="Submit" identifiers={identifiersQuery.data ?? []}
+            rules={submitRules} onChange={setSubmitRules} disabled={isSaving}
+          />
+        </>
+      )}
 
       <div className="space-y-2">
         <p className="text-sm font-medium">IP allowlist</p>
@@ -375,7 +371,7 @@ const AccessForm = ({
       {error && <p className="text-sm text-destructive">{error}</p>}
 
       <div className="flex justify-end">
-        <Button onClick={handleSave} disabled={isSaving}>
+        <Button onClick={handleSave} disabled={isSaving || identifiersQuery.isLoading || identifiersQuery.isError}>
           {isSaving ? 'Saving…' : 'Save access'}
         </Button>
       </div>
@@ -405,3 +401,114 @@ const ScopeChoice = ({
     <span className="mt-0.5 block text-xs text-muted-foreground">{description}</span>
   </button>
 );
+
+const SUBMIT_DESTINATIONS: Record<string, { value: SubmitDestination; label: string }[]> = {
+  android: [
+    { value: 'internal', label: 'Internal testing' },
+    { value: 'alpha', label: 'Alpha testing' },
+    { value: 'beta', label: 'Beta testing' },
+    { value: 'production', label: 'Production' },
+  ],
+  ios: [
+    { value: 'testflight', label: 'TestFlight' },
+    { value: 'app-store', label: 'App Store production' },
+  ],
+};
+
+const SUBMIT_ACTION_LABELS: { value: SubmitAction; label: string; hint: string }[] = [
+  { value: 'read', label: 'Read', hint: 'View submissions for this destination' },
+  { value: 'upload', label: 'Upload', hint: 'Upload a binary without releasing it' },
+  { value: 'review', label: 'Request review', hint: 'Send to Apple for review; does not grant release permission' },
+  { value: 'release', label: 'Release', hint: 'Distribute to testers or users in this destination' },
+];
+
+type NativeEditorProps = {
+  identifiers: AppIdentifier[];
+  disabled: boolean;
+} & (
+  | { domain: 'Build'; rules: BuildRuleRecord[]; onChange: (rules: BuildRuleRecord[]) => void }
+  | { domain: 'Submit'; rules: SubmitRuleRecord[]; onChange: (rules: SubmitRuleRecord[]) => void }
+);
+
+const NativeRulesEditor = (props: NativeEditorProps) => {
+  const { domain, identifiers, disabled, rules } = props;
+  const update = (index: number, next: BuildRuleRecord | SubmitRuleRecord) => {
+    if (props.domain === 'Build') {
+      props.onChange(props.rules.map((rule, i) => i === index ? next as BuildRuleRecord : rule));
+    } else {
+      props.onChange(props.rules.map((rule, i) => i === index ? next as SubmitRuleRecord : rule));
+    }
+  };
+  return (
+    <div className="space-y-3">
+      <p className="text-sm font-medium">{domain}</p>
+      <p className="text-xs text-muted-foreground">
+        {domain === 'Build'
+          ? 'Allow builds only for the identifiers listed, with any build profile.'
+          : 'Allow submission actions only for the identifiers and destinations listed. Upload does not grant release permission.'}
+        {' '}An empty list grants no access.
+      </p>
+      {rules.map((rule, index) => {
+        const identifier = identifiers.find(item => item.id === rule.appIdentifierId);
+        const destination = 'destination' in rule ? rule.destination : undefined;
+        const actions = domain === 'Build' ? BUILD_ACTION_LABELS : SUBMIT_ACTION_LABELS.filter(action =>
+          action.value !== 'upload' || destination !== 'app-store'
+        ).filter(action => action.value !== 'review' || identifier?.platform === 'ios');
+        return (
+          <div key={index} className="space-y-2 rounded-lg border p-3">
+            <div className="flex gap-2">
+              <select
+                aria-label={`${domain} app identifier`} value={rule.appIdentifierId} disabled={disabled}
+                className="min-w-0 flex-1 rounded-md border bg-background p-2 text-sm"
+                onChange={event => {
+                  const appIdentifierId = event.target.value;
+                  if (domain === 'Build') update(index, { appIdentifierId, actions: rule.actions as BuildAction[] });
+                  else {
+                    const platform = identifiers.find(item => item.id === appIdentifierId)?.platform;
+                    update(index, { appIdentifierId, destination: platform === 'ios' ? 'testflight' : 'internal', actions: ['upload'] });
+                  }
+                }}>
+                <option value="" disabled>Choose an app identifier</option>
+                {rule.appIdentifierId && !identifier && <option value={rule.appIdentifierId}>Unavailable identifier ({rule.appIdentifierId})</option>}
+                {identifiers.map(item => <option key={item.id} value={item.id}>{item.identifier} ({item.platform})</option>)}
+              </select>
+              <Button variant="ghost" size="icon" title={`Remove ${domain} rule`} disabled={disabled}
+                onClick={() => {
+                  if (props.domain === 'Build') props.onChange(props.rules.filter((_, i) => i !== index));
+                  else props.onChange(props.rules.filter((_, i) => i !== index));
+                }}><Trash2 className="h-4 w-4" /></Button>
+            </div>
+            {'destination' in rule && (
+              <select aria-label="Submit destination" value={rule.destination} disabled={disabled || !identifier}
+                className="w-full rounded-md border bg-background p-2 text-sm"
+                onChange={event => update(index, { ...rule, destination: event.target.value as SubmitDestination, actions: ['read'] })}>
+                {(SUBMIT_DESTINATIONS[identifier?.platform ?? ''] ?? []).map(item => <option key={item.value} value={item.value}>{item.label}</option>)}
+              </select>
+            )}
+            <div className="flex flex-wrap gap-1.5">
+              {actions.map(action => {
+                const grantedActions: readonly string[] = rule.actions;
+                const impliedRead = action.value === 'read' && grantedActions.some(value => value !== 'read');
+                const granted = grantedActions.includes(action.value) || impliedRead;
+                return <button key={action.value} type="button" title={action.hint} aria-pressed={granted}
+                  disabled={disabled || impliedRead}
+                  className={cn('rounded-md border px-2.5 py-1 text-xs font-medium', granted ? 'border-primary/40 bg-primary/10 text-primary' : 'text-muted-foreground')}
+                  onClick={() => {
+                    const next = grantedActions.includes(action.value) ? grantedActions.filter(value => value !== action.value) : [...grantedActions, action.value];
+                    if ('destination' in rule) update(index, { ...rule, actions: next as SubmitAction[] });
+                    else update(index, { ...rule, actions: next as BuildAction[] });
+                  }}>{action.label}{impliedRead && ' (implied)'}</button>;
+              })}
+            </div>
+          </div>
+        );
+      })}
+      {!identifiers.length && <p className="text-xs text-muted-foreground">Register an app identifier in Build settings first.</p>}
+      <Button variant="outline" size="sm" disabled={disabled || !identifiers.length || rules.length >= 50}
+        onClick={() => {
+          if (props.domain === 'Build') props.onChange([...props.rules, { appIdentifierId: '', actions: ['create'] }]);
+          else props.onChange([...props.rules, { appIdentifierId: '', destination: 'internal', actions: ['upload'] }]);
+        }}><Plus className="mr-1.5 h-3.5 w-3.5" />Add an identifier</Button>
+    </div>
+  );
+};

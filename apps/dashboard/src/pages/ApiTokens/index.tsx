@@ -58,15 +58,16 @@ export const ApiTokens = () => {
     if (!licenseQuery.data.valid) return 'Unrestricted';
     const access = accessByKeyId.get(apiKeyId);
     if (!access) return apiKeyAccessQuery.isError ? 'Access unavailable' : 'Loading access…';
-    const ruleCount = access.updates.branchRules.length;
+    const ruleCount = access.updates.rules.length;
     const parts = [
       ruleCount > 0
         ? `Updates: ${ruleCount} branch rule${ruleCount > 1 ? 's' : ''}`
         : 'Updates: no access',
     ];
     parts.push(
-      access.build.actions.length ? `Build: ${access.build.actions.join(', ')}` : 'Build: no access'
+      access.build.rules.length ? `Build: ${access.build.rules.length} identifier(s)` : 'Build: no access'
     );
+    parts.push(access.submit.rules.length ? `Submit: ${access.submit.rules.length} destination rule(s)` : 'Submit: no access');
     if (access.allowedIps.length) {
       parts.push(`${access.allowedIps.length} IP${access.allowedIps.length > 1 ? 's' : ''}`);
     }

@@ -27,27 +27,22 @@ func NewApiKeyAccessHandler(service *ApiKeyAccessService) *ApiKeyAccessHandler {
 	return &ApiKeyAccessHandler{service: service}
 }
 
-// branchRulePayload is one rule on the wire; actions are plain strings so an
-// unknown one gets a named 400 instead of a decoding error.
-type branchRulePayload struct {
-	Pattern string   `json:"pattern"`
-	Actions []string `json:"actions"`
-}
-
 type updatesAccessPayload struct {
-	BranchRules []branchRulePayload `json:"branchRules"`
+	Rules []UpdateRule `json:"rules"`
 }
-
 type buildAccessPayload struct {
-	Actions []BuildAction `json:"actions"`
+	Rules []BuildRule `json:"rules"`
+}
+type submitAccessPayload struct {
+	Rules []SubmitRule `json:"rules"`
 }
 
-// ApiKeyAccessResponse separates Updates branch rules from app-wide Build grants.
-// An empty list grants no access to that domain.
+// ApiKeyAccessResponse keeps each permission domain and its resource rules explicit.
 type ApiKeyAccessResponse struct {
 	ApiKeyID   string               `json:"apiKeyId"`
 	Updates    updatesAccessPayload `json:"updates"`
 	Build      buildAccessPayload   `json:"build"`
+	Submit     submitAccessPayload  `json:"submit"`
 	AllowedIps []string             `json:"allowedIps"`
 }
 
@@ -78,15 +73,10 @@ func (h *ApiKeyAccessHandler) GetApiKeyAccessHandler(w http.ResponseWriter, r *h
 	for _, access := range accesses {
 		entry := ApiKeyAccessResponse{
 			ApiKeyID:   strconv.FormatInt(access.ApiKeyID, 10),
-			Updates:    updatesAccessPayload{BranchRules: make([]branchRulePayload, 0, len(access.BranchRules))},
-			Build:      buildAccessPayload{Actions: append([]BuildAction{}, access.BuildActions...)},
-			AllowedIps: make([]string, 0, len(access.AllowedIps)),
-		}
-		for _, rule := range access.BranchRules {
-			entry.Updates.BranchRules = append(entry.Updates.BranchRules, branchRulePayload{
-				Pattern: rule.Pattern,
-				Actions: fromActions(rule.Actions),
-			})
+			Updates:    updatesAccessPayload{Rules: append([]UpdateRule{}, access.UpdateRules...)},
+			Build:      buildAccessPayload{Rules: append([]BuildRule{}, access.BuildRules...)},
+			Submit:     submitAccessPayload{Rules: append([]SubmitRule{}, access.SubmitRules...)},
+			AllowedIps: []string{},
 		}
 		for _, prefix := range access.AllowedIps {
 			entry.AllowedIps = append(entry.AllowedIps, prefix.String())
@@ -112,6 +102,7 @@ func (h *ApiKeyAccessHandler) SetApiKeyAccessHandler(w http.ResponseWriter, r *h
 	var req struct {
 		Updates    *updatesAccessPayload `json:"updates"`
 		Build      *buildAccessPayload   `json:"build"`
+		Submit     *submitAccessPayload  `json:"submit"`
 		AllowedIps []string              `json:"allowedIps"`
 	}
 	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxAccessBodyBytes))
@@ -121,23 +112,15 @@ func (h *ApiKeyAccessHandler) SetApiKeyAccessHandler(w http.ResponseWriter, r *h
 		return
 	}
 	// Reject stale/partial payloads rather than silently clearing either domain.
-	if req.Updates == nil || req.Build == nil || req.Updates.BranchRules == nil || req.Build.Actions == nil || req.AllowedIps == nil {
-		handlers.RenderError(w, http.StatusBadRequest, "updates.branchRules, build.actions and allowedIps must be provided as arrays")
+	if req.Updates == nil || req.Build == nil || req.Submit == nil || req.Updates.Rules == nil || req.Build.Rules == nil || req.Submit.Rules == nil || req.AllowedIps == nil {
+		handlers.RenderError(w, http.StatusBadRequest, "updates.rules, build.rules, submit.rules and allowedIps must be provided as arrays")
 		return
 	}
 	if err := decoder.Decode(new(any)); err != io.EOF {
 		handlers.RenderError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
-	rules := make([]BranchRule, 0, len(req.Updates.BranchRules))
-	for _, payload := range req.Updates.BranchRules {
-		actions := make([]Action, 0, len(payload.Actions))
-		for _, action := range payload.Actions {
-			actions = append(actions, Action(action))
-		}
-		rules = append(rules, BranchRule{Pattern: payload.Pattern, Actions: actions})
-	}
-	if err := h.service.SetAccess(r.Context(), appId, apiKeyID, rules, req.AllowedIps, req.Build.Actions); err != nil {
+	if err := h.service.SetAccess(r.Context(), appId, apiKeyID, req.Updates.Rules, req.AllowedIps, req.Build.Rules, req.Submit.Rules); err != nil {
 		renderApiKeyAccessServiceError(w, err)
 		return
 	}

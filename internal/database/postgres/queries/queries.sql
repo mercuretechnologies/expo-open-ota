@@ -949,40 +949,40 @@ WHERE issuer = $1 AND subject = $2;
 
 -- name: GetApiKeyAccess :many
 -- Enforcement read for one authenticated key on the CLI request hot path: the
--- IP allow-list, Build actions and Updates branch rules in one round trip.
+-- IP allow-list and Updates branch rules in one round trip.
 -- A key with no rule yields a single row with a NULL pattern: no Updates access.
 --
 -- revoked_at IS NULL is redundant with authentication, which already refuses a
 -- revoked key, and it is here anyway: this is the last read before a publish is
 -- authorised, so it costs nothing to make "zero rows" mean exactly what the
 -- caller treats it as, a key that may no longer act.
-SELECT k.allowed_ips, k.build_actions, r.pattern, r.actions
+SELECT k.allowed_ips, r.pattern, r.actions
 FROM api_keys k
-LEFT JOIN api_key_branch_rules r ON r.api_key_id = k.id
+LEFT JOIN api_key_update_rules r ON r.api_key_id = k.id
 WHERE k.id = $1 AND k.revoked_at IS NULL;
 
 -- name: GetApiKeyAccessByAppID :many
 -- Same shape for the dashboard, over every live key of one app. Ordered so
 -- the caller can fold consecutive rows into one key without a map.
-SELECT k.id, k.allowed_ips, k.build_actions, r.pattern, r.actions
+SELECT k.id, k.allowed_ips, r.pattern, r.actions
 FROM api_keys k
-LEFT JOIN api_key_branch_rules r ON r.api_key_id = k.id
+LEFT JOIN api_key_update_rules r ON r.api_key_id = k.id
 WHERE k.app_id = $1 AND k.revoked_at IS NULL
 ORDER BY k.id, r.id;
 
 -- name: UpdateApiKeyAccess :execrows
 UPDATE api_keys
-SET allowed_ips = $1, build_actions = $2
-WHERE id = $3 AND app_id = $4 AND revoked_at IS NULL;
+SET allowed_ips = $1
+WHERE id = $2 AND app_id = $3 AND revoked_at IS NULL;
 
--- name: DeleteApiKeyBranchRules :exec
+-- name: DeleteApiKeyUpdateRules :exec
 -- The rules of one key are replaced wholesale, inside the same transaction as
 -- UpdateApiKeyAccess: a partial write would leave a key granting something
 -- nobody asked for.
-DELETE FROM api_key_branch_rules WHERE api_key_id = $1;
+DELETE FROM api_key_update_rules WHERE api_key_id = $1;
 
--- name: InsertApiKeyBranchRule :exec
-INSERT INTO api_key_branch_rules (api_key_id, pattern, actions)
+-- name: InsertApiKeyUpdateRule :exec
+INSERT INTO api_key_update_rules (api_key_id, pattern, actions)
 VALUES ($1, $2, $3);
 
 -- name: SetBranchProtected :execrows
@@ -2682,3 +2682,37 @@ WHERE b.app_id = sqlc.arg('app_id')
   AND b.name = sqlc.arg('branch_name')
   AND bp.target_update_id = sqlc.arg('target_update_id')
 ORDER BY s.id DESC;
+
+-- name: GetApiKeyBuildRulesByAppID :many
+SELECT r.api_key_id, r.app_identifier_id, r.actions
+FROM api_key_build_rules r JOIN api_keys k ON k.id = r.api_key_id
+WHERE r.app_id = $1 AND k.revoked_at IS NULL
+ORDER BY r.api_key_id, r.app_identifier_id;
+
+-- name: GetApiKeySubmitRulesByAppID :many
+SELECT r.api_key_id, r.app_identifier_id, r.destination, r.actions
+FROM api_key_submit_rules r JOIN api_keys k ON k.id = r.api_key_id
+WHERE r.app_id = $1 AND k.revoked_at IS NULL
+ORDER BY r.api_key_id, r.app_identifier_id, r.destination;
+
+-- name: DeleteApiKeyBuildRules :exec
+DELETE FROM api_key_build_rules WHERE api_key_id = $1;
+
+-- name: DeleteApiKeySubmitRules :exec
+DELETE FROM api_key_submit_rules WHERE api_key_id = $1;
+
+-- name: InsertApiKeyBuildRule :exec
+INSERT INTO api_key_build_rules (api_key_id, app_id, app_identifier_id, actions)
+VALUES ($1, $2, $3, $4);
+
+-- name: InsertApiKeySubmitRule :exec
+INSERT INTO api_key_submit_rules (api_key_id, app_id, app_identifier_id, destination, actions)
+VALUES ($1, $2, $3, $4, $5);
+
+-- name: GetApiKeyBuildRules :many
+SELECT app_identifier_id, actions FROM api_key_build_rules
+WHERE api_key_id = $1 ORDER BY app_identifier_id;
+
+-- name: GetApiKeySubmitRules :many
+SELECT app_identifier_id, destination, actions FROM api_key_submit_rules
+WHERE api_key_id = $1 ORDER BY app_identifier_id, destination;
