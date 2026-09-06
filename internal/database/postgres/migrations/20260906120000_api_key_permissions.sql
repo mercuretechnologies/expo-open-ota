@@ -18,7 +18,7 @@ CREATE TABLE api_key_build_rules (
     api_key_id BIGINT NOT NULL,
     app_id UUID NOT NULL,
     app_identifier_id UUID NOT NULL,
-    actions TEXT[] NOT NULL CHECK (cardinality(actions) > 0 AND array_position(actions, NULL) IS NULL AND actions <@ ARRAY['read', 'create', 'cancel']::TEXT[]),
+    actions TEXT[] NOT NULL CHECK (cardinality(actions) > 0 AND array_position(actions, NULL) IS NULL AND actions <@ ARRAY['create']::TEXT[]),
     PRIMARY KEY (api_key_id, app_identifier_id),
     FOREIGN KEY (api_key_id, app_id) REFERENCES api_keys(id, app_id) ON DELETE CASCADE,
     FOREIGN KEY (app_identifier_id, app_id) REFERENCES app_identifiers(id, app_id) ON DELETE CASCADE
@@ -30,16 +30,11 @@ CREATE TABLE api_key_submit_rules (
     api_key_id BIGINT NOT NULL,
     app_id UUID NOT NULL,
     app_identifier_id UUID NOT NULL,
-    destination TEXT NOT NULL CHECK (destination IN ('internal', 'alpha', 'beta', 'production', 'testflight', 'app-store')),
-    actions TEXT[] NOT NULL CHECK (cardinality(actions) > 0 AND array_position(actions, NULL) IS NULL AND actions <@ ARRAY['read', 'upload', 'review', 'release']::TEXT[]),
+    destination TEXT NOT NULL CHECK (destination IN ('internal', 'alpha', 'beta', 'production', 'testflight')),
+    actions TEXT[] NOT NULL CHECK (cardinality(actions) > 0 AND array_position(actions, NULL) IS NULL AND actions <@ ARRAY['upload']::TEXT[]),
     PRIMARY KEY (api_key_id, app_identifier_id, destination),
     FOREIGN KEY (api_key_id, app_id) REFERENCES api_keys(id, app_id) ON DELETE CASCADE,
-    FOREIGN KEY (app_identifier_id, app_id) REFERENCES app_identifiers(id, app_id) ON DELETE CASCADE,
-    CHECK (
-        (destination = 'testflight' AND actions <@ ARRAY['read', 'upload', 'review', 'release']::TEXT[])
-        OR (destination = 'app-store' AND actions <@ ARRAY['read', 'review', 'release']::TEXT[])
-        OR (destination IN ('internal', 'alpha', 'beta', 'production') AND actions <@ ARRAY['read', 'upload', 'release']::TEXT[])
-    )
+    FOREIGN KEY (app_identifier_id, app_id) REFERENCES app_identifiers(id, app_id) ON DELETE CASCADE
 );
 CREATE INDEX idx_api_key_submit_rules_identifier ON api_key_submit_rules(app_identifier_id, app_id);
 CREATE INDEX idx_api_key_submit_rules_app ON api_key_submit_rules(app_id);

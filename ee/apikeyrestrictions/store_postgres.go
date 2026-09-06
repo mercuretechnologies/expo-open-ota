@@ -214,7 +214,7 @@ func toBuildActions(raw []string) []BuildAction {
 	var actions []BuildAction
 	for _, value := range raw {
 		switch action := BuildAction(value); action {
-		case BuildActionRead, BuildActionCreate, BuildActionCancel:
+		case BuildActionCreate:
 			actions = append(actions, action)
 		}
 	}
@@ -245,7 +245,7 @@ func toSubmitActions(raw []string) []SubmitAction {
 	actions := make([]SubmitAction, 0, len(raw))
 	for _, value := range raw {
 		switch action := SubmitAction(value); action {
-		case SubmitActionRead, SubmitActionUpload, SubmitActionReview, SubmitActionRelease:
+		case SubmitActionUpload:
 			actions = append(actions, action)
 		}
 	}

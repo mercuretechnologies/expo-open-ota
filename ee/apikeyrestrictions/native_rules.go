@@ -20,12 +20,7 @@ type BuildRule struct {
 // SubmitAction never inherits permissions from Build or another destination.
 type SubmitAction string
 
-const (
-	SubmitActionRead    SubmitAction = "read"
-	SubmitActionUpload  SubmitAction = "upload"
-	SubmitActionReview  SubmitAction = "review"
-	SubmitActionRelease SubmitAction = "release"
-)
+const SubmitActionUpload SubmitAction = "upload"
 
 // SubmitDestination identifies the store destination, not an OTA channel or build profile.
 type SubmitDestination string
@@ -36,11 +31,9 @@ const (
 	SubmitDestinationBeta       SubmitDestination = "beta"
 	SubmitDestinationProduction SubmitDestination = "production"
 	SubmitDestinationTestFlight SubmitDestination = "testflight"
-	SubmitDestinationAppStore   SubmitDestination = "app-store"
 )
 
-// SubmitRule separates upload, review and release for one identifier and destination.
-// Upload alone never authorizes distributing a build, even to testers.
+// SubmitRule grants upload for one identifier and store destination.
 type SubmitRule struct {
 	AppIdentifierID string            `json:"appIdentifierId"`
 	Destination     SubmitDestination `json:"destination"`
@@ -51,26 +44,10 @@ func (d SubmitDestination) platform() string {
 	switch d {
 	case SubmitDestinationInternal, SubmitDestinationAlpha, SubmitDestinationBeta, SubmitDestinationProduction:
 		return "android"
-	case SubmitDestinationTestFlight, SubmitDestinationAppStore:
+	case SubmitDestinationTestFlight:
 		return "ios"
 	default:
 		return ""
-	}
-}
-
-func (d SubmitDestination) supports(action SubmitAction) bool {
-	if d.platform() == "" {
-		return false
-	}
-	switch action {
-	case SubmitActionRead, SubmitActionRelease:
-		return true
-	case SubmitActionUpload:
-		return d != SubmitDestinationAppStore
-	case SubmitActionReview:
-		return d.platform() == "ios"
-	default:
-		return false
 	}
 }
 
@@ -132,12 +109,12 @@ func normalizeSubmitRules(rules []SubmitRule) ([]SubmitRule, error) {
 			return nil, validation.Errorf("submit.rules", "a rule must grant at least one action")
 		}
 		for _, action := range rule.Actions {
-			if !rule.Destination.supports(action) {
+			if action != SubmitActionUpload {
 				return nil, validation.Errorf("submit.actions", "action %q is not valid for %q", action, rule.Destination)
 			}
 		}
 		actions := make([]SubmitAction, 0, len(rule.Actions))
-		for _, action := range []SubmitAction{SubmitActionRead, SubmitActionUpload, SubmitActionReview, SubmitActionRelease} {
+		for _, action := range []SubmitAction{SubmitActionUpload} {
 			if slices.Contains(rule.Actions, action) {
 				actions = append(actions, action)
 			}
@@ -149,28 +126,10 @@ func normalizeSubmitRules(rules []SubmitRule) ([]SubmitRule, error) {
 
 // Allows checks a resolved identifier ID; no wildcard or profile can widen the grant.
 func (r BuildRule) Allows(identifierID string, action BuildAction) bool {
-	if identifierID == "" || r.AppIdentifierID != identifierID {
-		return false
-	}
-	switch action {
-	case BuildActionRead:
-		return slices.Contains(r.Actions, BuildActionRead) || slices.Contains(r.Actions, BuildActionCreate) || slices.Contains(r.Actions, BuildActionCancel)
-	case BuildActionCreate, BuildActionCancel:
-		return slices.Contains(r.Actions, action)
-	default:
-		return false
-	}
+	return identifierID != "" && r.AppIdentifierID == identifierID && action == BuildActionCreate && slices.Contains(r.Actions, action)
 }
 
-// Allows requires the exact destination and action; write actions imply only read.
+// Allows requires the exact identifier, destination and upload action.
 func (r SubmitRule) Allows(identifierID string, destination SubmitDestination, action SubmitAction) bool {
-	if identifierID == "" || r.AppIdentifierID != identifierID || r.Destination != destination || !destination.supports(action) {
-		return false
-	}
-	for _, granted := range r.Actions {
-		if destination.supports(granted) && (granted == action || action == SubmitActionRead) {
-			return true
-		}
-	}
-	return false
+	return identifierID != "" && r.AppIdentifierID == identifierID && r.Destination == destination && destination.platform() != "" && action == SubmitActionUpload && slices.Contains(r.Actions, action)
 }

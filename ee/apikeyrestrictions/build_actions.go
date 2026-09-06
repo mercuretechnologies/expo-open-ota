@@ -10,26 +10,22 @@ import "xprem/internal/validation"
 // Build CLI routes will consume these permissions when they are introduced.
 type BuildAction string
 
-const (
-	BuildActionRead   BuildAction = "read"
-	BuildActionCreate BuildAction = "create"
-	BuildActionCancel BuildAction = "cancel"
-)
+const BuildActionCreate BuildAction = "create"
 
 // normalizeBuildActions validates explicit grants, preserving an empty list
-// as no access. Implied read access is not stored as an explicit grant.
+// as no access.
 func normalizeBuildActions(actions []BuildAction) ([]BuildAction, error) {
 	granted := make(map[BuildAction]bool, len(actions))
 	for _, action := range actions {
 		switch action {
-		case BuildActionRead, BuildActionCreate, BuildActionCancel:
+		case BuildActionCreate:
 			granted[action] = true
 		default:
 			return nil, validation.Errorf("build.actions", "unknown build action %q", action)
 		}
 	}
 	normalized := make([]BuildAction, 0, len(granted))
-	for _, action := range []BuildAction{BuildActionRead, BuildActionCreate, BuildActionCancel} {
+	for _, action := range []BuildAction{BuildActionCreate} {
 		if granted[action] {
 			normalized = append(normalized, action)
 		}

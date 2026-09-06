@@ -22,9 +22,9 @@ func TestNativeRulesKeepIdentifiersDestinationsAndActionsSeparate(t *testing.T) 
 	require.NoError(t, err)
 	build := repo.setAccess.BuildRules[0]
 	require.Equal(t, []BuildAction{BuildActionCreate}, build.Actions)
-	assert.True(t, build.Allows(id, BuildActionRead))
+	assert.False(t, build.Allows(id, BuildAction("read")))
 	assert.True(t, build.Allows(id, BuildActionCreate))
-	assert.False(t, build.Allows(id, BuildActionCancel))
+	assert.False(t, build.Allows(id, BuildAction("cancel")))
 	assert.False(t, build.Allows("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", BuildActionCreate))
 	assert.False(t, build.Allows(id, BuildAction("upload")))
 	submit := repo.setAccess.SubmitRules[0]
@@ -34,20 +34,17 @@ func TestNativeRulesKeepIdentifiersDestinationsAndActionsSeparate(t *testing.T) 
 		action      SubmitAction
 		allowed     bool
 	}{
-		{id, SubmitDestinationTestFlight, SubmitActionRead, true},
+		{id, SubmitDestinationTestFlight, SubmitAction("read"), false},
 		{id, SubmitDestinationTestFlight, SubmitActionUpload, true},
-		{id, SubmitDestinationTestFlight, SubmitActionReview, false},
-		{id, SubmitDestinationTestFlight, SubmitActionRelease, false},
-		{id, SubmitDestinationAppStore, SubmitActionRelease, false},
+		{id, SubmitDestinationTestFlight, SubmitAction("review"), false},
+		{id, SubmitDestinationTestFlight, SubmitAction("release"), false},
+		{id, SubmitDestinationProduction, SubmitActionUpload, false},
 		{"bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", SubmitDestinationTestFlight, SubmitActionUpload, false},
 		{id, SubmitDestinationTestFlight, SubmitAction("create"), false},
 	} {
 		assert.Equal(t, tc.allowed, submit.Allows(tc.identifier, tc.destination, tc.action), "%+v", tc)
 	}
-	// A production upload grant still cannot release the upload to users.
-	production := SubmitRule{AppIdentifierID: id, Destination: SubmitDestinationProduction, Actions: []SubmitAction{SubmitActionUpload}}
-	assert.True(t, production.Allows(id, SubmitDestinationProduction, SubmitActionUpload))
-	assert.False(t, production.Allows(id, SubmitDestinationProduction, SubmitActionRelease))
+
 }
 
 func TestSetAccessRejectsInvalidNativeRulesBeforeWriting(t *testing.T) {
@@ -61,12 +58,16 @@ func TestSetAccessRejectsInvalidNativeRulesBeforeWriting(t *testing.T) {
 	}{
 		{"wildcard identifier", []BuildRule{{AppIdentifierID: "*", Actions: build.Actions}}, nil},
 		{"empty build actions", []BuildRule{{AppIdentifierID: id}}, nil},
+		{"removed build read", []BuildRule{{AppIdentifierID: id, Actions: []BuildAction{"read"}}}, nil},
+		{"removed build cancel", []BuildRule{{AppIdentifierID: id, Actions: []BuildAction{"cancel"}}}, nil},
+		{"removed submit read", nil, []SubmitRule{{AppIdentifierID: id, Destination: SubmitDestinationInternal, Actions: []SubmitAction{"read"}}}},
+		{"removed submit release", nil, []SubmitRule{{AppIdentifierID: id, Destination: SubmitDestinationInternal, Actions: []SubmitAction{"release"}}}},
 		{"unknown build action", []BuildRule{{AppIdentifierID: id, Actions: []BuildAction{"release"}}}, nil},
 		{"duplicate build identifier", []BuildRule{build, build}, nil},
 		{"unknown destination", nil, []SubmitRule{{AppIdentifierID: id, Destination: "*", Actions: submit.Actions}}},
 		{"empty submit actions", nil, []SubmitRule{{AppIdentifierID: id, Destination: SubmitDestinationInternal}}},
-		{"android review", nil, []SubmitRule{{AppIdentifierID: id, Destination: SubmitDestinationInternal, Actions: []SubmitAction{SubmitActionReview}}}},
-		{"app store upload", nil, []SubmitRule{{AppIdentifierID: id, Destination: SubmitDestinationAppStore, Actions: []SubmitAction{SubmitActionUpload}}}},
+		{"removed submit review", nil, []SubmitRule{{AppIdentifierID: id, Destination: SubmitDestinationInternal, Actions: []SubmitAction{SubmitAction("review")}}}},
+		{"app store upload", nil, []SubmitRule{{AppIdentifierID: id, Destination: SubmitDestination("app-store"), Actions: []SubmitAction{SubmitActionUpload}}}},
 		{"duplicate submit destination", nil, []SubmitRule{submit, submit}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

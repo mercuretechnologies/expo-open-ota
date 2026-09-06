@@ -14,7 +14,6 @@ import {
   BuildAction,
   BuildRuleRecord,
   SubmitRuleRecord,
-  SubmitAction,
   SubmitDestination,
   AppIdentifier,
   UpdateRuleRecord,
@@ -99,12 +98,6 @@ const ACTION_LABELS: { value: UpdateAction; label: string; hint: string }[] = [
   { value: 'read', label: 'Read', hint: 'List runtime versions and shipped updates' },
   { value: 'publish', label: 'Publish', hint: 'Ship a new update' },
   { value: 'rollback', label: 'Rollback', hint: 'Roll back, and republish a past update' },
-];
-
-const BUILD_ACTION_LABELS: { value: BuildAction; label: string; hint: string }[] = [
-  { value: 'read', label: 'Read', hint: 'View builds, logs and download artifacts' },
-  { value: 'create', label: 'Create', hint: 'Start a build; includes read access' },
-  { value: 'cancel', label: 'Cancel', hint: 'Cancel a build; includes read access' },
 ];
 
 const AccessForm = ({
@@ -411,16 +404,8 @@ const SUBMIT_DESTINATIONS: Record<string, { value: SubmitDestination; label: str
   ],
   ios: [
     { value: 'testflight', label: 'TestFlight' },
-    { value: 'app-store', label: 'App Store production' },
   ],
 };
-
-const SUBMIT_ACTION_LABELS: { value: SubmitAction; label: string; hint: string }[] = [
-  { value: 'read', label: 'Read', hint: 'View submissions for this destination' },
-  { value: 'upload', label: 'Upload', hint: 'Upload a binary without releasing it' },
-  { value: 'review', label: 'Request review', hint: 'Send to Apple for review; does not grant release permission' },
-  { value: 'release', label: 'Release', hint: 'Distribute to testers or users in this destination' },
-];
 
 type NativeEditorProps = {
   identifiers: AppIdentifier[];
@@ -445,15 +430,11 @@ const NativeRulesEditor = (props: NativeEditorProps) => {
       <p className="text-xs text-muted-foreground">
         {domain === 'Build'
           ? 'Allow builds only for the identifiers listed, with any build profile.'
-          : 'Allow submission actions only for the identifiers and destinations listed. Upload does not grant release permission.'}
+          : 'Allow uploads only for the identifiers and destinations listed.'}
         {' '}An empty list grants no access.
       </p>
       {rules.map((rule, index) => {
         const identifier = identifiers.find(item => item.id === rule.appIdentifierId);
-        const destination = 'destination' in rule ? rule.destination : undefined;
-        const actions = domain === 'Build' ? BUILD_ACTION_LABELS : SUBMIT_ACTION_LABELS.filter(action =>
-          action.value !== 'upload' || destination !== 'app-store'
-        ).filter(action => action.value !== 'review' || identifier?.platform === 'ios');
         return (
           <div key={index} className="space-y-2 rounded-lg border p-3">
             <div className="flex gap-2">
@@ -481,25 +462,13 @@ const NativeRulesEditor = (props: NativeEditorProps) => {
             {'destination' in rule && (
               <select aria-label="Submit destination" value={rule.destination} disabled={disabled || !identifier}
                 className="w-full rounded-md border bg-background p-2 text-sm"
-                onChange={event => update(index, { ...rule, destination: event.target.value as SubmitDestination, actions: ['read'] })}>
+                onChange={event => update(index, { ...rule, destination: event.target.value as SubmitDestination, actions: ['upload'] })}>
                 {(SUBMIT_DESTINATIONS[identifier?.platform ?? ''] ?? []).map(item => <option key={item.value} value={item.value}>{item.label}</option>)}
               </select>
             )}
-            <div className="flex flex-wrap gap-1.5">
-              {actions.map(action => {
-                const grantedActions: readonly string[] = rule.actions;
-                const impliedRead = action.value === 'read' && grantedActions.some(value => value !== 'read');
-                const granted = grantedActions.includes(action.value) || impliedRead;
-                return <button key={action.value} type="button" title={action.hint} aria-pressed={granted}
-                  disabled={disabled || impliedRead}
-                  className={cn('rounded-md border px-2.5 py-1 text-xs font-medium', granted ? 'border-primary/40 bg-primary/10 text-primary' : 'text-muted-foreground')}
-                  onClick={() => {
-                    const next = grantedActions.includes(action.value) ? grantedActions.filter(value => value !== action.value) : [...grantedActions, action.value];
-                    if ('destination' in rule) update(index, { ...rule, actions: next as SubmitAction[] });
-                    else update(index, { ...rule, actions: next as BuildAction[] });
-                  }}>{action.label}{impliedRead && ' (implied)'}</button>;
-              })}
-            </div>
+            <p className="text-xs text-muted-foreground">
+              {domain === 'Build' ? 'Allows creating builds.' : 'Allows uploading a binary to this destination.'}
+            </p>
           </div>
         );
       })}

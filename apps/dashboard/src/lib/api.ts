@@ -756,10 +756,10 @@ export type ApiKeyAccessRecord = {
   allowedIps: string[];
 };
 
-export type BuildAction = 'read' | 'create' | 'cancel';
+export type BuildAction = 'create';
 export type BuildRuleRecord = { appIdentifierId: string; actions: BuildAction[] };
-export type SubmitAction = 'read' | 'upload' | 'review' | 'release';
-export type SubmitDestination = 'internal' | 'alpha' | 'beta' | 'production' | 'testflight' | 'app-store';
+export type SubmitAction = 'upload';
+export type SubmitDestination = 'internal' | 'alpha' | 'beta' | 'production' | 'testflight';
 export type SubmitRuleRecord = {
   appIdentifierId: string;
   destination: SubmitDestination;
