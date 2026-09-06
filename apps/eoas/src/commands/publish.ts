@@ -198,7 +198,7 @@ export default class Publish extends Command {
       process.exit(1);
     });
     const appId = requireExpoAppId(config);
-    // A URL passed on the command line needs no confirmation, and `eoas init`
+    // A URL passed on the command line needs no confirmation, and `eoas update:configure`
     // would not fix it anyway.
     if (!nonInteractive && !customServerUrl) {
       const confirmed = await confirmAsync({
@@ -207,7 +207,7 @@ export default class Publish extends Command {
         type: 'confirm',
       });
       if (!confirmed) {
-        Log.error('Please run `eoas init` to setup the correct update url');
+        Log.error('Please run `eoas update:configure` to setup the correct update url');
         process.exit(1);
       }
     }

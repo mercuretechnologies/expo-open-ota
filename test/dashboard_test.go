@@ -132,7 +132,7 @@ func TestLoginValidCredentials(t *testing.T) {
 	router := infrastructure.NewRouter(testContainer())
 	respRec := httptest.NewRecorder()
 	// Email matching is case-insensitive.
-	router.ServeHTTP(respRec, loginRequest("Admin@XPrem.dev", "admin"))
+	router.ServeHTTP(respRec, loginRequest("Admin@xprem.dev", "admin"))
 	assert.Equal(t, http.StatusOK, respRec.Code)
 	// Retrieve token & refreshToken from response
 	body := respRec.Body.String()

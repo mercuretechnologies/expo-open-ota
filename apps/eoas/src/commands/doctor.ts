@@ -109,7 +109,7 @@ export default class Doctor extends Command {
       }
     } else {
       Log.warn(
-        "⚠️  Skipping the v2 probe: no 'expo-app-id' in updates.requestHeaders. That is the v1 config shape — run 'npx eoas init' to add it."
+        "⚠️  Skipping the v2 probe: no 'expo-app-id' in updates.requestHeaders. That is the v1 config shape — run 'npx eoas update:configure' to add it."
       );
     }
 
