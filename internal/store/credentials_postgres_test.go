@@ -66,7 +66,7 @@ func sealedFixture(marker string) store.SealedAndroidCredentials {
 	}
 }
 
-func TestAndroidCredentialsUpsertReplacesTheSingleRow(t *testing.T) {
+func TestAndroidKeystoreUpsertPreservesServiceAccount(t *testing.T) {
 	credentialsStore, identifierStore, pool := setupCredentialsStores(t)
 	ctx := context.Background()
 	appId := insertBareApp(t, pool)
@@ -74,9 +74,8 @@ func TestAndroidCredentialsUpsertReplacesTheSingleRow(t *testing.T) {
 
 	require.NoError(t, credentialsStore.UpsertAndroidCredentials(ctx, identifierId, sealedFixture("v1")))
 	gsa := "sealed-gsa-v2"
-	second := sealedFixture("v2")
-	second.SealedGoogleServiceAccountKey = &gsa
-	require.NoError(t, credentialsStore.UpsertAndroidCredentials(ctx, identifierId, second))
+	require.NoError(t, credentialsStore.UpdateGooglePlayServiceAccountKey(ctx, identifierId, &gsa))
+	require.NoError(t, credentialsStore.UpsertAndroidCredentials(ctx, identifierId, sealedFixture("v2")))
 
 	var count int
 	require.NoError(t, pool.QueryRow(ctx, "SELECT COUNT(*) FROM android_credentials WHERE app_identifier_id = $1", identifierId).Scan(&count))
@@ -88,6 +87,12 @@ func TestAndroidCredentialsUpsertReplacesTheSingleRow(t *testing.T) {
 	assert.Equal(t, "sealed-keystore-v2", stored.SealedKeystore)
 	require.NotNil(t, stored.SealedGoogleServiceAccountKey)
 	assert.Equal(t, "sealed-gsa-v2", *stored.SealedGoogleServiceAccountKey)
+
+	require.NoError(t, credentialsStore.UpdateGooglePlayServiceAccountKey(ctx, identifierId, nil))
+	stored, err = credentialsStore.GetAndroidCredentials(ctx, identifierId)
+	require.NoError(t, err)
+	require.NotNil(t, stored)
+	assert.Nil(t, stored.SealedGoogleServiceAccountKey)
 }
 
 func TestAndroidCredentialsGetReturnsNilWhenAbsent(t *testing.T) {

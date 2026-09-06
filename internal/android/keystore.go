@@ -5,7 +5,9 @@ import (
 	"crypto"
 	"crypto/x509"
 	"encoding/binary"
+	"encoding/pem"
 	"errors"
+	"fmt"
 	"strings"
 	"xprem/internal/validation"
 
@@ -34,6 +36,51 @@ func ValidateKeystore(data []byte, keystorePassword, keyPassword, keyAlias strin
 		return validatePKCS12(data, keystorePassword, keyPassword, keyAlias)
 	}
 	return validation.Errorf("keystore", "file is not a JKS or PKCS12 keystore")
+}
+
+// SigningCertificatePEM returns the public certificate Google Play needs when
+// an upload key is registered or reset. The private key never leaves the JKS.
+func SigningCertificatePEM(data []byte, keystorePassword, keyPassword, keyAlias string) ([]byte, error) {
+	if err := ValidateKeystore(data, keystorePassword, keyPassword, keyAlias); err != nil {
+		return nil, err
+	}
+	var certificateDER []byte
+	if binary.BigEndian.Uint32(data[:4]) == jksMagic {
+		ks := keystore.New()
+		if err := ks.Load(bytes.NewReader(data), []byte(keystorePassword)); err != nil {
+			return nil, fmt.Errorf("open validated JKS: %w", err)
+		}
+		entry, err := ks.GetPrivateKeyEntry(keyAlias, []byte(keyPassword))
+		if err != nil {
+			return nil, fmt.Errorf("read validated JKS key: %w", err)
+		}
+		certificateDER = entry.CertificateChain[0].Content
+	} else {
+		blocks, err := pkcs12.ToPEM(data, keystorePassword)
+		if err != nil {
+			return nil, fmt.Errorf("read validated PKCS12 certificate: %w", err)
+		}
+		var keyID string
+		for _, block := range blocks {
+			if block.Type == "PRIVATE KEY" && strings.EqualFold(block.Headers["friendlyName"], keyAlias) {
+				keyID = block.Headers["localKeyId"]
+				break
+			}
+		}
+		for _, block := range blocks {
+			if block.Type != "CERTIFICATE" {
+				continue
+			}
+			if strings.EqualFold(block.Headers["friendlyName"], keyAlias) || (keyID != "" && block.Headers["localKeyId"] == keyID) {
+				certificateDER = block.Bytes
+				break
+			}
+		}
+		if len(certificateDER) == 0 {
+			return nil, fmt.Errorf("certificate for alias %q not found in validated PKCS12 keystore", keyAlias)
+		}
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certificateDER}), nil
 }
 
 func validateJKS(data []byte, keystorePassword, keyPassword, keyAlias string) error {

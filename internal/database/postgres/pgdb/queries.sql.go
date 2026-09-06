@@ -6788,6 +6788,21 @@ func (q *Queries) UpdateFailureBreakdownByIDs(ctx context.Context, arg UpdateFai
 	return items, nil
 }
 
+const updateGooglePlayServiceAccountKey = `-- name: UpdateGooglePlayServiceAccountKey :execresult
+UPDATE android_credentials
+SET sealed_google_service_account_key = $2
+WHERE app_identifier_id = $1
+`
+
+type UpdateGooglePlayServiceAccountKeyParams struct {
+	AppIdentifierID               pgtype.UUID `json:"app_identifier_id"`
+	SealedGoogleServiceAccountKey *string     `json:"sealed_google_service_account_key"`
+}
+
+func (q *Queries) UpdateGooglePlayServiceAccountKey(ctx context.Context, arg UpdateGooglePlayServiceAccountKeyParams) (pgconn.CommandTag, error) {
+	return q.db.Exec(ctx, updateGooglePlayServiceAccountKey, arg.AppIdentifierID, arg.SealedGoogleServiceAccountKey)
+}
+
 const updateRole = `-- name: UpdateRole :execresult
 UPDATE roles
 SET name = $2, permissions = $3, updated_at = CURRENT_TIMESTAMP
@@ -6902,7 +6917,6 @@ ON CONFLICT (app_identifier_id) DO UPDATE SET
     sealed_keystore = EXCLUDED.sealed_keystore,
     sealed_keystore_password = EXCLUDED.sealed_keystore_password,
     sealed_key_password = EXCLUDED.sealed_key_password,
-    sealed_google_service_account_key = EXCLUDED.sealed_google_service_account_key,
     updated_at = CURRENT_TIMESTAMP
 RETURNING id
 `

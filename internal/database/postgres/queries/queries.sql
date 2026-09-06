@@ -2510,9 +2510,13 @@ ON CONFLICT (app_identifier_id) DO UPDATE SET
     sealed_keystore = EXCLUDED.sealed_keystore,
     sealed_keystore_password = EXCLUDED.sealed_keystore_password,
     sealed_key_password = EXCLUDED.sealed_key_password,
-    sealed_google_service_account_key = EXCLUDED.sealed_google_service_account_key,
     updated_at = CURRENT_TIMESTAMP
 RETURNING id;
+
+-- name: UpdateGooglePlayServiceAccountKey :execresult
+UPDATE android_credentials
+SET sealed_google_service_account_key = $2
+WHERE app_identifier_id = $1;
 
 -- name: GetAndroidCredentialsByIdentifierID :one
 SELECT id, app_identifier_id, key_alias,

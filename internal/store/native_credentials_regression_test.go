@@ -30,11 +30,15 @@ func TestVaultUUIDAliasesRoundTrip(t *testing.T) {
 	input := services.AndroidCredentialsInput{
 		KeyAlias: "upload", KeystoreBase64: base64.StdEncoding.EncodeToString(keystore),
 		KeystorePassword: "store-pass", KeyPassword: "key-pass",
-		GoogleServiceAccountKeyJSON: `{"type":"service_account"}`,
 	}
+	serviceAccountKey := `{"type":"service_account","project_id":"test-project","client_email":"publisher@test-project.iam.gserviceaccount.com","private_key":"secret"}`
 	for _, spelling := range []string{strings.ToUpper(identifierId), "{" + identifierId + "}", strings.ReplaceAll(identifierId, "-", "")} {
 		t.Run(spelling, func(t *testing.T) {
 			require.NoError(t, service.SaveAndroidCredentials(ctx, appId, spelling, input))
+			require.NoError(t, service.SaveGooglePlayServiceAccountKey(ctx, appId, spelling, serviceAccountKey))
+			metadata, err := service.GetAndroidCredentialsMetadata(ctx, appId, spelling)
+			require.NoError(t, err)
+			require.Equal(t, "publisher@test-project.iam.gserviceaccount.com", metadata.GoogleServiceAccountEmail)
 			stored, err := credentialsStore.GetAndroidCredentials(ctx, identifierId)
 			require.NoError(t, err)
 			require.NotNil(t, stored)
@@ -46,7 +50,7 @@ func TestVaultUUIDAliasesRoundTrip(t *testing.T) {
 				{"keystore", stored.SealedKeystore, keystore},
 				{"keystore_password", stored.SealedKeystorePassword, []byte(input.KeystorePassword)},
 				{"key_password", stored.SealedKeyPassword, []byte(input.KeyPassword)},
-				{"google_service_account_key", *stored.SealedGoogleServiceAccountKey, []byte(input.GoogleServiceAccountKeyJSON)},
+				{"google_service_account_key", *stored.SealedGoogleServiceAccountKey, []byte(serviceAccountKey)},
 			} {
 				plain, err := crypto.UnsealAESGCM(field.sealed, master, []byte(identifierId+"|android_credentials|"+field.name))
 				require.NoError(t, err, field.name)

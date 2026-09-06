@@ -70,6 +70,20 @@ func (s *PostgresCredentialsStore) GetAndroidCredentials(ctx context.Context, id
 	}, nil
 }
 
+func (s *PostgresCredentialsStore) UpdateGooglePlayServiceAccountKey(ctx context.Context, identifierId string, sealedKey *string) error {
+	commandTag, err := s.engine.Queries.UpdateGooglePlayServiceAccountKey(ctx, pgdb.UpdateGooglePlayServiceAccountKeyParams{
+		AppIdentifierID:               ToPgUUID(identifierId),
+		SealedGoogleServiceAccountKey: sealedKey,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to update google play service account key in database: %w", err)
+	}
+	if commandTag.RowsAffected() == 0 {
+		return &ErrResourceNotFound{Resource: "android credentials", Identifier: fmt.Sprintf("identifierId: %s", identifierId)}
+	}
+	return nil
+}
+
 func (s *PostgresCredentialsStore) DeleteAndroidCredentials(ctx context.Context, identifierId string) error {
 	commandTag, err := s.engine.Queries.DeleteAndroidCredentialsByIdentifierID(ctx, ToPgUUID(identifierId))
 	if err != nil {

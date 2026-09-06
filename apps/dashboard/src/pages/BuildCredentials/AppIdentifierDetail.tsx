@@ -2,8 +2,14 @@ import { useState } from 'react';
 import { ApiError } from '@/components/APIError';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useParams } from 'react-router';
-import { CheckCircle2, Pencil, Trash2 } from 'lucide-react';
-import { api, ApiProblemError, AndroidCredentialsMetadata, AppIdentifier } from '@/lib/api';
+import { Download, ExternalLink, KeyRound, Pencil, Trash2 } from 'lucide-react';
+import {
+  api,
+  ApiProblemError,
+  AndroidCredentialsMetadata,
+  AppIdentifier,
+  describeApiError,
+} from '@/lib/api';
 import { useSelectedApp } from '@/lib/SelectedAppContext';
 import { useToast } from '@/hooks/use-toast';
 import { Button } from '@/components/ui/button';
@@ -14,6 +20,14 @@ import { DeleteDialog } from '@/components/ui/delete-dialog';
 import { AdminOnlyNote } from '@/components/ui/admin-only-note';
 import { TimestampCell } from '@/components/ui/timestamp-cell';
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
+import {
   Breadcrumb,
   BreadcrumbItem,
   BreadcrumbLink,
@@ -23,6 +37,7 @@ import {
 } from '@/components/ui/breadcrumb';
 import { useAppPermission } from '@/ee/lib/PermissionsContext';
 import { AndroidCredentialsForm } from './AndroidCredentialsForm';
+import { GooglePlayServiceAccountCard } from './GooglePlayServiceAccountCard';
 import { PlatformLogo } from './PlatformLogo';
 import { platformLabel } from './platforms';
 
@@ -32,6 +47,9 @@ const MetadataRow = ({ label, value }: { label: string; value: React.ReactNode }
     <span className="text-sm font-medium">{value}</span>
   </div>
 );
+
+const PLAY_SIGNING_DOCS =
+  'https://support.google.com/googleplay/android-developer/answer/9842756?hl=en';
 
 const AndroidCredentialsSection = ({
   identifier,
@@ -45,8 +63,9 @@ const AndroidCredentialsSection = ({
   const queryClient = useQueryClient();
 
   const [isReplacing, setIsReplacing] = useState(false);
-  const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
-  const [isDeleting, setIsDeleting] = useState(false);
+  const [isGenerateDialogOpen, setIsGenerateDialogOpen] = useState(false);
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [isDownloading, setIsDownloading] = useState(false);
 
   const credentialsQuery = useQuery({
     queryKey: ['androidCredentials', selectedAppId, identifier.id],
@@ -61,28 +80,40 @@ const AndroidCredentialsSection = ({
     });
   };
 
-  const handleDeleteCredentials = async () => {
-    setIsDeleting(true);
+  const handleGenerateCredentials = async () => {
+    setIsGenerating(true);
     try {
-      await api.deleteAndroidCredentials(identifier.id);
+      await api.generateAndroidCredentials(identifier.id);
       invalidate();
       toast({
-        title: 'Credentials deleted',
-        description: `Builds for "${identifier.identifier}" can no longer be signed until new credentials are set up.`,
+        title: 'Keystore replaced',
+        description:
+          'The new upload keystore is ready. If Google Play already has a build for this app, reset its upload key before the next upload.',
       });
-      setIsDeleteDialogOpen(false);
+      setIsGenerateDialogOpen(false);
     } catch (error) {
-      let errorTitle = 'Error deleting credentials';
-      let errorMessage = 'An unexpected error occurred.';
-      if (error instanceof ApiProblemError) {
-        errorTitle = error.title;
-        errorMessage = error.detail;
-      } else if (error instanceof Error) {
-        errorMessage = error.message;
-      }
-      toast({ title: errorTitle, description: errorMessage, variant: 'destructive' });
+      const message = describeApiError(error, 'Error generating keystore');
+      toast({ title: message.title, description: message.description, variant: 'destructive' });
     } finally {
-      setIsDeleting(false);
+      setIsGenerating(false);
+    }
+  };
+
+  const handleDownloadKeystore = async () => {
+    setIsDownloading(true);
+    try {
+      const archive = await api.downloadAndroidKeystore(identifier.id);
+      const url = URL.createObjectURL(archive);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `${identifier.identifier}-android-keystore.zip`;
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      const message = describeApiError(error, 'Error downloading keystore');
+      toast({ title: message.title, description: message.description, variant: 'destructive' });
+    } finally {
+      setIsDownloading(false);
     }
   };
 
@@ -91,7 +122,9 @@ const AndroidCredentialsSection = ({
   }
 
   if (credentialsQuery.isError) {
-    return <ApiError error={credentialsQuery.error} onRetry={() => void credentialsQuery.refetch()} />;
+    return (
+      <ApiError error={credentialsQuery.error} onRetry={() => void credentialsQuery.refetch()} />
+    );
   }
 
   const metadata: AndroidCredentialsMetadata | null | undefined = credentialsQuery.data;
@@ -122,59 +155,90 @@ const AndroidCredentialsSection = ({
         <CardHeader className="flex-row items-center justify-between space-y-0 border-b py-4">
           <CardTitle className="text-base">Signing keystore</CardTitle>
           {canManage && (
-            <div className="flex gap-2">
+            <div className="flex flex-wrap gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleDownloadKeystore}
+                disabled={isDownloading}>
+                <Download className="h-3.5 w-3.5" /> {isDownloading ? 'Downloading…' : 'Download'}
+              </Button>
+              <Button variant="outline" size="sm" onClick={() => setIsGenerateDialogOpen(true)}>
+                <KeyRound className="h-3.5 w-3.5" /> Generate new
+              </Button>
               <Button variant="outline" size="sm" onClick={() => setIsReplacing(true)}>
                 <Pencil className="h-3.5 w-3.5" /> Replace
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => setIsDeleteDialogOpen(true)}
-                className="text-muted-foreground hover:bg-destructive/10 hover:text-destructive">
-                <Trash2 className="h-3.5 w-3.5" /> Delete
               </Button>
             </div>
           )}
         </CardHeader>
         <CardContent className="divide-y pt-2">
-          <MetadataRow label="Key alias" value={<span className="font-mono text-xs">{metadata.keyAlias}</span>} />
+          <MetadataRow
+            label="Key alias"
+            value={<span className="font-mono text-xs">{metadata.keyAlias}</span>}
+          />
           <MetadataRow label="Created" value={<TimestampCell dateString={metadata.createdAt} />} />
           <MetadataRow label="Updated" value={<TimestampCell dateString={metadata.updatedAt} />} />
+          <p className="py-3 text-xs leading-relaxed text-muted-foreground">
+            For the app's first Google Play upload, no additional key setup is required. If Google
+            Play has already accepted a build for this app, request an upload key reset before using
+            a replacement keystore. The same upload key is used across all Play release tracks.{' '}
+            <a
+              href={PLAY_SIGNING_DOCS}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center gap-1 font-medium text-foreground underline underline-offset-4">
+              Google Play signing guide <ExternalLink className="h-3 w-3" />
+            </a>
+          </p>
         </CardContent>
       </Card>
 
-      <Card>
-        <CardHeader className="border-b py-4">
-          <CardTitle className="text-base">Google Play service account</CardTitle>
-        </CardHeader>
-        <CardContent className="pt-4">
-          {metadata.hasGoogleServiceAccountKey ? (
-            <span className="inline-flex items-center gap-1.5 text-sm font-medium text-emerald-700 dark:text-emerald-300">
-              <CheckCircle2 className="h-4 w-4" /> Configured
-            </span>
-          ) : (
-            <span className="text-sm text-muted-foreground">Not configured</span>
-          )}
-          {canManage && (
-            <p className="mt-2 text-xs text-muted-foreground">
-              Credentials are saved as a whole: to add, change or remove the service account key,
-              use 'Replace' above and re-upload the keystore.
-            </p>
-          )}
-        </CardContent>
-      </Card>
-
-      <DeleteDialog
-        isOpen={isDeleteDialogOpen}
-        onClose={() => setIsDeleteDialogOpen(false)}
-        onConfirm={handleDeleteCredentials}
-        isDeleting={isDeleting}
-        title="Delete build credentials"
-        resourceName={`${identifier.identifier} credentials`}
-        descriptionText="The keystore, its passwords and the service account key will be permanently removed. Builds for this identifier can no longer be signed. This cannot be undone."
-        confirmButtonText="Delete credentials"
-        isDeletingButtonText="Deleting…"
+      <GooglePlayServiceAccountCard
+        identifierId={identifier.id}
+        identifier={identifier.identifier}
+        hasKey={metadata.hasGoogleServiceAccountKey}
+        serviceAccountEmail={metadata.googleServiceAccountEmail}
+        projectId={metadata.googleServiceAccountProjectId}
+        canManage={canManage}
+        onChanged={invalidate}
       />
+
+      <Dialog open={isGenerateDialogOpen} onOpenChange={setIsGenerateDialogOpen}>
+        <DialogContent className="sm:max-w-[460px]">
+          <DialogHeader>
+            <DialogTitle>Replace the upload keystore?</DialogTitle>
+            <DialogDescription className="space-y-3 pt-2">
+              <span className="block">
+                xprem will permanently replace the current keystore and passwords with newly
+                generated credentials.
+              </span>
+              <span className="block font-medium text-foreground">
+                If this app has never been uploaded to Google Play, no reset is needed. If Google
+                Play has already accepted a build, request an upload key reset before the next
+                upload.
+              </span>
+              <span className="block">
+                Download the current keystore first if you need a backup.
+              </span>
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="border-t pt-4">
+            <Button
+              variant="outline"
+              onClick={() => setIsGenerateDialogOpen(false)}
+              disabled={isGenerating}>
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={handleGenerateCredentials}
+              disabled={isGenerating}>
+              {isGenerating ? 'Generating…' : 'Generate and replace'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };
@@ -236,7 +300,9 @@ export const AppIdentifierDetail = () => {
   }
 
   if (identifiersQuery.isError) {
-    return <ApiError error={identifiersQuery.error} onRetry={() => void identifiersQuery.refetch()} />;
+    return (
+      <ApiError error={identifiersQuery.error} onRetry={() => void identifiersQuery.refetch()} />
+    );
   }
 
   if (!identifier) {

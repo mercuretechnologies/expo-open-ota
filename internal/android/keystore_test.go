@@ -43,17 +43,25 @@ func TestValidateAndroidKeystoreJKS(t *testing.T) {
 func TestValidateAndroidKeystorePKCS12FromKeytool(t *testing.T) {
 	single := readTestdata(t, "single.p12")
 	assert.NoError(t, ValidateKeystore(single, "store-pass", "store-pass", "upload"))
+	certificatePEM, err := SigningCertificatePEM(single, "store-pass", "store-pass", "upload")
+	require.NoError(t, err)
+	assert.Contains(t, string(certificatePEM), "BEGIN CERTIFICATE")
 	assert.NoError(t, ValidateKeystore(single, "store-pass", "store-pass", "UPLOAD"))
 	assertFieldError(t, ValidateKeystore(single, "wrong", "wrong", "upload"), "keystorePassword")
 	assertFieldError(t, ValidateKeystore(single, "store-pass", "other", "upload"), "keyPassword")
 
-	err := ValidateKeystore(single, "store-pass", "store-pass", "release")
+	err = ValidateKeystore(single, "store-pass", "store-pass", "release")
 	assertFieldError(t, err, "keyAlias")
 	assert.Contains(t, err.Error(), "upload")
 
 	multi := readTestdata(t, "multi.p12")
 	assert.NoError(t, ValidateKeystore(multi, "store-pass", "store-pass", "upload"))
 	assert.NoError(t, ValidateKeystore(multi, "store-pass", "store-pass", "release"))
+	uploadCertificate, err := SigningCertificatePEM(multi, "store-pass", "store-pass", "upload")
+	require.NoError(t, err)
+	releaseCertificate, err := SigningCertificatePEM(multi, "store-pass", "store-pass", "release")
+	require.NoError(t, err)
+	assert.NotEqual(t, uploadCertificate, releaseCertificate)
 
 	err = ValidateKeystore(multi, "store-pass", "store-pass", "nope")
 	assertFieldError(t, err, "keyAlias")
