@@ -68,19 +68,18 @@ export const GooglePlayServiceAccountCard = ({
 
   const handlePick = async (file: File) => {
     if (disabledReason) return;
-    const contents = await file.text();
     try {
+      const contents = await file.text();
       JSON.parse(contents);
+      setServiceAccountKey(contents);
+      setFileName(file.name);
     } catch {
       toast({
         title: 'Invalid service account key',
-        description: 'The selected file is not valid JSON.',
+        description: 'The selected file could not be read or is not valid JSON.',
         variant: 'destructive',
       });
-      return;
     }
-    setServiceAccountKey(contents);
-    setFileName(file.name);
   };
 
   const handleSave = async () => {
