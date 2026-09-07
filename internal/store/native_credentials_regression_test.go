@@ -30,11 +30,15 @@ func TestVaultUUIDAliasesRoundTrip(t *testing.T) {
 	input := services.AndroidCredentialsInput{
 		KeyAlias: "upload", KeystoreBase64: base64.StdEncoding.EncodeToString(keystore),
 		KeystorePassword: "store-pass", KeyPassword: "key-pass",
-		GoogleServiceAccountKeyJSON: `{"type":"service_account"}`,
 	}
+	serviceAccountKey := `{"type":"service_account","project_id":"test-project","client_email":"publisher@test-project.iam.gserviceaccount.com","private_key":"secret"}`
 	for _, spelling := range []string{strings.ToUpper(identifierId), "{" + identifierId + "}", strings.ReplaceAll(identifierId, "-", "")} {
 		t.Run(spelling, func(t *testing.T) {
 			require.NoError(t, service.SaveAndroidCredentials(ctx, appId, spelling, input))
+			require.NoError(t, service.SaveGooglePlayServiceAccountKey(ctx, appId, spelling, serviceAccountKey))
+			metadata, err := service.GetAndroidCredentialsMetadata(ctx, appId, spelling)
+			require.NoError(t, err)
+			require.Equal(t, "publisher@test-project.iam.gserviceaccount.com", metadata.GoogleServiceAccountEmail)
 			stored, err := credentialsStore.GetAndroidCredentials(ctx, identifierId)
 			require.NoError(t, err)
 			require.NotNil(t, stored)
@@ -46,7 +50,7 @@ func TestVaultUUIDAliasesRoundTrip(t *testing.T) {
 				{"keystore", stored.SealedKeystore, keystore},
 				{"keystore_password", stored.SealedKeystorePassword, []byte(input.KeystorePassword)},
 				{"key_password", stored.SealedKeyPassword, []byte(input.KeyPassword)},
-				{"google_service_account_key", *stored.SealedGoogleServiceAccountKey, []byte(input.GoogleServiceAccountKeyJSON)},
+				{"google_service_account_key", *stored.SealedGoogleServiceAccountKey, []byte(serviceAccountKey)},
 			} {
 				plain, err := crypto.UnsealAESGCM(field.sealed, master, []byte(identifierId+"|android_credentials|"+field.name))
 				require.NoError(t, err, field.name)
@@ -56,7 +60,7 @@ func TestVaultUUIDAliasesRoundTrip(t *testing.T) {
 	}
 }
 
-func TestDeleteIdentifierPreservesConcurrentCredentials(t *testing.T) {
+func TestDeleteIdentifierRemovesConcurrentCredentials(t *testing.T) {
 	_, identifiers, pool := setupCredentialsStores(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -80,13 +84,12 @@ func TestDeleteIdentifierPreservesConcurrentCredentials(t *testing.T) {
 		return err == nil && blocked
 	}, 5*time.Second, 10*time.Millisecond, "delete must be blocked behind credentials insert before commit")
 	require.NoError(t, insertTx.Commit(ctx))
-	deleteErr := <-done
-	var remaining int
-	require.NoError(t, pool.QueryRow(ctx, "SELECT count(*) FROM android_credentials WHERE app_identifier_id=$1", identifierId).Scan(&remaining))
-	t.Logf("delete error=%v, credentials remaining=%d", deleteErr, remaining)
-	var hasCredentials *store.ErrIdentifierHasCredentials
-	require.ErrorAs(t, deleteErr, &hasCredentials)
-	require.Equal(t, 1, remaining)
+	require.NoError(t, <-done)
+	var remainingCredentials, remainingIdentifiers int
+	require.NoError(t, pool.QueryRow(ctx, "SELECT count(*) FROM android_credentials WHERE app_identifier_id=$1", identifierId).Scan(&remainingCredentials))
+	require.NoError(t, pool.QueryRow(ctx, "SELECT count(*) FROM app_identifiers WHERE id=$1", identifierId).Scan(&remainingIdentifiers))
+	require.Equal(t, 0, remainingCredentials)
+	require.Equal(t, 0, remainingIdentifiers)
 }
 
 func TestDeleteAppWithBoundEnvironment(t *testing.T) {

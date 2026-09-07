@@ -122,10 +122,6 @@ func (h *AppIdentifiersHandler) DeleteAppIdentifierHandler(w http.ResponseWriter
 	}
 	err := h.identifierService.DeleteAppIdentifier(r.Context(), appId, identifierId)
 	if err != nil {
-		if hasCredsErr := (*store.ErrIdentifierHasCredentials)(nil); errors.As(err, &hasCredsErr) {
-			handlers.RenderError(w, http.StatusConflict, hasCredsErr.Error())
-			return
-		}
 		if notFoundErr := (*store.ErrResourceNotFound)(nil); errors.As(err, &notFoundErr) {
 			handlers.RenderError(w, http.StatusNotFound, notFoundErr.Error())
 			return

@@ -19,6 +19,8 @@ type AndroidCredential struct {
 	SealedKeystorePassword        string             `json:"sealed_keystore_password"`
 	SealedKeyPassword             string             `json:"sealed_key_password"`
 	SealedGoogleServiceAccountKey *string            `json:"sealed_google_service_account_key"`
+	GoogleServiceAccountEmail     *string            `json:"google_service_account_email"`
+	GoogleServiceAccountProjectID *string            `json:"google_service_account_project_id"`
 	CreatedAt                     pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt                     pgtype.Timestamptz `json:"updated_at"`
 }

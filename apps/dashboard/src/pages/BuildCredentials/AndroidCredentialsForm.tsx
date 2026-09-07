@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { Eye, EyeOff, Upload, X } from 'lucide-react';
-import { api, ApiProblemError } from '@/lib/api';
+import { Eye, EyeOff, KeyRound, Upload, X } from 'lucide-react';
+import { api, ApiProblemError, describeApiError } from '@/lib/api';
 import { useSelectedApp } from '@/lib/SelectedAppContext';
 import { useToast } from '@/hooks/use-toast';
 import { Button } from '@/components/ui/button';
@@ -65,16 +65,18 @@ const PasswordInput = ({
 };
 
 // Hidden file input behind a button, with the picked file name shown inline.
-const FilePickerRow = ({
+export const FilePickerRow = ({
   accept,
   fileName,
   onPick,
   onClear,
+  disabled = false,
 }: {
   accept: string;
   fileName: string | null;
   onPick: (file: File) => void;
   onClear: () => void;
+  disabled?: boolean;
 }) => {
   const inputRef = useRef<HTMLInputElement>(null);
   return (
@@ -86,6 +88,7 @@ const FilePickerRow = ({
             <button
               type="button"
               onClick={onClear}
+              disabled={disabled}
               aria-label="Remove file"
               className="text-muted-foreground hover:text-foreground">
               <X className="h-3.5 w-3.5" />
@@ -99,6 +102,7 @@ const FilePickerRow = ({
         ref={inputRef}
         type="file"
         accept={accept}
+        disabled={disabled}
         className="hidden"
         onChange={e => {
           const file = e.target.files?.[0];
@@ -106,7 +110,11 @@ const FilePickerRow = ({
           e.target.value = '';
         }}
       />
-      <Button type="button" variant="outline" onClick={() => inputRef.current?.click()}>
+      <Button
+        type="button"
+        variant="outline"
+        onClick={() => inputRef.current?.click()}
+        disabled={disabled}>
         <Upload className="h-4 w-4" /> Choose file
       </Button>
     </div>
@@ -135,13 +143,11 @@ export const AndroidCredentialsForm = ({
   const queryClient = useQueryClient();
 
   const [isSaving, setIsSaving] = useState(false);
+  const [isGenerating, setIsGenerating] = useState(false);
   const [keystoreFile, setKeystoreFile] = useState<File | null>(null);
   const [keystorePassword, setKeystorePassword] = useState('');
   const [keyAlias, setKeyAlias] = useState(initialKeyAlias);
   const [keyPassword, setKeyPassword] = useState('');
-  const [serviceAccountKeyJson, setServiceAccountKeyJson] = useState('');
-  const [serviceAccountKeyFileName, setServiceAccountKeyFileName] = useState<string | null>(null);
-
   const isComplete = !!keystoreFile && !!keystorePassword && !!keyAlias.trim() && !!keyPassword;
 
   const handlePickKeystore = (file: File) => {
@@ -156,22 +162,6 @@ export const AndroidCredentialsForm = ({
     setKeystoreFile(file);
   };
 
-  const handlePickServiceAccountKey = async (file: File) => {
-    const text = await file.text();
-    try {
-      JSON.parse(text);
-    } catch {
-      toast({
-        title: 'Invalid service account key',
-        description: 'The selected file is not valid JSON.',
-        variant: 'destructive',
-      });
-      return;
-    }
-    setServiceAccountKeyJson(text);
-    setServiceAccountKeyFileName(file.name);
-  };
-
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!keystoreFile || !isComplete) return;
@@ -183,10 +173,11 @@ export const AndroidCredentialsForm = ({
         keystore,
         keystorePassword,
         keyPassword,
-        googleServiceAccountKey: serviceAccountKeyJson,
       });
       queryClient.invalidateQueries({ queryKey: ['identifiers', selectedAppId] });
-      queryClient.invalidateQueries({ queryKey: ['androidCredentials', selectedAppId, identifierId] });
+      queryClient.invalidateQueries({
+        queryKey: ['androidCredentials', selectedAppId, identifierId],
+      });
       toast({
         title: 'Credentials saved',
         description: 'The Android signing credentials are configured.',
@@ -207,6 +198,27 @@ export const AndroidCredentialsForm = ({
     }
   };
 
+  const handleGenerate = async () => {
+    setIsGenerating(true);
+    try {
+      await api.generateAndroidCredentials(identifierId);
+      queryClient.invalidateQueries({ queryKey: ['identifiers', selectedAppId] });
+      queryClient.invalidateQueries({
+        queryKey: ['androidCredentials', selectedAppId, identifierId],
+      });
+      toast({
+        title: 'Keystore generated',
+        description: 'xprem generated and securely stored the Android signing credentials.',
+      });
+      onSaved?.();
+    } catch (error) {
+      const message = describeApiError(error, 'Error generating keystore');
+      toast({ title: message.title, description: message.description, variant: 'destructive' });
+    } finally {
+      setIsGenerating(false);
+    }
+  };
+
   return (
     <form onSubmit={handleSave}>
       <Card>
@@ -216,12 +228,30 @@ export const AndroidCredentialsForm = ({
           </CardTitle>
           <CardDescription>
             {mode === 'setup'
-              ? 'Provide the keystore that signs your release builds. Everything is encrypted at rest and never leaves the server.'
-              : 'Saving overwrites the current keystore, passwords and service account key.'}
+              ? 'Generate a new upload keystore with xprem or provide an existing one.'
+              : 'Saving replaces only the keystore, alias and passwords.'}
           </CardDescription>
         </CardHeader>
 
         <CardContent className="space-y-6 py-6">
+          {mode === 'setup' && (
+            <div className="flex flex-col gap-4 rounded-lg border bg-muted/30 p-4 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <div className="flex items-center gap-2 text-sm font-semibold">
+                  <KeyRound className="h-4 w-4" /> Generate an upload keystore
+                </div>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  xprem generates the key, alias and passwords, then encrypts them at rest.
+                </p>
+              </div>
+              <Button type="button" onClick={handleGenerate} disabled={isSaving || isGenerating}>
+                {isGenerating ? 'Generating…' : 'Generate keystore'}
+              </Button>
+            </div>
+          )}
+
+          {mode === 'setup' && <Separator />}
+
           <div className="space-y-5">
             <div>
               <h3 className="text-sm font-semibold">Signing keystore</h3>
@@ -261,30 +291,6 @@ export const AndroidCredentialsForm = ({
               />
             </div>
           </div>
-
-          <Separator />
-
-          <div className="space-y-5">
-            <div>
-              <h3 className="text-sm font-semibold">Google Play service account</h3>
-              <p className="mt-0.5 text-xs text-muted-foreground">
-                Optional. A service account JSON key used to upload builds to Google Play on your
-                behalf.
-              </p>
-            </div>
-            <div className="space-y-2">
-              <Label>Service account key (.json)</Label>
-              <FilePickerRow
-                accept=".json,application/json"
-                fileName={serviceAccountKeyFileName}
-                onPick={handlePickServiceAccountKey}
-                onClear={() => {
-                  setServiceAccountKeyJson('');
-                  setServiceAccountKeyFileName(null);
-                }}
-              />
-            </div>
-          </div>
         </CardContent>
 
         <CardFooter className="justify-end gap-2 border-t py-4">
@@ -293,7 +299,7 @@ export const AndroidCredentialsForm = ({
               Cancel
             </Button>
           )}
-          <Button type="submit" disabled={isSaving || !isComplete}>
+          <Button type="submit" disabled={isSaving || isGenerating || !isComplete}>
             {isSaving ? 'Saving…' : 'Save credentials'}
           </Button>
         </CardFooter>

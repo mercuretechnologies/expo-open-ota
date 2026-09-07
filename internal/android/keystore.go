@@ -5,7 +5,9 @@ import (
 	"crypto"
 	"crypto/x509"
 	"encoding/binary"
+	"encoding/pem"
 	"errors"
+	"fmt"
 	"strings"
 	"xprem/internal/validation"
 
@@ -34,6 +36,82 @@ func ValidateKeystore(data []byte, keystorePassword, keyPassword, keyAlias strin
 		return validatePKCS12(data, keystorePassword, keyPassword, keyAlias)
 	}
 	return validation.Errorf("keystore", "file is not a JKS or PKCS12 keystore")
+}
+
+// SigningCertificatePEM returns the public certificate Google Play needs when
+// an upload key is registered or reset. The private key never leaves the JKS.
+func SigningCertificatePEM(data []byte, keystorePassword, keyPassword, keyAlias string) ([]byte, error) {
+	if err := ValidateKeystore(data, keystorePassword, keyPassword, keyAlias); err != nil {
+		return nil, err
+	}
+	var certificateDER []byte
+	if binary.BigEndian.Uint32(data[:4]) == jksMagic {
+		ks := keystore.New()
+		if err := ks.Load(bytes.NewReader(data), []byte(keystorePassword)); err != nil {
+			return nil, fmt.Errorf("open validated JKS: %w", err)
+		}
+		entry, err := ks.GetPrivateKeyEntry(keyAlias, []byte(keyPassword))
+		if err != nil {
+			return nil, fmt.Errorf("read validated JKS key: %w", err)
+		}
+		certificateDER = entry.CertificateChain[0].Content
+	} else {
+		blocks, err := pkcs12.ToPEM(data, keystorePassword)
+		if err != nil {
+			return nil, fmt.Errorf("read validated PKCS12 certificate: %w", err)
+		}
+		certificateDER, err = signingCertificateDER(blocks, keyAlias)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certificateDER}), nil
+}
+
+func signingCertificateDER(blocks []*pem.Block, keyAlias string) ([]byte, error) {
+	var publicKey []byte
+	for _, block := range blocks {
+		if block.Type != "PRIVATE KEY" || !strings.EqualFold(block.Headers["friendlyName"], keyAlias) {
+			continue
+		}
+		signer, err := parsePrivateKeySigner(block.Bytes)
+		if err != nil {
+			return nil, fmt.Errorf("parse private key for alias %q: %w", keyAlias, err)
+		}
+		publicKey, err = x509.MarshalPKIXPublicKey(signer.Public())
+		if err != nil {
+			return nil, fmt.Errorf("read public key for alias %q: %w", keyAlias, err)
+		}
+		break
+	}
+	for _, block := range blocks {
+		if block.Type != "CERTIFICATE" {
+			continue
+		}
+		certificate, err := x509.ParseCertificate(block.Bytes)
+		if err != nil {
+			return nil, fmt.Errorf("parse certificate in PKCS12 keystore: %w", err)
+		}
+		if bytes.Equal(publicKey, certificate.RawSubjectPublicKeyInfo) {
+			return block.Bytes, nil
+		}
+	}
+	return nil, fmt.Errorf("certificate for alias %q not found in validated PKCS12 keystore", keyAlias)
+}
+
+func parsePrivateKeySigner(der []byte) (crypto.Signer, error) {
+	if key, err := x509.ParsePKCS8PrivateKey(der); err == nil {
+		if signer, ok := key.(crypto.Signer); ok {
+			return signer, nil
+		}
+	}
+	if key, err := x509.ParsePKCS1PrivateKey(der); err == nil {
+		return key, nil
+	}
+	if key, err := x509.ParseECPrivateKey(der); err == nil {
+		return key, nil
+	}
+	return nil, errors.New("unsupported private key encoding")
 }
 
 func validateJKS(data []byte, keystorePassword, keyPassword, keyAlias string) error {

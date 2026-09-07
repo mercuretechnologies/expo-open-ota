@@ -21,6 +21,8 @@ CREATE TABLE android_credentials (
     sealed_keystore_password TEXT NOT NULL,
     sealed_key_password TEXT NOT NULL,
     sealed_google_service_account_key TEXT,
+    google_service_account_email TEXT,
+    google_service_account_project_id TEXT,
     created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT fk_android_credentials_identifier FOREIGN KEY (app_identifier_id) REFERENCES app_identifiers(id) ON DELETE CASCADE
