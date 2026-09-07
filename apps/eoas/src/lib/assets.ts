@@ -8,7 +8,7 @@ import { Credentials, getAuthHeaders, missingEooTokenHint } from './auth';
 import { FileDigest, digestFile } from './crypto';
 import { RequestedPlatform } from './expoConfig';
 import { fetchWithRetries } from './fetch';
-import Log from './log';
+import Log, { learnMore } from './log';
 
 const fileMetadataJoi = Joi.object({
   assets: Joi.array()
@@ -388,11 +388,10 @@ export class NoChangesDetectedError extends Error {
   }
 }
 
-function outdatedServerHint(status: number, text: string): string {
-  if (status !== 400 || text.trim() !== 'No file names provided') {
-    return '';
-  }
-  return '\nHint: the server did not understand the file list, so it runs a version older than 3.2.0. Upgrade the server to 3.2.0 or later, or pin eoas@3.1.X in devDependencies until then. See https://xprem.dev/changelog/bundle-diffing-and-cas';
+function outdatedServerHint(): string {
+  return `Hint: the server did not understand the file list, so it runs a version older than 3.2.0. Upgrade the server to 3.2.0 or later, or pin eoas@3.1.X in devDependencies until then. ${learnMore(
+    'https://xprem.dev/changelog/bundle-diffing-and-cas'
+  )}`;
 }
 
 export async function requestUploadUrls({
@@ -455,9 +454,11 @@ export async function requestUploadUrls({
     throw new NoChangesDetectedError(platform);
   }
   if (!response.ok) {
-    const text = await response.text();
-    const hint = missingEooTokenHint(response.status) || outdatedServerHint(response.status, text);
-    throw new Error(`Failed to request upload URL: ${text}${hint}`);
+    const text = (await response.text()).trimEnd();
+    if (response.status === 400 && text === 'No file names provided') {
+      throw new Error(`Failed to request upload URL: ${text}\n${outdatedServerHint()}`);
+    }
+    throw new Error(`Failed to request upload URL: ${text}${missingEooTokenHint(response.status)}`);
   }
   const json = await response.json();
   // Joi's sanitized value, not the raw payload: it is the object the schema
