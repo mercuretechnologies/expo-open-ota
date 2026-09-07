@@ -226,6 +226,14 @@ func IsBundleDiffingCDNRedirect() bool {
 	return enabled
 }
 
+// IsPreventCDNRedirectionHeaderEnabled reports whether clients may force asset
+// delivery through the server with prevent-cdn-redirection: true. It is off by
+// default because enabling it lets any asset client bypass the configured CDN.
+func IsPreventCDNRedirectionHeaderEnabled() bool {
+	enabled, _ := strconv.ParseBool(GetEnv("ENABLE_PREVENT_CDN_REDIRECTION_HEADER"))
+	return enabled
+}
+
 // BundleDiffingMaxBundleSize is the largest launch asset, in bytes, a patch
 // job loads in memory (BUNDLE_DIFFING_MAX_BUNDLE_SIZE_MB, default 64). A job
 // peaks at about six times this size, and two jobs run at once.
@@ -307,6 +315,10 @@ var DefaultEnvValues = map[string]string{
 	"BUNDLE_DIFFING_CDN_REDIRECT":       "false",
 	"BUNDLE_DIFFING_MAX_BUNDLE_SIZE_MB": "64",
 	"BUNDLE_DIFFING_PATCH_MAX_RATIO":    "0.3",
+
+	// Client-controlled CDN bypass: opt-in because every asset client can use
+	// the header once it is enabled.
+	"ENABLE_PREVENT_CDN_REDIRECTION_HEADER": "false",
 
 	// Database connection defaults
 	"DB_URL":                "",

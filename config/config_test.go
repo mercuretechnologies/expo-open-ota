@@ -227,3 +227,19 @@ func TestDeviceTelemetryDisabled(t *testing2.T) {
 		assert.Equal(t, expected, IsDeviceTelemetryDisabled(), "DISABLE_DEVICE_TELEMETRY=%q", value)
 	}
 }
+
+func TestPreventCDNRedirectionHeaderEnabled(t *testing2.T) {
+	teardown := setup(t)
+	defer teardown()
+	for value, expected := range map[string]bool{
+		"":      false,
+		"false": false,
+		"maybe": false,
+		"true":  true,
+		"1":     true,
+		"TRUE":  true,
+	} {
+		t.Setenv("ENABLE_PREVENT_CDN_REDIRECTION_HEADER", value)
+		assert.Equal(t, expected, IsPreventCDNRedirectionHeaderEnabled(), "ENABLE_PREVENT_CDN_REDIRECTION_HEADER=%q", value)
+	}
+}

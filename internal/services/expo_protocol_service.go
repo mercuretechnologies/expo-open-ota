@@ -92,6 +92,9 @@ type AssetResolutionParams struct {
 	Extension           string
 	ExpoCurrentUpdateId string
 	AIM                 string
+	// PreventCDNRedirection is set only when the operator has enabled the
+	// corresponding request header. It applies to full assets and patches.
+	PreventCDNRedirection bool
 }
 
 type ExpoAssetError struct {
@@ -403,7 +406,7 @@ func (s *ExpoProtocolService) resolveUpdateAcrossBranches(ctx context.Context, r
 // that already holds the manifest naming it. The app id still scopes the read,
 // so one tenant cannot address another's blobs.
 func (s *ExpoProtocolService) resolveBlobAsset(ctx context.Context, params AssetResolutionParams) (*ExpoAssetResult, error) {
-	if cdn := cdn2.GetCDN(); cdn != nil {
+	if cdn := cdn2.GetCDN(); cdn != nil && !params.PreventCDNRedirection {
 		redirectURL, err := cdn.ComputeRedirectionURLForBlob(params.AppID, params.Hash)
 		if err != nil {
 			log.Printf("[RequestID: %s] Error signing blob url: %v", params.RequestID, err)
@@ -478,7 +481,7 @@ func (s *ExpoProtocolService) resolveBSDiffAsset(ctx context.Context, params Ass
 	if !exists {
 		return nil
 	}
-	if config.IsBundleDiffingCDNRedirect() {
+	if config.IsBundleDiffingCDNRedirect() && !params.PreventCDNRedirection {
 		if cdn := cdn2.GetCDN(); cdn != nil {
 			redirectURL, err := cdn.ComputeRedirectionURLForPatch(params.AppID, branch, target, source)
 			if err == nil {
@@ -569,7 +572,7 @@ func (s *ExpoProtocolService) ResolveAsset(ctx context.Context, params AssetReso
 
 	cdn := cdn2.GetCDN()
 
-	if cdn == nil {
+	if cdn == nil || params.PreventCDNRedirection {
 		resp, err := assets.HandleAssetsWithFile(req)
 		if err != nil {
 			return nil, &ExpoAssetError{StatusCode: http.StatusInternalServerError, Message: "Internal Server Error"}

@@ -166,6 +166,20 @@ func TestResolveAssetPatchRedirectsToTheCDN(t *testing.T) {
 	}
 }
 
+func TestResolveAssetPatchStaysOnTheServerWhenCDNRedirectionIsPrevented(t *testing.T) {
+	h, service, patchBucket := patchHarness(t)
+	t.Setenv("BUNDLE_DIFFING_CDN_REDIRECT", "true")
+	withGenericCDN(t, "")
+	params := patchParams(h)
+	params.PreventCDNRedirection = true
+
+	result, err := service.ResolveAsset(context.Background(), params)
+	require.NoError(t, err)
+
+	assertPatchResult(t, result)
+	assert.Equal(t, 1, patchBucket.readCalls)
+}
+
 func TestResolveAssetPatchStaysOnTheServerWhenRedirectIsOff(t *testing.T) {
 	h, service, _ := patchHarness(t)
 	withGenericCDN(t, "")

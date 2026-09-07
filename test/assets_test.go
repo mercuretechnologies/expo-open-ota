@@ -178,6 +178,7 @@ func TestAutomaticUrlRedirectionIfCDNIsSet(t *testing.T) {
 func TestCDNRedirectionCannotBeTurnedOffByAHeader(t *testing.T) {
 	teardown := setup(t)
 	defer teardown()
+	t.Setenv("ENABLE_PREVENT_CDN_REDIRECTION_HEADER", "false")
 	projectRoot, _ := findProjectRoot()
 	os.Setenv("PRIVATE_CLOUDFRONT_KEY_PATH", filepath.Join(projectRoot, "/test/keys/private-key-cloudfront-test.pem"))
 	os.Setenv("CLOUDFRONT_DOMAIN", "https://cdn.expoopenota.com")
@@ -185,4 +186,32 @@ func TestCDNRedirectionCannotBeTurnedOffByAHeader(t *testing.T) {
 
 	w := blobRequest(t, androidBundleBlobHash, ".bundle", "android", map[string]string{"prevent-cdn-redirection": "true"})
 	assert.Equal(t, 302, w.Code, "the CDN redirect must happen despite the header")
+}
+
+func TestCDNRedirectionCanBeTurnedOffWhenHeaderIsEnabled(t *testing.T) {
+	teardown := setup(t)
+	defer teardown()
+	t.Setenv("ENABLE_PREVENT_CDN_REDIRECTION_HEADER", "true")
+	projectRoot, _ := findProjectRoot()
+	os.Setenv("PRIVATE_CLOUDFRONT_KEY_PATH", filepath.Join(projectRoot, "/test/keys/private-key-cloudfront-test.pem"))
+	os.Setenv("CLOUDFRONT_DOMAIN", "https://cdn.expoopenota.com")
+	os.Setenv("CLOUDFRONT_KEY_PAIR_ID", "test")
+
+	w := blobRequest(t, androidBundleBlobHash, ".bundle", "android", map[string]string{"prevent-cdn-redirection": "true"})
+	assert.Equal(t, 200, w.Code)
+	assert.Empty(t, w.Header().Get("Location"))
+	assert.Equal(t, string(fixtureBlob(t, androidBundleBlobHash)), w.Body.String())
+}
+
+func TestEnabledPreventCDNRedirectionHeaderRequiresTrueRequestValue(t *testing.T) {
+	teardown := setup(t)
+	defer teardown()
+	t.Setenv("ENABLE_PREVENT_CDN_REDIRECTION_HEADER", "true")
+	projectRoot, _ := findProjectRoot()
+	os.Setenv("PRIVATE_CLOUDFRONT_KEY_PATH", filepath.Join(projectRoot, "/test/keys/private-key-cloudfront-test.pem"))
+	os.Setenv("CLOUDFRONT_DOMAIN", "https://cdn.expoopenota.com")
+	os.Setenv("CLOUDFRONT_KEY_PAIR_ID", "test")
+
+	w := blobRequest(t, androidBundleBlobHash, ".bundle", "android", map[string]string{"prevent-cdn-redirection": "false"})
+	assert.Equal(t, 302, w.Code)
 }

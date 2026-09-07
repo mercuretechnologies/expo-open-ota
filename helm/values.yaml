@@ -246,6 +246,13 @@ environment:
     value: ""
     enabled: true
     required: false
+  # Set to "true" to let clients send prevent-cdn-redirection: true and make
+  # this server stream that request instead of redirecting it to the CDN.
+  # Any asset client can use it once enabled, increasing origin traffic.
+  - name: "ENABLE_PREVENT_CDN_REDIRECTION_HEADER"
+    value: ""
+    enabled: true
+    required: false
   - name: "BUCKET_KEY_PREFIX"
     value: ""
     enabled: true
