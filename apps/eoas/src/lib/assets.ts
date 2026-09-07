@@ -388,6 +388,13 @@ export class NoChangesDetectedError extends Error {
   }
 }
 
+function outdatedServerHint(status: number, text: string): string {
+  if (status !== 400 || text.trim() !== 'No file names provided') {
+    return '';
+  }
+  return '\nHint: the server did not understand the file list, so it runs a version older than 3.2.0. Upgrade the server to 3.2.0 or later, or pin eoas@3.1.X in devDependencies until then. See https://xprem.dev/changelog/bundle-diffing-and-cas';
+}
+
 export async function requestUploadUrls({
   body,
   requestUploadUrl,
@@ -449,7 +456,8 @@ export async function requestUploadUrls({
   }
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(`Failed to request upload URL: ${text}${missingEooTokenHint(response.status)}`);
+    const hint = missingEooTokenHint(response.status) || outdatedServerHint(response.status, text);
+    throw new Error(`Failed to request upload URL: ${text}${hint}`);
   }
   const json = await response.json();
   // Joi's sanitized value, not the raw payload: it is the object the schema
