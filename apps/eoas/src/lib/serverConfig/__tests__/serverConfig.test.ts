@@ -86,6 +86,7 @@ describe('renderEnvFile', () => {
     const content = renderEnvFile(baseChoices);
     expect(content).toContain('# PROMETHEUS_ENABLED=true');
     expect(content).toContain('# DISABLE_DEVICE_TELEMETRY=true');
+    expect(content).toContain('# ENABLE_PREVENT_CDN_REDIRECTION_HEADER=true');
   });
 
   it('switches the master key and CloudFront key to Secrets Manager together', () => {

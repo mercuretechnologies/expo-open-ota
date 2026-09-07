@@ -429,6 +429,14 @@ export const ENV_SECTIONS: EnvSection[] = [
         value: () => 'true',
         comment: 'Record nothing about devices: no registry, no update health, no telemetry.',
       },
+      {
+        name: 'ENABLE_PREVENT_CDN_REDIRECTION_HEADER',
+        applies: () => true,
+        required: false,
+        value: () => 'true',
+        comment:
+          'Allow prevent-cdn-redirection: true to stream individual asset requests through the server; any asset client can bypass the CDN once enabled.',
+      },
     ],
   },
 ];

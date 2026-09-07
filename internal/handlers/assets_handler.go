@@ -4,6 +4,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"xprem/config"
 	"xprem/internal/compression"
 	"xprem/internal/services"
 	"xprem/internal/types"
@@ -44,6 +45,8 @@ func (h *ExpoProtocolHandler) HandleAssets(w http.ResponseWriter, r *http.Reques
 		Extension:           r.URL.Query().Get("ext"),
 		ExpoCurrentUpdateId: r.Header.Get("Expo-Current-Update-ID"),
 		AIM:                 r.Header.Get("A-IM"),
+		PreventCDNRedirection: config.IsPreventCDNRedirectionHeaderEnabled() &&
+			r.Header.Get("prevent-cdn-redirection") == "true",
 	}
 
 	result, err := h.protocolService.ResolveAsset(r.Context(), params)
