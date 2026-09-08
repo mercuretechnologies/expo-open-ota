@@ -17,6 +17,8 @@ var ErrRolloutSupersededByNewerUpdate = errors.New("rollout activation refused: 
 // when the target is the last remaining admin.
 var ErrWouldLeaveNoAdmin = errors.New("operation refused: it would leave the dashboard without any admin account")
 
+var ErrBuildNumberExhausted = errors.New("build number limit reached")
+
 type ErrBranchHasActiveChannels struct {
 	BranchName   string
 	ChannelNames []string
@@ -80,3 +82,5 @@ type ErrEnvironmentHasChannels struct {
 func (e *ErrEnvironmentHasChannels) Error() string {
 	return fmt.Sprintf("cannot delete environment %q because channels still point to it. Unbind or delete these channels first.", e.EnvironmentName)
 }
+
+var ErrDottedBuildNumberAllocationUnsupported = errors.New("allocation of dotted iOS build numbers is not implemented")

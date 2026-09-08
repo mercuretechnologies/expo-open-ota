@@ -14,8 +14,8 @@ import { TimestampCell } from '@/components/ui/timestamp-cell';
 import { DeleteDialog } from '@/components/ui/delete-dialog';
 import { AdminOnlyNote } from '@/components/ui/admin-only-note';
 import { useAppPermission } from '@/ee/lib/PermissionsContext';
-import { CreateIdentifierDialog } from './CreateIdentifierDialog';
-import { PlatformLogo } from './PlatformLogo';
+import { CreateIdentifierDialog } from './components/CreateIdentifierDialog';
+import { PlatformLogo } from './components/PlatformLogo';
 import { PLATFORMS, isCredentialsConfigured } from './platforms';
 
 const CredentialsStatusBadge = ({ identifier }: { identifier: AppIdentifier }) => {
@@ -94,7 +94,9 @@ export const BuildCredentials = () => {
   }
 
   if (identifiersQuery.isError) {
-    return <ApiError error={identifiersQuery.error} onRetry={() => void identifiersQuery.refetch()} />;
+    return (
+      <ApiError error={identifiersQuery.error} onRetry={() => void identifiersQuery.refetch()} />
+    );
   }
 
   return (
@@ -114,8 +116,8 @@ export const BuildCredentials = () => {
       <div className="space-y-8">
         {!canManage && (
           <AdminOnlyNote>
-            You do not have permission to manage this app's build credentials. Ask an admin to
-            grant you access.
+            You do not have permission to manage this app's build credentials. Ask an admin to grant
+            you access.
           </AdminOnlyNote>
         )}
 

@@ -80,7 +80,7 @@ type AppIdentifier struct {
 	AppID       pgtype.UUID        `json:"app_id"`
 	Platform    string             `json:"platform"`
 	Identifier  string             `json:"identifier"`
-	BuildNumber int64              `json:"build_number"`
+	BuildNumber string             `json:"build_number"`
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 }
 

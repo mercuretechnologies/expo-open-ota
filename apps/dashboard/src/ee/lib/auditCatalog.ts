@@ -83,6 +83,7 @@ export const AUDIT_ACTION_GROUPS: AuditActionGroup[] = [
       'app_identifier.created',
       'app_identifier.deleted',
       'app_identifier.build_number_set',
+      'app_identifier.build_number_allocated',
       'android_credentials.saved',
       'android_credentials.generated',
       'android_keystore.downloaded',

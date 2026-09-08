@@ -1257,7 +1257,7 @@ type GetAppIdentifierByIDRow struct {
 	ID          pgtype.UUID `json:"id"`
 	Platform    string      `json:"platform"`
 	Identifier  string      `json:"identifier"`
-	BuildNumber int64       `json:"build_number"`
+	BuildNumber string      `json:"build_number"`
 }
 
 func (q *Queries) GetAppIdentifierByID(ctx context.Context, arg GetAppIdentifierByIDParams) (GetAppIdentifierByIDRow, error) {
@@ -1285,7 +1285,7 @@ type GetAppIdentifiersByAppIDRow struct {
 	ID                    pgtype.UUID        `json:"id"`
 	Platform              string             `json:"platform"`
 	Identifier            string             `json:"identifier"`
-	BuildNumber           int64              `json:"build_number"`
+	BuildNumber           string             `json:"build_number"`
 	CreatedAt             pgtype.Timestamptz `json:"created_at"`
 	HasAndroidCredentials bool               `json:"has_android_credentials"`
 }
@@ -5233,7 +5233,7 @@ func (q *Queries) ListUserAppGrants(ctx context.Context, userID pgtype.UUID) ([]
 }
 
 const lockAppIdentifierByID = `-- name: LockAppIdentifierByID :one
-SELECT identifier FROM app_identifiers
+SELECT id, platform, identifier, build_number FROM app_identifiers
 WHERE app_id = $1 AND id = $2
 FOR UPDATE
 `
@@ -5243,13 +5243,25 @@ type LockAppIdentifierByIDParams struct {
 	ID    pgtype.UUID `json:"id"`
 }
 
+type LockAppIdentifierByIDRow struct {
+	ID          pgtype.UUID `json:"id"`
+	Platform    string      `json:"platform"`
+	Identifier  string      `json:"identifier"`
+	BuildNumber string      `json:"build_number"`
+}
+
 // Lock before DELETE so a concurrent credential insert settles before the
 // identifier and its credentials are removed by the cascade.
-func (q *Queries) LockAppIdentifierByID(ctx context.Context, arg LockAppIdentifierByIDParams) (string, error) {
+func (q *Queries) LockAppIdentifierByID(ctx context.Context, arg LockAppIdentifierByIDParams) (LockAppIdentifierByIDRow, error) {
 	row := q.db.QueryRow(ctx, lockAppIdentifierByID, arg.AppID, arg.ID)
-	var identifier string
-	err := row.Scan(&identifier)
-	return identifier, err
+	var i LockAppIdentifierByIDRow
+	err := row.Scan(
+		&i.ID,
+		&i.Platform,
+		&i.Identifier,
+		&i.BuildNumber,
+	)
+	return i, err
 }
 
 const markEnterpriseLicenseValidated = `-- name: MarkEnterpriseLicenseValidated :one
@@ -6199,7 +6211,7 @@ WHERE app_id = $1 AND id = $2
 type SetAppIdentifierBuildNumberParams struct {
 	AppID       pgtype.UUID `json:"app_id"`
 	ID          pgtype.UUID `json:"id"`
-	BuildNumber int64       `json:"build_number"`
+	BuildNumber string      `json:"build_number"`
 }
 
 func (q *Queries) SetAppIdentifierBuildNumber(ctx context.Context, arg SetAppIdentifierBuildNumberParams) (pgconn.CommandTag, error) {

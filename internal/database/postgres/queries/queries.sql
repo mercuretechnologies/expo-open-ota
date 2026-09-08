@@ -2560,7 +2560,7 @@ WHERE app_id = $1 AND id = $2;
 -- name: LockAppIdentifierByID :one
 -- Lock before DELETE so a concurrent credential insert settles before the
 -- identifier and its credentials are removed by the cascade.
-SELECT identifier FROM app_identifiers
+SELECT id, platform, identifier, build_number FROM app_identifiers
 WHERE app_id = $1 AND id = $2
 FOR UPDATE;
 

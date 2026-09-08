@@ -176,7 +176,7 @@ export type AppIdentifier = {
   id: string;
   platform: 'ios' | 'android';
   identifier: string;
-  buildNumber: number;
+  buildNumber: string;
   hasAndroidCredentials: boolean;
   createdAt: string;
 }
@@ -1561,7 +1561,7 @@ export class ApiClient {
     );
   }
 
-  public async setAppIdentifierBuildNumber(identifierId: string, buildNumber: number) {
+  public async setAppIdentifierBuildNumber(identifierId: string, buildNumber: string) {
     return this.request<void>(
       `${this.appScope()}/identifiers/${encodeURIComponent(identifierId)}/build-number`,
       {

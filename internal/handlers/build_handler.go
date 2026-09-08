@@ -14,15 +14,18 @@ import (
 type BuildHandler struct {
 	environments *services.EnvironmentService
 	credentials  *services.CredentialsService
+	identifiers  *services.AppIdentifierService
 }
 
-func NewBuildHandler(environments *services.EnvironmentService, credentials *services.CredentialsService) *BuildHandler {
-	return &BuildHandler{environments: environments, credentials: credentials}
+func NewBuildHandler(environments *services.EnvironmentService, credentials *services.CredentialsService, identifiers *services.AppIdentifierService) *BuildHandler {
+	return &BuildHandler{environments: environments, credentials: credentials, identifiers: identifiers}
 }
 
 func RenderBuildInputError(w http.ResponseWriter, err error) {
 	var missing *store.ErrResourceNotFound
 	switch {
+	case errors.Is(err, store.ErrBuildNumberExhausted), errors.Is(err, store.ErrDottedBuildNumberAllocationUnsupported):
+		RenderError(w, http.StatusConflict, err.Error())
 	case validation.IsValidationError(err):
 		RenderError(w, http.StatusBadRequest, err.Error())
 	case errors.As(err, &missing):
@@ -89,4 +92,14 @@ func (h *BuildHandler) AndroidCredentials(w http.ResponseWriter, r *http.Request
 		return
 	}
 	renderBuildSecrets(w, AndroidBuildCredentials{Keystore: exported.Keystore, KeystorePassword: exported.KeystorePassword, KeyAlias: exported.KeyAlias, KeyPassword: exported.KeyPassword})
+}
+
+func (h *BuildHandler) AllocateBuildNumber(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	buildNumber, err := h.identifiers.AllocateBuildNumber(r.Context(), vars["APP_ID"], vars["IDENTIFIER_ID"])
+	if err != nil {
+		RenderBuildInputError(w, err)
+		return
+	}
+	RenderJSON(w, http.StatusOK, map[string]any{"buildNumber": buildNumber})
 }

@@ -15,6 +15,7 @@ import (
 	"xprem/internal/auditlog"
 	"xprem/internal/crypto"
 	"xprem/internal/store"
+	"xprem/internal/types"
 	"xprem/internal/validation"
 
 	keystore "github.com/pavlo-v-chernykh/keystore-go/v4"
@@ -32,11 +33,11 @@ func newFakeIdentifierRepo(appId string) *fakeIdentifierRepo {
 	return &fakeIdentifierRepo{byId: map[string]store.AppIdentifierRef{}, appId: appId}
 }
 
-func (f *fakeIdentifierRepo) add(id, platform, identifier string) {
+func (f *fakeIdentifierRepo) add(id string, platform types.Platform, identifier string) {
 	f.byId[id] = store.AppIdentifierRef{Id: id, Platform: platform, Identifier: identifier}
 }
 
-func (f *fakeIdentifierRepo) InsertAppIdentifier(_ context.Context, _ string, _ string, _ string) (string, error) {
+func (f *fakeIdentifierRepo) InsertAppIdentifier(_ context.Context, _ string, _ types.Platform, _ string) (string, error) {
 	panic("not used in credentials tests")
 }
 
@@ -59,7 +60,11 @@ func (f *fakeIdentifierRepo) DeleteAppIdentifier(_ context.Context, _ string, _ 
 	panic("not used in credentials tests")
 }
 
-func (f *fakeIdentifierRepo) SetBuildNumber(_ context.Context, _ string, _ string, _ int64) error {
+func (f *fakeIdentifierRepo) SetBuildNumber(_ context.Context, _ string, _ string, _ string) error {
+	panic("not used in credentials tests")
+}
+
+func (f *fakeIdentifierRepo) AllocateBuildNumber(_ context.Context, _ string, _ string, _ func(types.Platform, string) (string, error)) (*store.AppIdentifierRef, error) {
 	panic("not used in credentials tests")
 }
 
@@ -126,7 +131,7 @@ func setMasterKey(t *testing.T) {
 
 func newCredentialsFixture() (*CredentialsService, *fakeCredentialsRepo, *fakeIdentifierRepo) {
 	identifiers := newFakeIdentifierRepo(testAppId)
-	identifiers.add(testIdentifierId, PlatformAndroid, "com.example.app")
+	identifiers.add(testIdentifierId, types.PlatformAndroid, "com.example.app")
 	repo := newFakeCredentialsRepo()
 	return NewCredentialsService(repo, identifiers), repo, identifiers
 }
@@ -183,7 +188,7 @@ func TestSaveAndroidCredentialsResolvesTheIdentifier(t *testing.T) {
 	assert.ErrorAs(t, err, &notFoundErr)
 
 	// An ios identifier cannot carry android credentials.
-	identifiers.add("44444444-4444-4444-4444-444444444444", PlatformIOS, "com.example.app")
+	identifiers.add("44444444-4444-4444-4444-444444444444", types.PlatformIOS, "com.example.app")
 	err = service.SaveAndroidCredentials(ctx, testAppId, "44444444-4444-4444-4444-444444444444", validAndroidInput())
 	var valErr *validation.Error
 	assert.ErrorAs(t, err, &valErr)

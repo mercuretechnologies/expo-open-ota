@@ -1,7 +1,7 @@
 import apple from '@/assets/apple.svg';
 import android from '@/assets/android.svg';
 import { cn } from '@/lib/utils';
-import { Platform } from './platforms';
+import { Platform } from '../platforms';
 
 const logos: Record<Platform, { src: string; alt: string }> = {
   android: { src: android, alt: 'Android' },

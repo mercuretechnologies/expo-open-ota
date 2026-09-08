@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"xprem/internal/services"
 
 	"xprem/internal/store"
 
@@ -80,16 +81,16 @@ func TestAppIdentifierBuildNumberDefaultsAndSets(t *testing.T) {
 	ref, err := identifierStore.GetAppIdentifierByID(ctx, appId, identifierId)
 	require.NoError(t, err)
 	require.NotNil(t, ref)
-	assert.Equal(t, int64(0), ref.BuildNumber)
+	assert.Equal(t, "0", ref.BuildNumber)
 
-	require.NoError(t, identifierStore.SetBuildNumber(ctx, appId, identifierId, 87))
+	require.NoError(t, identifierStore.SetBuildNumber(ctx, appId, identifierId, "87"))
 	ref, err = identifierStore.GetAppIdentifierByID(ctx, appId, identifierId)
 	require.NoError(t, err)
-	assert.Equal(t, int64(87), ref.BuildNumber)
+	assert.Equal(t, "87", ref.BuildNumber)
 
 	// Scoped: another app cannot touch the counter.
 	otherAppId := insertBareApp(t, pool)
-	err = identifierStore.SetBuildNumber(ctx, otherAppId, identifierId, 999)
+	err = identifierStore.SetBuildNumber(ctx, otherAppId, identifierId, "999")
 	notFoundErr := (*store.ErrResourceNotFound)(nil)
 	require.True(t, errors.As(err, &notFoundErr))
 }
@@ -125,4 +126,36 @@ func TestAppIdentifierRowsAreDroppedWithTheApp(t *testing.T) {
 	require.NoError(t, pool.QueryRow(ctx, "SELECT COUNT(*) FROM android_credentials WHERE app_identifier_id = $1", identifierId).Scan(&credentialsCount))
 	assert.Equal(t, 0, identifierCount)
 	assert.Equal(t, 0, credentialsCount)
+}
+
+func TestAllocateBuildNumberIsScopedAndBounded(t *testing.T) {
+	_, identifiers, pool := setupCredentialsStores(t)
+	ctx := context.Background()
+	service := services.NewAppIdentifierService(identifiers)
+	app := insertBareApp(t, pool)
+	otherApp := insertBareApp(t, pool)
+	id := insertIdentifier(t, identifiers, app, "android", "com.example.counter")
+
+	first, err := service.AllocateBuildNumber(ctx, app, id)
+	require.NoError(t, err)
+	require.Equal(t, "1", first)
+	second, err := service.AllocateBuildNumber(ctx, app, id)
+	require.NoError(t, err)
+	require.Equal(t, "2", second)
+
+	_, err = service.AllocateBuildNumber(ctx, otherApp, id)
+	var missing *store.ErrResourceNotFound
+	require.ErrorAs(t, err, &missing)
+
+	require.NoError(t, identifiers.SetBuildNumber(ctx, app, id, "2099999999"))
+	last, err := service.AllocateBuildNumber(ctx, app, id)
+	require.NoError(t, err)
+	require.Equal(t, "2100000000", last)
+	_, err = service.AllocateBuildNumber(ctx, app, id)
+	require.ErrorIs(t, err, store.ErrBuildNumberExhausted)
+
+	require.NoError(t, identifiers.SetBuildNumber(ctx, app, id, "4"))
+	next, err := service.AllocateBuildNumber(ctx, app, id)
+	require.NoError(t, err)
+	require.Equal(t, "5", next)
 }

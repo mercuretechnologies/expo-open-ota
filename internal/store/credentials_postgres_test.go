@@ -9,6 +9,7 @@ import (
 	"errors"
 	"os"
 	"testing"
+	"xprem/internal/types"
 
 	"xprem/internal/database"
 	"xprem/internal/database/postgres"
@@ -50,7 +51,7 @@ func insertBareApp(t *testing.T, pool *pgxpool.Pool) string {
 	return appId
 }
 
-func insertIdentifier(t *testing.T, identifierStore *store.PostgresAppIdentifierStore, appId string, platform string, identifier string) string {
+func insertIdentifier(t *testing.T, identifierStore *store.PostgresAppIdentifierStore, appId string, platform types.Platform, identifier string) string {
 	t.Helper()
 	id, err := identifierStore.InsertAppIdentifier(context.Background(), appId, platform, identifier)
 	require.NoError(t, err)
