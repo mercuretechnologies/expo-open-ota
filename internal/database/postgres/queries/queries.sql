@@ -2737,3 +2737,24 @@ VALUES ($1, $2, $3, $4);
 -- name: InsertApiKeySubmitRule :exec
 INSERT INTO api_key_submit_rules (api_key_id, app_id, app_identifier_id, destination, actions)
 VALUES ($1, $2, $3, $4, $5);
+
+-- name: ResolveEnvironmentVariables :many
+WITH selected AS (
+    SELECT e.id AS environment_id
+    FROM environments e
+    WHERE e.app_id = sqlc.arg('app_id')::uuid
+      AND sqlc.arg('environment_name')::text <> ''
+      AND e.name = sqlc.arg('environment_name')::text
+    UNION ALL
+    SELECT c.environment_id
+    FROM channels c
+    WHERE c.app_id = sqlc.arg('app_id')::uuid
+      AND sqlc.arg('channel_name')::text <> ''
+      AND c.name = sqlc.arg('channel_name')::text
+)
+SELECT e.id AS environment_id, e.name AS environment_name,
+       ev.key, ev.is_public, ev.sealed_value
+FROM selected s
+LEFT JOIN environments e ON e.id = s.environment_id AND e.app_id = sqlc.arg('app_id')::uuid
+LEFT JOIN environment_vars ev ON ev.environment_id = e.id
+ORDER BY ev.key ASC;

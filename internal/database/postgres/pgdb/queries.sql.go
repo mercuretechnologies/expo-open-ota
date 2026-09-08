@@ -6057,6 +6057,68 @@ func (q *Queries) ResolveDeviceUpdateFailures(ctx context.Context, arg ResolveDe
 	return result.RowsAffected(), nil
 }
 
+const resolveEnvironmentVariables = `-- name: ResolveEnvironmentVariables :many
+WITH selected AS (
+    SELECT e.id AS environment_id
+    FROM environments e
+    WHERE e.app_id = $1::uuid
+      AND $2::text <> ''
+      AND e.name = $2::text
+    UNION ALL
+    SELECT c.environment_id
+    FROM channels c
+    WHERE c.app_id = $1::uuid
+      AND $3::text <> ''
+      AND c.name = $3::text
+)
+SELECT e.id AS environment_id, e.name AS environment_name,
+       ev.key, ev.is_public, ev.sealed_value
+FROM selected s
+LEFT JOIN environments e ON e.id = s.environment_id AND e.app_id = $1::uuid
+LEFT JOIN environment_vars ev ON ev.environment_id = e.id
+ORDER BY ev.key ASC
+`
+
+type ResolveEnvironmentVariablesParams struct {
+	AppID           pgtype.UUID `json:"app_id"`
+	EnvironmentName string      `json:"environment_name"`
+	ChannelName     string      `json:"channel_name"`
+}
+
+type ResolveEnvironmentVariablesRow struct {
+	EnvironmentID   pgtype.UUID `json:"environment_id"`
+	EnvironmentName *string     `json:"environment_name"`
+	Key             *string     `json:"key"`
+	IsPublic        *bool       `json:"is_public"`
+	SealedValue     *string     `json:"sealed_value"`
+}
+
+func (q *Queries) ResolveEnvironmentVariables(ctx context.Context, arg ResolveEnvironmentVariablesParams) ([]ResolveEnvironmentVariablesRow, error) {
+	rows, err := q.db.Query(ctx, resolveEnvironmentVariables, arg.AppID, arg.EnvironmentName, arg.ChannelName)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ResolveEnvironmentVariablesRow
+	for rows.Next() {
+		var i ResolveEnvironmentVariablesRow
+		if err := rows.Scan(
+			&i.EnvironmentID,
+			&i.EnvironmentName,
+			&i.Key,
+			&i.IsPublic,
+			&i.SealedValue,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const revokeApiKeyByID = `-- name: RevokeApiKeyByID :one
 UPDATE api_keys
 SET revoked_at = CURRENT_TIMESTAMP

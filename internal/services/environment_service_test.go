@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"xprem/internal/auditlog"
 	"xprem/internal/crypto"
@@ -28,9 +29,14 @@ type envScopeKey struct {
 }
 
 type fakeEnvironmentRepo struct {
-	environments map[string]string // name -> id
-	byScopeKey   map[envScopeKey]fakeSealedEnvVar
-	channelEnvs  map[string]*string
+	exportApp, exportEnvironment string
+	exportCalls                  int
+	listCalls, valueCalls        int
+	channelApp                   string
+	channelLookups               []string
+	environments                 map[string]string // name -> id
+	byScopeKey                   map[envScopeKey]fakeSealedEnvVar
+	channelEnvs                  map[string]*string
 }
 
 func newFakeEnvironmentRepo() *fakeEnvironmentRepo {
@@ -51,6 +57,7 @@ func (f *fakeEnvironmentRepo) InsertEnvironment(_ context.Context, _ string, nam
 }
 
 func (f *fakeEnvironmentRepo) ListEnvironments(_ context.Context, _ string) ([]store.EnvironmentRow, error) {
+	f.listCalls++
 	rows := make([]store.EnvironmentRow, 0, len(f.environments))
 	for name, id := range f.environments {
 		rows = append(rows, store.EnvironmentRow{Id: id, Name: name})
@@ -85,6 +92,7 @@ func (f *fakeEnvironmentRepo) UpsertEnvVar(_ context.Context, environmentId stri
 }
 
 func (f *fakeEnvironmentRepo) ListEnvVars(_ context.Context, _ string) ([]store.EnvVarRow, error) {
+	f.listCalls++
 	rows := make([]store.EnvVarRow, 0, len(f.byScopeKey))
 	for scopeKey, envVar := range f.byScopeKey {
 		rows = append(rows, store.EnvVarRow{EnvironmentId: scopeKey.environmentId, Key: scopeKey.key, IsPublic: envVar.isPublic})
@@ -93,6 +101,7 @@ func (f *fakeEnvironmentRepo) ListEnvVars(_ context.Context, _ string) ([]store.
 }
 
 func (f *fakeEnvironmentRepo) GetSealedValue(_ context.Context, environmentId string, key string) (*string, error) {
+	f.valueCalls++
 	envVar, ok := f.byScopeKey[envScopeKey{environmentId, key}]
 	if !ok {
 		return nil, nil
@@ -301,4 +310,153 @@ func TestEnvironmentsUnsupportedInStatelessMode(t *testing.T) {
 	assert.ErrorIs(t, err, store.ErrNotSupportedInStatelessMode)
 	assert.ErrorIs(t, service.DeleteEnvVar(ctx, "app-1", "staging", "K"), store.ErrNotSupportedInStatelessMode)
 	assert.ErrorIs(t, service.SetChannelEnvironment(ctx, "app-1", "prod-channel", nil), store.ErrNotSupportedInStatelessMode)
+}
+
+func TestBuildEnvironmentSelection(t *testing.T) {
+	setMasterKey(t)
+	ctx := context.Background()
+	repo := newFakeEnvironmentRepo()
+	id := stagingEnvId
+	repo.channelEnvs["release"] = &id
+	repo.channelEnvs["unbound"] = nil
+	env := NewEnvironmentService(repo)
+	require.NoError(t, env.SetEnvVar(ctx, "app-1", "staging", "URL", "https://example.test", true))
+	require.NoError(t, env.SetEnvVar(ctx, "app-1", "staging", "EMPTY", "", false))
+	require.NoError(t, env.SetEnvVar(ctx, "app-1", "production", "PRIVATE", "other environment", false))
+
+	for _, tc := range []struct {
+		name, channel, environment string
+		wantErr                    bool
+		count                      int
+	}{
+		{name: "none"}, {name: "direct", environment: "staging", count: 2}, {name: "channel", channel: "release", count: 2},
+		{name: "unbound", channel: "unbound"}, {name: "unknown channel", channel: "foreign", wantErr: true},
+		{name: "unknown environment", environment: "foreign", wantErr: true}, {name: "both", channel: "release", environment: "staging", wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			before := repo.exportCalls
+			got, err := env.ExportVariables(ctx, "app-1", tc.channel, tc.environment)
+			expectedCalls := 1
+			if tc.name == "none" || tc.name == "both" {
+				expectedCalls = 0
+			}
+			require.Equal(t, expectedCalls, repo.exportCalls-before)
+			if tc.wantErr {
+				require.Error(t, err)
+				require.Nil(t, got)
+				return
+			}
+			require.NoError(t, err)
+			require.Len(t, got.Variables, tc.count)
+			if tc.count > 0 {
+				require.Equal(t, "staging", *got.Environment)
+				require.Equal(t, "https://example.test", got.Variables["EXPO_PUBLIC_URL"])
+				require.Contains(t, got.Variables, "EMPTY")
+				require.NotContains(t, got.Variables, "PRIVATE")
+			} else {
+				require.Nil(t, got.Environment)
+				require.NotNil(t, got.Variables)
+			}
+		})
+	}
+	require.Equal(t, "app-1", repo.channelApp)
+	require.Equal(t, []string{"release", "unbound", "foreign"}, repo.channelLookups)
+	require.Zero(t, repo.listCalls)
+	require.Zero(t, repo.valueCalls)
+}
+
+func TestBuildEnvironmentAuditAndDecryptionFailure(t *testing.T) {
+	setMasterKey(t)
+	repo := newFakeEnvironmentRepo()
+	env := NewEnvironmentService(repo)
+	ctx := context.Background()
+	require.NoError(t, env.SetEnvVar(ctx, "app-1", "staging", "TOKEN", "secret sentinel", false))
+	var events []auditlog.Event
+	env.SetOnAuditEvent(func(_ context.Context, event auditlog.Event) { events = append(events, event) })
+	got, err := env.ExportVariables(ctx, "app-1", "", "staging")
+	require.NoError(t, err)
+	require.Equal(t, "secret sentinel", got.Variables["TOKEN"])
+	require.Len(t, events, 1)
+	require.Equal(t, auditlog.ActionEnvVarRevealed, events[0].Action)
+	encoded, err := json.Marshal(events)
+	require.NoError(t, err)
+	require.NotContains(t, string(encoded), "secret sentinel")
+	repo.byScopeKey[envScopeKey{stagingEnvId, "TOKEN"}] = fakeSealedEnvVar{sealedValue: "corrupt"}
+	got, err = env.ExportVariables(ctx, "app-1", "", "staging")
+	require.Error(t, err)
+	require.Nil(t, got)
+	require.Len(t, events, 1)
+}
+
+func (f *fakeEnvironmentRepo) ResolveEnvironmentVariables(_ context.Context, appID, channel, environment string) (*store.ResolvedEnvironment, error) {
+	f.exportCalls++
+	f.exportApp = appID
+	resolved := &store.ResolvedEnvironment{Variables: []store.SealedEnvVar{}}
+	if channel != "" {
+		f.channelApp = appID
+		f.channelLookups = append(f.channelLookups, channel)
+		id, found := f.channelEnvs[channel]
+		if !found {
+			return nil, &store.ErrResourceNotFound{Resource: "channel", Identifier: channel}
+		}
+		if id == nil {
+			return resolved, nil
+		}
+		for name, candidate := range f.environments {
+			if candidate == *id {
+				environment = name
+				break
+			}
+		}
+	}
+	id, found := f.environments[environment]
+	if !found {
+		return nil, &store.ErrResourceNotFound{Resource: "environment", Identifier: environment}
+	}
+	resolved.ID, resolved.Name = id, &environment
+	f.exportEnvironment = id
+	for scope, variable := range f.byScopeKey {
+		if scope.environmentId == id {
+			resolved.Variables = append(resolved.Variables, store.SealedEnvVar{Key: scope.key, IsPublic: variable.isPublic, SealedValue: variable.sealedValue})
+		}
+	}
+	return resolved, nil
+}
+
+func TestExportVariablesEmptyEnvironmentAndTargetedReads(t *testing.T) {
+	setMasterKey(t)
+	repo := newFakeEnvironmentRepo()
+	service := NewEnvironmentService(repo)
+	got, err := service.ExportVariables(context.Background(), "app-1", "", "staging")
+	require.NoError(t, err)
+	require.Equal(t, "staging", *got.Environment)
+	require.Empty(t, got.Variables)
+	require.NotNil(t, got.Variables)
+	require.Equal(t, "app-1", repo.exportApp)
+	require.Equal(t, stagingEnvId, repo.exportEnvironment)
+	require.Equal(t, 1, repo.exportCalls)
+	require.Zero(t, repo.listCalls)
+	require.Zero(t, repo.valueCalls)
+}
+
+func TestExportVariablesRejectsForeignCiphertext(t *testing.T) {
+	setMasterKey(t)
+	for _, tc := range []struct{ name, app, environment string }{
+		{"another app", "other-app", stagingEnvId},
+		{"another environment", "app-1", productionEnvId},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := newFakeEnvironmentRepo()
+			sealed, err := crypto.SealAESGCM([]byte("secret sentinel"), []byte(testMasterKey), envVarAAD(tc.app, tc.environment, "TOKEN"))
+			require.NoError(t, err)
+			repo.byScopeKey[envScopeKey{stagingEnvId, "TOKEN"}] = fakeSealedEnvVar{sealedValue: sealed}
+			service := NewEnvironmentService(repo)
+			events := 0
+			service.SetOnAuditEvent(func(context.Context, auditlog.Event) { events++ })
+			got, err := service.ExportVariables(context.Background(), "app-1", "", "staging")
+			require.Error(t, err)
+			require.Nil(t, got)
+			require.Zero(t, events)
+		})
+	}
 }
