@@ -196,7 +196,12 @@ func TestAllocateBuildNumberPlatformRules(t *testing.T) {
 		{types.PlatformAndroid, "1.2.0", "", true},
 		{types.PlatformIOS, "2100000000", "2100000001", false},
 		{types.PlatformIOS, "9223372036854775807", "9223372036854775808", false},
-		{types.PlatformIOS, "1.2.0", "", true},
+		{types.PlatformIOS, "1.2.0", "1.2.1", false},
+		{types.PlatformIOS, "1.3.9", "1.3.10", false},
+		{types.PlatformIOS, "1.9", "1.10", false},
+		{types.PlatformIOS, "42", "43", false},
+		{types.PlatformIOS, "1.2.9223372036854775807", "1.2.9223372036854775808", false},
+		{types.PlatformIOS, "999999999999999999999999.3.9", "999999999999999999999999.3.10", false},
 		{types.PlatformIOS, "invalid", "", true},
 	} {
 		t.Run(string(tc.platform)+"/"+tc.current, func(t *testing.T) {
