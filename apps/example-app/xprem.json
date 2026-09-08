@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "profiles": {
+    "test": {
+      "android": {
+        "applicationId": "com.xprem.sample",
+        "mode": "release",
+        "artifact": "aab"
+      },
+      "channel": "production"
+    }
+  }
+}

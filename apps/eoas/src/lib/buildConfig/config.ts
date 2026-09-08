@@ -41,7 +41,14 @@ export async function readJsonFile(file: string): Promise<unknown> {
 }
 
 export async function readConfig(file: string): Promise<XpremConfig> {
-  return parseConfig(await readJsonFile(file));
+  try {
+    return parseConfig(await readJsonFile(file));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      throw new Error(`${CONFIG_FILENAME} was not found. Run "eoas build:configure" to create it.`);
+    }
+    throw error;
+  }
 }
 
 export async function writeNewConfig(file: string, input: unknown): Promise<void> {

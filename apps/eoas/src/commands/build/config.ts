@@ -1,5 +1,4 @@
 import { Command, Flags } from '@oclif/core';
-import fs from 'fs-extra';
 import path from 'path';
 
 import { CONFIG_FILENAME, readConfig } from '../../lib/buildConfig/config';
@@ -20,12 +19,8 @@ export default class BuildConfig extends Command {
   public async run(): Promise<void> {
     const { flags } = await this.parse(BuildConfig);
     const file = path.resolve(CONFIG_FILENAME);
-    if (!(await fs.pathExists(file))) {
-      Log.error(`${CONFIG_FILENAME} was not found. Run "eoas build:configure" to create it.`);
-      this.exit(2);
-    }
     const config = await readConfig(file).catch(error => {
-      Log.error(`Invalid ${CONFIG_FILENAME}: ${(error as Error).message}`);
+      Log.error((error as Error).message);
       this.exit(2);
     });
     let output: unknown = config;
