@@ -33,6 +33,12 @@ func RenderBuildInputError(w http.ResponseWriter, err error) {
 		RenderError(w, http.StatusInternalServerError, "Could not retrieve build inputs.")
 	}
 }
+
+// renderBuildSecrets writes a build input export that must never be cached.
+func renderBuildSecrets(w http.ResponseWriter, payload interface{}) {
+	w.Header().Set("Cache-Control", "no-store")
+	RenderJSON(w, http.StatusOK, payload)
+}
 func (h *BuildHandler) Environment(w http.ResponseWriter, r *http.Request) {
 	query, err := buildEnvironmentQuery(r)
 	if err != nil {
@@ -44,7 +50,7 @@ func (h *BuildHandler) Environment(w http.ResponseWriter, r *http.Request) {
 		RenderBuildInputError(w, err)
 		return
 	}
-	RenderJSON(w, http.StatusOK, environment)
+	renderBuildSecrets(w, environment)
 }
 
 // Reject ambiguous selectors rather than silently using the first query value.
@@ -82,5 +88,5 @@ func (h *BuildHandler) AndroidCredentials(w http.ResponseWriter, r *http.Request
 		RenderBuildInputError(w, err)
 		return
 	}
-	RenderJSON(w, http.StatusOK, AndroidBuildCredentials{Keystore: exported.Keystore, KeystorePassword: exported.KeystorePassword, KeyAlias: exported.KeyAlias, KeyPassword: exported.KeyPassword})
+	renderBuildSecrets(w, AndroidBuildCredentials{Keystore: exported.Keystore, KeystorePassword: exported.KeystorePassword, KeyAlias: exported.KeyAlias, KeyPassword: exported.KeyPassword})
 }
