@@ -18,11 +18,21 @@ export const BuildNumberCard = ({ identifier, canManage }: Props) => {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [buildNumber, setBuildNumber] = useState(String(identifier.buildNumber));
+  const [lastServerNumber, setLastServerNumber] = useState(String(identifier.buildNumber));
+  const [isDirty, setIsDirty] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const counterName = identifier.platform === 'android' ? 'versionCode' : 'buildNumber';
 
+  // Only a new server value can replace a pristine field. Clearing dirty after
+  // saving must not restore an old prop while query notifications are pending.
+  if (lastServerNumber !== String(identifier.buildNumber)) {
+    setLastServerNumber(String(identifier.buildNumber));
+    if (!isDirty) setBuildNumber(String(identifier.buildNumber));
+  }
+
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSaving || !isDirty) return;
     const valid =
       identifier.platform === 'android'
         ? /^(0|[1-9][0-9]*)$/.test(buildNumber) &&
@@ -43,7 +53,15 @@ export const BuildNumberCard = ({ identifier, canManage }: Props) => {
     setIsSaving(true);
     try {
       await api.setAppIdentifierBuildNumber(identifier.id, buildNumber);
-      queryClient.invalidateQueries({ queryKey: ['identifiers', selectedAppId] });
+      await queryClient.invalidateQueries(
+        { queryKey: ['identifiers', selectedAppId] },
+        { throwOnError: true }
+      );
+      const refreshedIdentifier = queryClient
+        .getQueryData<AppIdentifier[]>(['identifiers', selectedAppId])
+        ?.find(record => record.id === identifier.id);
+      setBuildNumber(String(refreshedIdentifier?.buildNumber ?? buildNumber));
+      setIsDirty(false);
       toast({ title: 'Build number updated' });
     } catch (error) {
       const message = describeApiError(error, 'Error updating build number');
@@ -75,12 +93,15 @@ export const BuildNumberCard = ({ identifier, canManage }: Props) => {
                 inputMode={identifier.platform === 'android' ? 'numeric' : 'text'}
                 required
                 value={buildNumber}
-                onChange={e => setBuildNumber(e.target.value)}
+                onChange={e => {
+                  setBuildNumber(e.target.value);
+                  setIsDirty(true);
+                }}
                 disabled={isSaving}
                 className="w-40"
               />
             </div>
-            <Button type="submit" disabled={isSaving}>
+            <Button type="submit" disabled={isSaving || !isDirty}>
               {isSaving ? 'Saving…' : 'Save'}
             </Button>
           </form>
