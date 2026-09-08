@@ -30,7 +30,7 @@ export function checkEnvironment(source: string, filename: string, keys: string[
   throw new Error(
     `Environment check failed in ${filename}: ${problems.join(
       '; '
-    )}. Supply server/--env-file variables or explicitly use --ignore-env-check.`
+    )}. Supply server/--envFile variables or explicitly use --ignoreEnvCheck.`
   );
 }
 
@@ -38,12 +38,14 @@ function parseSource(source: string, filename: string): t.File {
   try {
     return parse(source, {
       sourceType: 'unambiguous',
-      plugins: [/\.tsx?$/.test(filename) ? 'typescript' : 'flow', 'jsx'],
+      plugins: filename.endsWith('.ts')
+        ? ['typescript']
+        : [filename.endsWith('.tsx') ? 'typescript' : 'flow', 'jsx'],
       errorRecovery: false,
     });
   } catch {
     throw new Error(
-      `Environment check could not parse ${filename}; no source excerpt is shown. Fix syntax or explicitly use --ignore-env-check.`
+      `Environment check could not parse ${filename}; no source excerpt is shown. Fix syntax or explicitly use --ignoreEnvCheck.`
     );
   }
 }

@@ -37,6 +37,10 @@ export function createBuildOutputRedactor(secrets: string[]): (output: string) =
   return (output: string) => output;
 }
 
+// Shorter variable values ("1", "true", "production") are flags or names whose
+// redaction would mangle ordinary tool output.
+const MIN_REDACTED_VALUE_LENGTH = 12;
+
 // Values masked in streamed output and error messages: the caller's credentials,
 // server variables except public ones, and secret-looking process.env entries.
 export function secretsToRedact(
@@ -51,5 +55,7 @@ export function secretsToRedact(
     ...Object.entries(process.env)
       .filter(([name]) => /token|password|secret|private.?key|credential/i.test(name))
       .map(([, value]) => value ?? ''),
-  ];
+  ].filter(
+    (value, index) => index < credentials.length || value.length >= MIN_REDACTED_VALUE_LENGTH
+  );
 }

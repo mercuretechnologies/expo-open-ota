@@ -34,12 +34,13 @@ describe('Android orchestration', () => {
   let project: string;
   let sdk: string;
   const events: string[] = [];
-  let temporaryProject: string;
+  let temporaryProject: string | undefined;
   let failExport = false;
   beforeEach(async () => {
     vi.clearAllMocks();
     events.length = 0;
     failExport = false;
+    temporaryProject = undefined;
     project = await fs.mkdtemp(path.join(os.tmpdir(), 'eoas-test-project-'));
     sdk = path.join(project, 'sdk');
     vi.mocked(resolveAndroidTools).mockResolvedValue({
@@ -65,7 +66,7 @@ describe('Android orchestration', () => {
     });
     await fs.writeFile(
       path.join(project, 'override.env'),
-      'OVERRIDE=file-secret\nRELEASE_CHANNEL=\n'
+      'OVERRIDE=file-secret-value\nRELEASE_CHANNEL=\n'
     );
     vi.mocked(resolveIdentifier).mockImplementation(
       async root => `${root}/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa`
@@ -112,7 +113,7 @@ describe('Android orchestration', () => {
       if (args?.includes('export')) {
         events.push('export');
         temporaryProject = cwd;
-        expect(options?.env?.OVERRIDE).toBe('file-secret');
+        expect(options?.env?.OVERRIDE).toBe('file-secret-value');
         expect(options?.env?.RELEASE_CHANNEL).toBe('');
         expect(await fs.pathExists(path.join(cwd, 'build-artifacts'))).toBe(false);
         expect(await fs.readFile(path.join(cwd, '.eoas-metro-check.json'), 'utf8')).not.toContain(
@@ -121,7 +122,8 @@ describe('Android orchestration', () => {
         if (failExport) {
           throw Object.assign(new Error('export failed'), {
             status: 1,
-            stderr: 'expo-router is incompatible with react-navigation. store-secret file-secret',
+            stderr:
+              'expo-router is incompatible with react-navigation. store-secret file-secret-value',
           });
         }
       }
@@ -188,7 +190,7 @@ describe('Android orchestration', () => {
         NODE_ENV: 'production',
         CI: '1',
         EXPO_NO_DOTENV: '1',
-        OVERRIDE: 'file-secret',
+        OVERRIDE: 'file-secret-value',
       });
     }
     expect(calls[0][2]?.env?.REMOTE).toBeUndefined();
@@ -206,7 +208,8 @@ describe('Android orchestration', () => {
     expect(events[0]).toBe('environment channel=production');
     expect(events.slice(1)).toEqual(['export', 'allocate', 'prebuild', 'gradle']);
     expect(await fs.readFile(output, 'utf8')).toBe('artifact');
-    expect(await fs.pathExists(temporaryProject)).toBe(false);
+    expect(temporaryProject).toBeDefined();
+    expect(await fs.pathExists(temporaryProject!)).toBe(false);
     expect(await fs.pathExists(path.join(project, 'android'))).toBe(false);
     expect(await fs.pathExists(path.join(project, '.eoas-metro-check.json'))).toBe(false);
     const logs = await fs.readdir(path.join(project, 'build-artifacts/logs'));
@@ -330,11 +333,12 @@ describe('Android orchestration', () => {
       })
     ).rejects.toThrow('expo-router is incompatible with react-navigation. [REDACTED] [REDACTED]');
     expect(events).not.toContain('allocate');
-    expect(await fs.pathExists(temporaryProject)).toBe(false);
+    expect(temporaryProject).toBeDefined();
+    expect(await fs.pathExists(temporaryProject!)).toBe(false);
     const logs = await fs.readdir(path.join(project, 'build-artifacts/logs'));
     const log = await fs.readFile(path.join(project, 'build-artifacts/logs', logs[0]), 'utf8');
     expect(log).toContain('expo-router is incompatible with react-navigation.');
     expect(log).not.toContain('store-secret');
-    expect(log).not.toContain('file-secret');
+    expect(log).not.toContain('file-secret-value');
   });
 });

@@ -73,13 +73,17 @@ export async function withBuildLog<T>(
   const buildLog = await createBuildLog(project, profile);
   buildLog.write(`${title} — profile ${profile} — ${new Date().toISOString()}`);
   Log.log(`Build log: ${buildLog.path}`);
+  let result: T;
   try {
-    return await work(buildLog);
+    result = await work(buildLog);
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Build failed.';
     buildLog.write(message);
-    throw new Error(`${message}\n\nFull build log: ${buildLog.path}`);
-  } finally {
-    await buildLog.close();
+    await buildLog.close().catch(closeError => {
+      Log.warn(`Build log may be incomplete: ${(closeError as Error).message}`);
+    });
+    throw new Error(`${message}\n\nFull build log: ${buildLog.path}`, { cause: error });
   }
+  await buildLog.close();
+  return result;
 }

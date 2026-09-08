@@ -52,7 +52,7 @@ describe('local Android tools', () => {
   it('rejects an explicitly configured SDK path instead of trying another installation', async () => {
     await expect(
       resolveAndroidTools(project, { androidSdk: '/missing-sdk' }, { ANDROID_HOME: sdk })
-    ).rejects.toThrow(/ANDROID_HOME.*--android-sdk/);
+    ).rejects.toThrow(/ANDROID_HOME.*--androidSdk/);
   });
 
   it('updates only sdk.dir in the build copy using the selected SDK', async () => {

@@ -80,9 +80,10 @@ async function request<T>(
   let response: Response;
   try {
     response = await (retry ? fetchWithRetries(url, init) : originalFetch(url, init));
-  } catch {
+  } catch (error) {
     throw new Error(
-      `Build server request failed (${method})${retry ? '' : '; no automatic retry was made'}.`
+      `Build server request failed (${method})${retry ? '' : '; no automatic retry was made'}.`,
+      { cause: error }
     );
   }
   if (!response.ok) {

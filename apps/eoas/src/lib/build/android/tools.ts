@@ -39,7 +39,7 @@ async function locateAndroidSdk(
     const sdk = path.resolve(project, configured);
     if (!(await fs.pathExists(sdk))) {
       throw new Error(
-        `Android SDK not found at ${sdk}. Fix ANDROID_HOME or pass --android-sdk /path/to/sdk.`
+        `Android SDK not found at ${sdk}. Fix ANDROID_HOME or pass --androidSdk /path/to/sdk.`
       );
     }
     return sdk;
@@ -54,7 +54,7 @@ async function locateAndroidSdk(
     }
   }
   throw new Error(
-    `Android SDK not found at ${defaults[0]}. Install it with Android Studio and set ANDROID_HOME or pass --android-sdk /path/to/sdk.`
+    `Android SDK not found at ${defaults[0]}. Install it with Android Studio and set ANDROID_HOME or pass --androidSdk /path/to/sdk.`
   );
 }
 

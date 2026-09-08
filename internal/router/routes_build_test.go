@@ -3,6 +3,7 @@ package infrastructure
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -377,6 +378,11 @@ func TestBuildResolveTargetedLookup(t *testing.T) {
 			recorder := httptest.NewRecorder()
 			router.ServeHTTP(recorder, req)
 			require.Equal(t, tc.status, recorder.Code, recorder.Body.String())
+			if tc.err != nil {
+				var problem handlers.APIError
+				require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &problem))
+				require.Equal(t, "Could not retrieve build inputs.", problem.Detail)
+			}
 			require.Zero(t, repo.idLookups, "resolution must not repeat the lookup by UUID")
 			if tc.status == 200 {
 				require.Len(t, policy.requests, 1)

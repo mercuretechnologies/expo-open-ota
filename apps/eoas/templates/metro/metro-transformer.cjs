@@ -12,7 +12,9 @@ module.exports = {
     const isDependency = args.filename.split(/[/\\]/).includes('node_modules');
     if (isSource && !isDependency) {
       try {
-        checkEnvironment(args.src, path.basename(args.filename), settings.known);
+        const root = args.options?.projectRoot;
+        const filename = root ? path.relative(root, args.filename) : path.basename(args.filename);
+        checkEnvironment(args.src, filename, settings.known);
       } catch (error) {
         await fs.appendFile(settings.report, `${error.message}\n`);
         throw new Error('EOAS environment check failed');
