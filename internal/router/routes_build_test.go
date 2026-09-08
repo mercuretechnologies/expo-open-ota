@@ -1,0 +1,293 @@
+package infrastructure
+
+import (
+	"context"
+	"encoding/base64"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"net/netip"
+	"testing"
+	"xprem/config"
+	"xprem/ee/apikeyrestrictions"
+	"xprem/ee/licensing"
+	"xprem/internal/android/androidtest"
+	"xprem/internal/handlers"
+	"xprem/internal/services"
+	"xprem/internal/store"
+	"xprem/internal/types"
+
+	"github.com/gorilla/mux"
+	"github.com/stretchr/testify/require"
+)
+
+const buildID = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+
+type buildIdentifierRepo struct {
+	services.AppIdentifierRepository
+	app      string
+	platform string
+}
+
+func (repo *buildIdentifierRepo) GetAppIdentifierByID(_ context.Context, app, id string) (*store.AppIdentifierRef, error) {
+	repo.app = app
+	if app != "app-1" || id != buildID {
+		return nil, nil
+	}
+	return &store.AppIdentifierRef{Id: buildID, Platform: repo.platform}, nil
+}
+
+type recordingBuildPolicy struct {
+	requests []apikeyrestrictions.BuildRequest
+	err      error
+}
+
+func (p *recordingBuildPolicy) AuthorizeBuild(_ context.Context, req apikeyrestrictions.BuildRequest) error {
+	p.requests = append(p.requests, req)
+	return p.err
+}
+func TestBuildGuardAuthorizesResolvedTargetBeforeSecrets(t *testing.T) {
+	for _, tc := range []struct {
+		name, app, id, platform string
+		deny                    error
+		status                  int
+		decisions               int
+	}{
+		{"allowed", "app-1", buildID, "android", nil, 200, 1},
+		{"denied", "app-1", buildID, "android", services.ErrCliAccessDenied, 403, 1},
+		{"outage", "app-1", buildID, "android", services.ErrCliAuthUnavailable, 500, 1},
+		{"revoked", "app-1", buildID, "android", apikeyrestrictions.ErrApiKeyNotFound, 401, 1},
+		{"foreign app", "app-2", buildID, "android", nil, 404, 0},
+		{"foreign identifier", "app-1", "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", "android", nil, 404, 0},
+		{"ios", "app-1", buildID, "ios", nil, 200, 1},
+		{"malformed", "app-1", "bad", "android", nil, 400, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := &buildIdentifierRepo{platform: tc.platform}
+			policy := &recordingBuildPolicy{err: tc.deny}
+			group := buildGroup{cliAuth: services.NewCliAuthService(acceptingCliRepo{}), apiKeyAccess: policy, identifiers: repo}
+			router := mux.NewRouter()
+			called := false
+			router.Handle("/{APP_ID}/build/{IDENTIFIER_ID}/environment", group.guard(apikeyrestrictions.BuildActionCreate)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				called = true
+				require.NotNil(t, services.CliAuthFromContext(r.Context()))
+				w.WriteHeader(200)
+			})))
+			req := httptest.NewRequest("GET", "/"+tc.app+"/build/"+tc.id+"/environment?channel=production", nil)
+			req.Header.Set("Authorization", "Bearer eoo_key")
+			req.RemoteAddr = "192.0.2.1:4000"
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+			require.Equal(t, tc.status, w.Code, w.Body.String())
+			require.Equal(t, tc.status == 200, called)
+			require.Len(t, policy.requests, tc.decisions)
+			require.Empty(t, w.Header().Get("Cache-Control"))
+			if tc.decisions > 0 {
+				decision := policy.requests[0]
+				require.Equal(t, tc.app, decision.AppID)
+				require.Equal(t, buildID, decision.AppIdentifierID)
+				require.Equal(t, apikeyrestrictions.BuildActionCreate, decision.Action)
+				require.Equal(t, int64(42), decision.APIKeyID)
+				require.Equal(t, "192.0.2.1", decision.ClientIP.String())
+			}
+		})
+	}
+}
+
+// Authentication failures must prevent even the target lookup.
+func TestBuildGuardAuthenticationFailure(t *testing.T) {
+	group := buildGroup{cliAuth: services.NewCliAuthService(failingBuildAuth{}), identifiers: nil}
+	w := httptest.NewRecorder()
+	group.guard(apikeyrestrictions.BuildActionCreate)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Fatal("secret handler reached") })).ServeHTTP(w, httptest.NewRequest("GET", "/", nil))
+	require.Equal(t, 401, w.Code)
+}
+
+type failingBuildAuth struct{ acceptingCliRepo }
+
+func (failingBuildAuth) ValidateCliCredential(context.Context, string, types.Auth) (int64, error) {
+	return 0, errors.New("invalid")
+}
+
+type buildAccessRepo struct {
+	apikeyrestrictions.ApiKeyAccessRepository
+	access apikeyrestrictions.ApiKeyAccess
+	app    string
+}
+
+func (repo *buildAccessRepo) GetAccess(_ context.Context, app string, key int64) (apikeyrestrictions.ApiKeyAccess, error) {
+	repo.app = app
+	if app != "app-1" || key != 42 {
+		return apikeyrestrictions.ApiKeyAccess{}, apikeyrestrictions.ErrApiKeyNotFound
+	}
+	return repo.access, nil
+}
+
+// Exercise both real route registrations with the real Enterprise policy, not
+// only a stubbed allow/deny decision. Other domains must never reach exports.
+func TestBuildRoutesEnterpriseDomains(t *testing.T) {
+	t.Setenv("AWSSM_DB_KEYS_MASTER_KEY_SECRET_ID", "")
+	t.Setenv("DB_KEYS_MASTER_KEY_B64", base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef")))
+	previous := licensing.Current()
+	licensing.Activate(licensing.License{PlanCode: licensing.PlanEnterprise})
+	t.Cleanup(func() {
+		if previous == nil {
+			licensing.Deactivate()
+		} else {
+			licensing.Activate(*previous)
+		}
+	})
+	for _, tc := range []struct {
+		name   string
+		access apikeyrestrictions.ApiKeyAccess
+		status int
+	}{
+		{"build", apikeyrestrictions.ApiKeyAccess{BuildRules: []apikeyrestrictions.BuildRule{{AppIdentifierID: buildID, Actions: []apikeyrestrictions.BuildAction{apikeyrestrictions.BuildActionCreate}}}}, 200},
+		{"ota", apikeyrestrictions.ApiKeyAccess{UpdateRules: []apikeyrestrictions.UpdateRule{{Pattern: "*", Actions: []apikeyrestrictions.UpdateAction{apikeyrestrictions.UpdateActionPublish}}}}, 403},
+		{"submit", apikeyrestrictions.ApiKeyAccess{SubmitRules: []apikeyrestrictions.SubmitRule{{AppIdentifierID: buildID, Destination: apikeyrestrictions.SubmitDestinationInternal, Actions: []apikeyrestrictions.SubmitAction{apikeyrestrictions.SubmitActionUpload}}}}, 403},
+		{"empty", apikeyrestrictions.ApiKeyAccess{}, 403},
+		{"other identifier", apikeyrestrictions.ApiKeyAccess{BuildRules: []apikeyrestrictions.BuildRule{{AppIdentifierID: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", Actions: []apikeyrestrictions.BuildAction{apikeyrestrictions.BuildActionCreate}}}}, 403},
+		{"blocked IP", apikeyrestrictions.ApiKeyAccess{AllowedIps: []netip.Prefix{netip.MustParsePrefix("203.0.113.0/24")}, BuildRules: []apikeyrestrictions.BuildRule{{AppIdentifierID: buildID, Actions: []apikeyrestrictions.BuildAction{apikeyrestrictions.BuildActionCreate}}}}, 403},
+	} {
+		for _, target := range []struct{ platform, endpoint string }{{"android", "environment"}, {"ios", "environment"}, {"android", "credentials/android"}} {
+			endpoint := target.endpoint
+			t.Run(tc.name+"/"+target.platform+"/"+endpoint, func(t *testing.T) {
+				access := tc.access
+				access.ApiKeyID = 42
+				repo := &buildAccessRepo{access: access}
+				identifiers := &buildIdentifierRepo{platform: target.platform}
+				environments := services.NewEnvironmentService(nil)
+				vault := &buildCredentialsRepo{}
+				credentials := services.NewCredentialsService(vault, identifiers)
+				if target.platform == services.PlatformAndroid {
+					require.NoError(t, credentials.SaveAndroidCredentials(context.Background(), "app-1", buildID, services.AndroidCredentialsInput{
+						KeystoreBase64:   base64.StdEncoding.EncodeToString(androidtest.JKSKeystore("store-pass", "key-pass", "upload")),
+						KeystorePassword: "store-pass", KeyPassword: "key-pass", KeyAlias: "upload",
+					}))
+				}
+				container := &AppContainer{AppRepo: buildAppRepo{}, CliAuthService: services.NewCliAuthService(acceptingCliRepo{}), ApiKeyAccessService: apikeyrestrictions.NewApiKeyAccessService(repo), AppIdentifierRepo: identifiers, BuildHandler: handlers.NewBuildHandler(environments, credentials)}
+				router := mux.NewRouter()
+				registerBuildRoutes(router, container)
+				req := httptest.NewRequest("GET", "/app-1/build/"+buildID+"/"+endpoint, nil)
+				req.Header.Set("Authorization", "Bearer eoo_key")
+				req.RemoteAddr = "192.0.2.1:4000"
+				w := httptest.NewRecorder()
+				router.ServeHTTP(w, req)
+				require.Equal(t, tc.status, w.Code, w.Body.String())
+				require.Equal(t, "app-1", repo.app)
+				require.Equal(t, tc.status == 200 && endpoint == "credentials/android", vault.read)
+				if tc.status == 200 && endpoint == "environment" {
+					require.JSONEq(t, `{"environment":null,"variables":{}}`, w.Body.String())
+				}
+			})
+		}
+	}
+}
+
+type buildAppRepo struct{ services.AppRepository }
+
+func (buildAppRepo) GetAppByID(context.Context, string) (config.AppConfig, error) {
+	return config.AppConfig{}, nil
+}
+
+func TestBuildRoutePropagatesAction(t *testing.T) {
+	// A sentinel action distinguishes propagation from a hardcoded create grant.
+	// Route registration leaves validation to the policy, which must receive it unchanged.
+	action := apikeyrestrictions.BuildAction("sentinel")
+	policy := &recordingBuildPolicy{err: services.ErrCliAccessDenied}
+	group := buildGroup{router: mux.NewRouter(), cliAuth: services.NewCliAuthService(acceptingCliRepo{}), apiKeyAccess: policy, identifiers: &buildIdentifierRepo{platform: "android"}}
+	req := httptest.NewRequest(http.MethodGet, "/app-1/build/"+buildID, nil)
+	w := httptest.NewRecorder()
+	group.route(http.MethodGet, "/{APP_ID}/build/{IDENTIFIER_ID}", func(http.ResponseWriter, *http.Request) { t.Fatal("denied action reached handler") }, action)
+	group.router.ServeHTTP(w, req)
+	require.Equal(t, http.StatusForbidden, w.Code)
+	require.Len(t, policy.requests, 1)
+	require.Equal(t, action, policy.requests[0].Action)
+}
+
+// A successfully authenticated Expo credential has no registered API key.
+// Build must refuse it before touching even the identifier repository.
+func TestBuildGuardRejectsUnregisteredCredential(t *testing.T) {
+	for _, keyID := range []int64{0, -1} {
+		group := buildGroup{cliAuth: services.NewCliAuthService(buildAuthKeyID{keyID: keyID})}
+		w := httptest.NewRecorder()
+		group.guard(apikeyrestrictions.BuildActionCreate)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+			t.Fatal("unregistered credential reached build handler")
+		})).ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/", nil))
+		require.Equal(t, http.StatusUnauthorized, w.Code)
+	}
+}
+
+type buildAuthKeyID struct {
+	acceptingCliRepo
+	keyID int64
+}
+
+func (repo buildAuthKeyID) ValidateCliCredential(context.Context, string, types.Auth) (int64, error) {
+	return repo.keyID, nil
+}
+
+func TestBuildGuardAllowsRegisteredCommunityToken(t *testing.T) {
+	previous := licensing.Current()
+	licensing.Deactivate()
+	t.Cleanup(func() {
+		if previous != nil {
+			licensing.Activate(*previous)
+		}
+	})
+	group := buildGroup{
+		cliAuth:      services.NewCliAuthService(acceptingCliRepo{}),
+		apiKeyAccess: apikeyrestrictions.NewApiKeyAccessService(&buildAccessRepo{}),
+		identifiers:  &buildIdentifierRepo{platform: "android"},
+	}
+	req := mux.SetURLVars(httptest.NewRequest(http.MethodGet, "/", nil), map[string]string{"APP_ID": "app-1", "IDENTIFIER_ID": buildID})
+	w := httptest.NewRecorder()
+	group.guard(apikeyrestrictions.BuildActionCreate)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, int64(42), services.CliAuthFromContext(r.Context()).KeyID)
+		w.WriteHeader(http.StatusOK)
+	})).ServeHTTP(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+}
+
+// The actual credentials service validates Android before reading/decrypting
+// the keystore. The common guard must still authorize the target first.
+func TestAndroidBuildCredentialsPlatform(t *testing.T) {
+	for _, platform := range []string{services.PlatformAndroid, services.PlatformIOS} {
+		t.Run(platform, func(t *testing.T) {
+			identifiers := &buildIdentifierRepo{platform: platform}
+			credentials := &buildCredentialsRepo{}
+			handler := handlers.NewBuildHandler(nil, services.NewCredentialsService(credentials, identifiers))
+			policy := &recordingBuildPolicy{}
+			group := buildGroup{router: mux.NewRouter(), cliAuth: services.NewCliAuthService(acceptingCliRepo{}), apiKeyAccess: policy, identifiers: identifiers}
+			group.route(http.MethodGet, "/{APP_ID}/build/{IDENTIFIER_ID}/credentials/android", handler.AndroidCredentials, apikeyrestrictions.BuildActionCreate)
+			req := httptest.NewRequest(http.MethodGet, "/app-1/build/"+buildID+"/credentials/android", nil)
+			w := httptest.NewRecorder()
+			group.router.ServeHTTP(w, req)
+			require.Len(t, policy.requests, 1)
+			require.Equal(t, buildID, policy.requests[0].AppIdentifierID)
+			if platform == services.PlatformIOS {
+				require.Equal(t, http.StatusBadRequest, w.Code, w.Body.String())
+				require.False(t, credentials.read)
+			} else {
+				// No stored key in this fixture; reaching the vault yields its normal 404.
+				require.Equal(t, http.StatusNotFound, w.Code, w.Body.String())
+				require.True(t, credentials.read)
+			}
+		})
+	}
+}
+
+type buildCredentialsRepo struct {
+	services.CredentialsRepository
+	credentials *store.SealedAndroidCredentials
+	read        bool
+}
+
+func (repo *buildCredentialsRepo) GetAndroidCredentials(context.Context, string) (*store.SealedAndroidCredentials, error) {
+	repo.read = true
+	return repo.credentials, nil
+}
+
+func (repo *buildCredentialsRepo) UpsertAndroidCredentials(_ context.Context, _ string, credentials store.SealedAndroidCredentials) error {
+	repo.credentials = &credentials
+	return nil
+}

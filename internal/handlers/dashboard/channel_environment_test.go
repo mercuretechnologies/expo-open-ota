@@ -84,3 +84,7 @@ func TestSetChannelEnvironmentRefusesMissingKey(t *testing.T) {
 		assert.Empty(t, repo.written, body)
 	}
 }
+
+func (r *channelEnvRepo) ResolveEnvironmentVariables(context.Context, string, string, string) (*store.ResolvedEnvironment, error) {
+	panic("unexpected environment export")
+}

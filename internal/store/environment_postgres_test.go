@@ -187,3 +187,42 @@ func TestEnvVarUpsertOnDeletedEnvironmentIsNotFound(t *testing.T) {
 	notFoundErr := (*store.ErrResourceNotFound)(nil)
 	require.True(t, errors.As(err, &notFoundErr))
 }
+
+func TestResolveEnvironmentVariablesSelectorsAndAppScope(t *testing.T) {
+	envStore, channels, appID, pool := setupEnvironmentStore(t)
+	ctx := context.Background()
+	otherAppID := insertBareApp(t, pool)
+	selectedID := insertEnvironment(t, envStore, appID, "staging")
+	foreignID := insertEnvironment(t, envStore, otherAppID, "staging")
+	emptyID := insertEnvironment(t, envStore, appID, "empty")
+	for _, target := range []struct{ app, id, value string }{{appID, selectedID, "selected"}, {otherAppID, foreignID, "foreign"}} {
+		_, err := channels.InsertChannel(ctx, target.app, nil, "release")
+		require.NoError(t, err)
+		require.NoError(t, envStore.SetChannelEnvironment(ctx, target.app, "release", &target.id))
+		require.NoError(t, envStore.UpsertEnvVar(ctx, target.id, "TOKEN", true, target.value))
+		for _, selector := range []struct{ channel, env string }{{"release", ""}, {"", "staging"}} {
+			resolved, err := envStore.ResolveEnvironmentVariables(ctx, target.app, selector.channel, selector.env)
+			require.NoError(t, err)
+			require.Equal(t, target.id, resolved.ID)
+			require.Equal(t, "staging", *resolved.Name)
+			require.Equal(t, []store.SealedEnvVar{{Key: "TOKEN", IsPublic: true, SealedValue: target.value}}, resolved.Variables)
+		}
+	}
+	_, err := channels.InsertChannel(ctx, appID, nil, "unbound")
+	require.NoError(t, err)
+	resolved, err := envStore.ResolveEnvironmentVariables(ctx, appID, "unbound", "")
+	require.NoError(t, err)
+	require.Nil(t, resolved.Name)
+	require.Empty(t, resolved.Variables)
+	resolved, err = envStore.ResolveEnvironmentVariables(ctx, appID, "", "empty")
+	require.NoError(t, err)
+	require.Equal(t, emptyID, resolved.ID)
+	require.Equal(t, "empty", *resolved.Name)
+	require.Empty(t, resolved.Variables)
+	for _, target := range []struct{ app, channel, env string }{{otherAppID, "unbound", ""}, {otherAppID, "", "empty"}, {appID, "missing", ""}, {appID, "", "missing"}} {
+		resolved, err := envStore.ResolveEnvironmentVariables(ctx, target.app, target.channel, target.env)
+		require.Nil(t, resolved)
+		var missing *store.ErrResourceNotFound
+		require.ErrorAs(t, err, &missing)
+	}
+}

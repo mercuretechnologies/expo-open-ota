@@ -24,6 +24,7 @@ const maxEnvValueBytes = 8 * 1024
 var envKeyPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 type EnvironmentRepository interface {
+	ResolveEnvironmentVariables(ctx context.Context, appID, channel, environment string) (*store.ResolvedEnvironment, error)
 	InsertEnvironment(ctx context.Context, appId string, name string) (string, error)
 	ListEnvironments(ctx context.Context, appId string) ([]store.EnvironmentRow, error)
 	// GetEnvironmentIdByName returns ErrResourceNotFound for an unknown name.
@@ -61,7 +62,7 @@ type EnvironmentService struct {
 }
 
 // NewEnvironmentService builds the service; a nil repo (stateless mode) makes
-// every method answer ErrNotSupportedInStatelessMode.
+// repository-backed operations answer ErrNotSupportedInStatelessMode.
 func NewEnvironmentService(repo EnvironmentRepository) *EnvironmentService {
 	return &EnvironmentService{repo: repo}
 }
@@ -245,7 +246,12 @@ func (s *EnvironmentService) RevealEnvVar(ctx context.Context, appId string, env
 	if sealedValue == nil {
 		return "", &store.ErrResourceNotFound{Resource: "env var", Identifier: key}
 	}
-	value, err := crypto.UnsealAESGCM(*sealedValue, []byte(keyStore.ReadDBKeysMasterKey()), envVarAAD(appId, environmentId, key))
+	return s.revealEnvValue(ctx, appId, environmentName, environmentId, key, *sealedValue)
+}
+
+// Shared decryption and audit path for individual reveals and grouped exports.
+func (s *EnvironmentService) revealEnvValue(ctx context.Context, appId, environmentName, environmentId, key, sealedValue string) (string, error) {
+	value, err := crypto.UnsealAESGCM(sealedValue, []byte(keyStore.ReadDBKeysMasterKey()), envVarAAD(appId, environmentId, key))
 	if err != nil {
 		return "", err
 	}
@@ -319,4 +325,54 @@ func (s *EnvironmentService) SetChannelEnvironment(ctx context.Context, appId st
 	})
 	invalidateChannelCaches(appId)
 	return nil
+}
+
+type EnvironmentValues struct {
+	Environment *string           `json:"environment"`
+	Variables   map[string]string `json:"variables"`
+}
+
+// ExportVariables resolves an app environment and returns its decrypted values.
+// There is no implicit default; callers authorize access before exporting.
+func (s *EnvironmentService) ExportVariables(ctx context.Context, appID, channel, environment string) (*EnvironmentValues, error) {
+	if channel != "" && environment != "" {
+		return nil, validation.Errorf("environment", "channel and environment are mutually exclusive")
+	}
+	output := &EnvironmentValues{Variables: map[string]string{}}
+	if channel == "" && environment == "" {
+		return output, nil
+	}
+	if channel != "" {
+		if err := validation.Name("channel", channel); err != nil {
+			return nil, err
+		}
+	} else if err := validateEnvironmentName(environment); err != nil {
+		return nil, err
+	}
+	if s.repo == nil {
+		return nil, store.ErrNotSupportedInStatelessMode
+	}
+	resolved, err := s.repo.ResolveEnvironmentVariables(ctx, appID, channel, environment)
+	if err != nil {
+		return nil, err
+	}
+	output.Environment = resolved.Name
+	if resolved.Name == nil {
+		return output, nil
+	}
+	for _, variable := range resolved.Variables {
+		if err := validateEnvKey(variable.Key); err != nil {
+			return nil, err
+		}
+		value, err := s.revealEnvValue(ctx, appID, *resolved.Name, resolved.ID, variable.Key, variable.SealedValue)
+		if err != nil {
+			return nil, err
+		}
+		name := variable.Key
+		if variable.IsPublic {
+			name = PublicEnvPrefix + name
+		}
+		output.Variables[name] = value
+	}
+	return output, nil
 }

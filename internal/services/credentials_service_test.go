@@ -5,6 +5,7 @@
 package services
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -16,6 +17,7 @@ import (
 	"xprem/internal/store"
 	"xprem/internal/validation"
 
+	keystore "github.com/pavlo-v-chernykh/keystore-go/v4"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -365,4 +367,31 @@ func TestAndroidCredentialsUnsupportedInStatelessMode(t *testing.T) {
 	assert.ErrorIs(t, err, store.ErrNotSupportedInStatelessMode)
 	assert.ErrorIs(t, service.SaveGooglePlayServiceAccountKey(ctx, testAppId, testIdentifierId, `{}`), store.ErrNotSupportedInStatelessMode)
 	assert.ErrorIs(t, service.DeleteGooglePlayServiceAccountKey(ctx, testAppId, testIdentifierId), store.ErrNotSupportedInStatelessMode)
+}
+
+// A full imported multi-key file survives the reused export service unchanged;
+// only the configured alias is selected, and the Play secret need not decrypt.
+func TestBuildKeystoreExportPreservesMultiKeyFile(t *testing.T) {
+	setMasterKey(t)
+	service, repo, _ := newCredentialsFixture()
+	input := validAndroidInput()
+	raw, err := base64.StdEncoding.DecodeString(input.KeystoreBase64)
+	require.NoError(t, err)
+	ks := keystore.New()
+	require.NoError(t, ks.Load(bytes.NewReader(raw), []byte(input.KeystorePassword)))
+	entry, err := ks.GetPrivateKeyEntry(input.KeyAlias, []byte(input.KeyPassword))
+	require.NoError(t, err)
+	require.NoError(t, ks.SetPrivateKeyEntry("second-alias", entry, []byte("second-password")))
+	var file bytes.Buffer
+	require.NoError(t, ks.Store(&file, []byte(input.KeystorePassword)))
+	input.KeystoreBase64 = base64.StdEncoding.EncodeToString(file.Bytes())
+	require.NoError(t, service.SaveAndroidCredentials(context.Background(), testAppId, testIdentifierId, input))
+	stored := repo.byIdentifierId[testIdentifierId]
+	unreadablePlaySecret := "not a decryptable Google Play secret"
+	stored.SealedGoogleServiceAccountKey = &unreadablePlaySecret
+	repo.byIdentifierId[testIdentifierId] = stored
+	exported, err := service.ExportAndroidKeystore(context.Background(), testAppId, testIdentifierId)
+	require.NoError(t, err)
+	require.Equal(t, file.Bytes(), exported.Keystore)
+	require.Equal(t, input.KeyAlias, exported.KeyAlias)
 }

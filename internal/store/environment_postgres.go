@@ -185,3 +185,38 @@ func (s *PostgresEnvironmentStore) SetChannelEnvironment(ctx context.Context, ap
 	}
 	return nil
 }
+
+// SealedEnvVar contains encrypted values for an authorized environment export.
+type SealedEnvVar struct {
+	Key         string
+	IsPublic    bool
+	SealedValue string
+}
+
+// ResolvedEnvironment distinguishes an unbound channel (nil name) from an
+// existing empty environment; unknown selectors return ErrResourceNotFound.
+type ResolvedEnvironment struct {
+	ID        string
+	Name      *string
+	Variables []SealedEnvVar
+}
+
+func (s *PostgresEnvironmentStore) ResolveEnvironmentVariables(ctx context.Context, appID, channel, environment string) (*ResolvedEnvironment, error) {
+	rows, err := s.engine.Queries.ResolveEnvironmentVariables(ctx, pgdb.ResolveEnvironmentVariablesParams{AppID: ToPgUUID(appID), ChannelName: channel, EnvironmentName: environment})
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve environment values from database: %w", err)
+	}
+	if len(rows) == 0 {
+		if channel != "" {
+			return nil, &ErrResourceNotFound{Resource: "channel", Identifier: channel}
+		}
+		return nil, &ErrResourceNotFound{Resource: "environment", Identifier: environment}
+	}
+	resolved := &ResolvedEnvironment{ID: rows[0].EnvironmentID.String(), Name: rows[0].EnvironmentName, Variables: []SealedEnvVar{}}
+	for _, row := range rows {
+		if row.Key != nil {
+			resolved.Variables = append(resolved.Variables, SealedEnvVar{Key: *row.Key, IsPublic: *row.IsPublic, SealedValue: *row.SealedValue})
+		}
+	}
+	return resolved, nil
+}

@@ -36,6 +36,8 @@ import (
 )
 
 type AppContainer struct {
+	AppIdentifierRepo           services.AppIdentifierRepository
+	BuildHandler                *handlers.BuildHandler
 	AuthHandler                 *dashhandlers.AuthHandler
 	BlobService                 *services.BlobService
 	DashboardAuthService        *services.DashboardAuthService
@@ -382,6 +384,8 @@ func InitDependencies(ctx context.Context) (*AppContainer, func()) {
 		ChannelHandler:              dashhandlers.NewChannelHandler(channelService),
 		AppIdentifiersHandler:       dashhandlers.NewAppIdentifiersHandler(appIdentifierService),
 		CredentialsHandler:          dashhandlers.NewCredentialsHandler(credentialsService),
+		AppIdentifierRepo:            appIdentifierRepo,
+		BuildHandler:                handlers.NewBuildHandler(environmentService, credentialsService),
 		EnvironmentsHandler:         dashhandlers.NewEnvironmentsHandler(environmentService),
 		ExpoProtocolHandler:         handlers.NewExpoProtocolHandler(expoProtocolService),
 		LicenseHandler:              licensing.NewLicenseHandler(licenseService),
