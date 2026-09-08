@@ -101,6 +101,7 @@ func describeBuildRules(rules []BuildRule) []string {
 }
 
 // AuthorizeBuild checks the authenticated key and IP, then only Build grants.
+// An empty rule list imposes no restrictions on valid operations in this domain.
 // It is a no-op without an active Enterprise license or control plane.
 func (s *ApiKeyAccessService) AuthorizeBuild(ctx context.Context, req BuildRequest) error {
 	access, err := s.authorizationAccess(ctx, req.APIKeyContext)
@@ -109,6 +110,9 @@ func (s *ApiKeyAccessService) AuthorizeBuild(ctx context.Context, req BuildReque
 	}
 	identifierID, err := normalizeIdentifierID(req.AppIdentifierID)
 	if err == nil {
+		if len(access.BuildRules) == 0 && req.Action == BuildActionCreate {
+			return nil
+		}
 		for _, rule := range access.BuildRules {
 			if rule.Allows(identifierID, req.Action) {
 				return nil

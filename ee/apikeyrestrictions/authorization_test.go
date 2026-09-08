@@ -61,7 +61,7 @@ func authorizationPolicy() ApiKeyAccess {
 	}
 }
 
-func TestAuthorizationDoesNotInheritOtherDomains(t *testing.T) {
+func TestAuthorizationDefaultsAreIndependentAcrossDomains(t *testing.T) {
 	all := authorizationPolicy()
 	for _, tc := range []struct {
 		name   string
@@ -77,7 +77,7 @@ func TestAuthorizationDoesNotInheritOtherDomains(t *testing.T) {
 				t.Run(domain.name, func(t *testing.T) {
 					repo := &authorizationRepo{policy: tc.policy}
 					err := domain.run(serviceWith(repo, true), APIKeyContext{AppID: "requested-app", APIKeyID: 42})
-					if domain.name == tc.name {
+					if domain.name == tc.name || domain.name == "build" || domain.name == "submit" {
 						require.NoError(t, err)
 					} else {
 						require.ErrorIs(t, err, services.ErrCliAccessDenied)
@@ -161,6 +161,8 @@ func TestAuthorizationSharesSourceNetworkAndRepositoryChecks(t *testing.T) {
 			} {
 				t.Run(tc.name, func(t *testing.T) {
 					policy := authorizationPolicy()
+					policy.BuildRules = nil
+					policy.SubmitRules = nil
 					policy.AllowedIps = []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8")}
 					repo := &authorizationRepo{policy: policy, err: tc.repoErr}
 					err := domain.run(serviceWith(repo, true), APIKeyContext{AppID: "app", APIKeyID: 42, ClientIP: tc.ip})
@@ -209,5 +211,36 @@ func TestAuthorizationIsNoOpWithoutEnterprisePolicy(t *testing.T) {
 			assert.Zero(t, repo.reads)
 			assert.NoError(t, tc.run(serviceWith(nil, true)))
 		})
+	}
+}
+
+func TestNativeAuthorizationWithoutRules(t *testing.T) {
+	key := APIKeyContext{AppID: "app", APIKeyID: 42}
+	for _, rules := range []ApiKeyAccess{
+		{ApiKeyID: 42},
+		{ApiKeyID: 42, BuildRules: []BuildRule{}, SubmitRules: []SubmitRule{}},
+	} {
+		service := serviceWith(&authorizationRepo{policy: rules}, true)
+		for _, id := range []string{authorizationIdentifier, "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"} {
+			require.NoError(t, service.AuthorizeBuild(context.Background(), BuildRequest{APIKeyContext: key, AppIdentifierID: id, Action: BuildActionCreate}))
+			for _, destination := range []SubmitDestination{SubmitDestinationInternal, SubmitDestinationProduction, SubmitDestinationTestFlight} {
+				require.NoError(t, service.AuthorizeSubmit(context.Background(), SubmitRequest{APIKeyContext: key, AppIdentifierID: id, Destination: destination, Action: SubmitActionUpload}))
+			}
+		}
+		require.ErrorIs(t, service.AuthorizeBuild(context.Background(), BuildRequest{APIKeyContext: key, AppIdentifierID: "invalid", Action: BuildActionCreate}), services.ErrCliAccessDenied)
+		require.ErrorIs(t, service.AuthorizeBuild(context.Background(), BuildRequest{APIKeyContext: key, AppIdentifierID: authorizationIdentifier, Action: "unknown"}), services.ErrCliAccessDenied)
+		require.ErrorIs(t, service.AuthorizeSubmit(context.Background(), SubmitRequest{APIKeyContext: key, AppIdentifierID: authorizationIdentifier, Destination: "unknown", Action: SubmitActionUpload}), services.ErrCliAccessDenied)
+		require.ErrorIs(t, service.AuthorizeSubmit(context.Background(), SubmitRequest{APIKeyContext: key, AppIdentifierID: authorizationIdentifier, Destination: SubmitDestinationInternal, Action: "unknown"}), services.ErrCliAccessDenied)
+	}
+}
+
+func TestNativeAuthorizationEmptyActionsStillRestrict(t *testing.T) {
+	service := serviceWith(&authorizationRepo{policy: ApiKeyAccess{
+		ApiKeyID:    42,
+		BuildRules:  []BuildRule{{AppIdentifierID: authorizationIdentifier}},
+		SubmitRules: []SubmitRule{{AppIdentifierID: authorizationIdentifier, Destination: SubmitDestinationInternal}},
+	}}, true)
+	for _, domain := range domainAuthorizations()[1:] {
+		require.ErrorIs(t, domain.run(service, APIKeyContext{AppID: "app", APIKeyID: 42}), services.ErrCliAccessDenied)
 	}
 }

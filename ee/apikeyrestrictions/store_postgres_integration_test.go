@@ -386,7 +386,7 @@ func TestNativeRulesRejectOtherAppsAndPlatformsAtomically(t *testing.T) {
 	otherSubmit.Destination = SubmitDestinationTestFlight
 	require.ErrorIs(t, service.AuthorizeSubmit(ctx, otherSubmit), services.ErrCliAccessDenied)
 
-	// A recreated identifier with the same name must not inherit deleted grants.
+	// Deleting the last restricted identifier removes the rules, restoring unrestricted access.
 	var name string
 	require.NoError(t, pool.QueryRow(ctx, "DELETE FROM app_identifiers WHERE id=$1 RETURNING identifier", ownID).Scan(&name))
 	_, err = pool.Exec(ctx, "INSERT INTO app_identifiers (id,app_id,platform,identifier) VALUES ($1,$2,'android',$3)", uuid.NewString(), appID, name)
@@ -395,6 +395,6 @@ func TestNativeRulesRejectOtherAppsAndPlatformsAtomically(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, actual.BuildRules)
 	assert.Empty(t, actual.SubmitRules)
-	require.ErrorIs(t, service.AuthorizeBuild(ctx, buildRequest), services.ErrCliAccessDenied)
-	require.ErrorIs(t, service.AuthorizeSubmit(ctx, submitRequest), services.ErrCliAccessDenied)
+	require.NoError(t, service.AuthorizeBuild(ctx, buildRequest))
+	require.NoError(t, service.AuthorizeSubmit(ctx, submitRequest))
 }

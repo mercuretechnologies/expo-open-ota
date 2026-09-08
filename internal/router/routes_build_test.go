@@ -143,7 +143,7 @@ func (repo *buildAccessRepo) GetAccess(_ context.Context, app string, key int64)
 }
 
 // Exercise both real route registrations with the real Enterprise policy, not
-// only a stubbed allow/deny decision. Other domains must never reach exports.
+// only a stubbed allow/deny decision. Only Build rules restrict build exports.
 func TestBuildRoutesEnterpriseDomains(t *testing.T) {
 	t.Setenv("AWSSM_DB_KEYS_MASTER_KEY_SECRET_ID", "")
 	t.Setenv("DB_KEYS_MASTER_KEY_B64", base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef")))
@@ -162,9 +162,9 @@ func TestBuildRoutesEnterpriseDomains(t *testing.T) {
 		status int
 	}{
 		{"build", apikeyrestrictions.ApiKeyAccess{BuildRules: []apikeyrestrictions.BuildRule{{AppIdentifierID: buildID, Actions: []apikeyrestrictions.BuildAction{apikeyrestrictions.BuildActionCreate}}}}, 200},
-		{"ota", apikeyrestrictions.ApiKeyAccess{UpdateRules: []apikeyrestrictions.UpdateRule{{Pattern: "*", Actions: []apikeyrestrictions.UpdateAction{apikeyrestrictions.UpdateActionPublish}}}}, 403},
-		{"submit", apikeyrestrictions.ApiKeyAccess{SubmitRules: []apikeyrestrictions.SubmitRule{{AppIdentifierID: buildID, Destination: apikeyrestrictions.SubmitDestinationInternal, Actions: []apikeyrestrictions.SubmitAction{apikeyrestrictions.SubmitActionUpload}}}}, 403},
-		{"empty", apikeyrestrictions.ApiKeyAccess{}, 403},
+		{"ota", apikeyrestrictions.ApiKeyAccess{UpdateRules: []apikeyrestrictions.UpdateRule{{Pattern: "*", Actions: []apikeyrestrictions.UpdateAction{apikeyrestrictions.UpdateActionPublish}}}}, 200},
+		{"submit", apikeyrestrictions.ApiKeyAccess{SubmitRules: []apikeyrestrictions.SubmitRule{{AppIdentifierID: buildID, Destination: apikeyrestrictions.SubmitDestinationInternal, Actions: []apikeyrestrictions.SubmitAction{apikeyrestrictions.SubmitActionUpload}}}}, 200},
+		{"empty", apikeyrestrictions.ApiKeyAccess{}, 200},
 		{"other identifier", apikeyrestrictions.ApiKeyAccess{BuildRules: []apikeyrestrictions.BuildRule{{AppIdentifierID: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", Actions: []apikeyrestrictions.BuildAction{apikeyrestrictions.BuildActionCreate}}}}, 403},
 		{"blocked IP", apikeyrestrictions.ApiKeyAccess{AllowedIps: []netip.Prefix{netip.MustParsePrefix("203.0.113.0/24")}, BuildRules: []apikeyrestrictions.BuildRule{{AppIdentifierID: buildID, Actions: []apikeyrestrictions.BuildAction{apikeyrestrictions.BuildActionCreate}}}}, 403},
 	} {
