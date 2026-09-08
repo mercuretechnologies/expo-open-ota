@@ -2552,6 +2552,11 @@ SELECT id, platform, identifier, build_number
 FROM app_identifiers
 WHERE app_id = $1 AND id = $2;
 
+-- name: GetAppIdentifierByPlatformAndIdentifier :one
+SELECT id, platform, identifier, build_number
+FROM app_identifiers
+WHERE app_id = $1 AND platform = $2 AND identifier = $3;
+
 -- name: SetAppIdentifierBuildNumber :execresult
 UPDATE app_identifiers
 SET build_number = $3

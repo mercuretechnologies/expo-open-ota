@@ -1272,6 +1272,37 @@ func (q *Queries) GetAppIdentifierByID(ctx context.Context, arg GetAppIdentifier
 	return i, err
 }
 
+const getAppIdentifierByPlatformAndIdentifier = `-- name: GetAppIdentifierByPlatformAndIdentifier :one
+SELECT id, platform, identifier, build_number
+FROM app_identifiers
+WHERE app_id = $1 AND platform = $2 AND identifier = $3
+`
+
+type GetAppIdentifierByPlatformAndIdentifierParams struct {
+	AppID      pgtype.UUID `json:"app_id"`
+	Platform   string      `json:"platform"`
+	Identifier string      `json:"identifier"`
+}
+
+type GetAppIdentifierByPlatformAndIdentifierRow struct {
+	ID          pgtype.UUID `json:"id"`
+	Platform    string      `json:"platform"`
+	Identifier  string      `json:"identifier"`
+	BuildNumber string      `json:"build_number"`
+}
+
+func (q *Queries) GetAppIdentifierByPlatformAndIdentifier(ctx context.Context, arg GetAppIdentifierByPlatformAndIdentifierParams) (GetAppIdentifierByPlatformAndIdentifierRow, error) {
+	row := q.db.QueryRow(ctx, getAppIdentifierByPlatformAndIdentifier, arg.AppID, arg.Platform, arg.Identifier)
+	var i GetAppIdentifierByPlatformAndIdentifierRow
+	err := row.Scan(
+		&i.ID,
+		&i.Platform,
+		&i.Identifier,
+		&i.BuildNumber,
+	)
+	return i, err
+}
+
 const getAppIdentifiersByAppID = `-- name: GetAppIdentifiersByAppID :many
 SELECT ai.id, ai.platform, ai.identifier, ai.build_number, ai.created_at,
        (ac.id IS NOT NULL)::bool AS has_android_credentials

@@ -400,3 +400,7 @@ func TestBuildKeystoreExportPreservesMultiKeyFile(t *testing.T) {
 	require.Equal(t, file.Bytes(), exported.Keystore)
 	require.Equal(t, input.KeyAlias, exported.KeyAlias)
 }
+
+func (f *fakeIdentifierRepo) GetAppIdentifierByPlatformAndIdentifier(context.Context, string, types.Platform, string) (*store.AppIdentifierRef, error) {
+	panic("not used in these tests")
+}

@@ -99,6 +99,26 @@ func (s *PostgresAppIdentifierStore) GetAppIdentifierByID(ctx context.Context, a
 	}, nil
 }
 
+func (s *PostgresAppIdentifierStore) GetAppIdentifierByPlatformAndIdentifier(ctx context.Context, appId string, platform types.Platform, identifier string) (*AppIdentifierRef, error) {
+	row, err := s.engine.Queries.GetAppIdentifierByPlatformAndIdentifier(ctx, pgdb.GetAppIdentifierByPlatformAndIdentifierParams{
+		AppID:      ToPgUUID(appId),
+		Platform:   string(platform),
+		Identifier: identifier,
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to retrieve app identifier from database: %w", err)
+	}
+	return &AppIdentifierRef{
+		Id:          row.ID.String(),
+		Platform:    types.Platform(row.Platform),
+		Identifier:  row.Identifier,
+		BuildNumber: row.BuildNumber,
+	}, nil
+}
+
 func (s *PostgresAppIdentifierStore) SetBuildNumber(ctx context.Context, appId string, identifierId string, buildNumber string) error {
 	commandTag, err := s.engine.Queries.SetAppIdentifierBuildNumber(ctx, pgdb.SetAppIdentifierBuildNumberParams{
 		AppID:       ToPgUUID(appId),

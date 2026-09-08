@@ -104,3 +104,16 @@ func AppFromContext(ctx context.Context) *config.AppConfig {
 	}
 	return &app
 }
+
+type buildIdentifierContextKey struct{}
+
+// WithBuildIdentifier stores the canonical identifier after build authorization.
+func WithBuildIdentifier(ctx context.Context, identifierID string) context.Context {
+	return context.WithValue(ctx, buildIdentifierContextKey{}, identifierID)
+}
+
+// BuildIdentifierFromContext returns the authorized identifier, or an empty string.
+func BuildIdentifierFromContext(ctx context.Context) string {
+	identifierID, _ := ctx.Value(buildIdentifierContextKey{}).(string)
+	return identifierID
+}

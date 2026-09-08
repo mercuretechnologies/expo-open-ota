@@ -8,6 +8,7 @@ import (
 	"errors"
 	"testing"
 	"xprem/internal/services"
+	"xprem/internal/types"
 
 	"xprem/internal/store"
 
@@ -158,4 +159,40 @@ func TestAllocateBuildNumberIsScopedAndBounded(t *testing.T) {
 	next, err := service.AllocateBuildNumber(ctx, app, id)
 	require.NoError(t, err)
 	require.Equal(t, "5", next)
+}
+
+func TestAppIdentifierLookupByPlatformAndIdentifier(t *testing.T) {
+	_, repo, pool := setupCredentialsStores(t)
+	ctx := context.Background()
+	app := insertBareApp(t, pool)
+	other := insertBareApp(t, pool)
+	android := insertIdentifier(t, repo, app, "android", "com.example.app")
+	ios := insertIdentifier(t, repo, app, "ios", "com.example.app")
+	foreign := insertIdentifier(t, repo, other, "android", "com.example.app")
+	require.NoError(t, repo.SetBuildNumber(ctx, app, android, "42"))
+	for _, tc := range []struct{ app, platform, identifier, id string }{
+		{app, "android", "com.example.app", android},
+		{app, "ios", "com.example.app", ios},
+		{other, "android", "com.example.app", foreign},
+		{other, "ios", "com.example.app", ""},
+		{app, "android", "com.example.missing", ""},
+	} {
+		ref, err := repo.GetAppIdentifierByPlatformAndIdentifier(ctx, tc.app, types.Platform(tc.platform), tc.identifier)
+		require.NoError(t, err)
+		if tc.id == "" {
+			require.Nil(t, ref)
+			continue
+		}
+		require.NotNil(t, ref)
+		require.Equal(t, tc.id, ref.Id)
+		require.Equal(t, types.Platform(tc.platform), ref.Platform)
+		require.Equal(t, tc.identifier, ref.Identifier)
+		if tc.id == android {
+			require.Equal(t, "42", ref.BuildNumber)
+		}
+	}
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	_, err := repo.GetAppIdentifierByPlatformAndIdentifier(cancelled, app, types.PlatformAndroid, "com.example.app")
+	require.ErrorIs(t, err, context.Canceled)
 }

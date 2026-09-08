@@ -21,6 +21,7 @@ type AppIdentifierRepository interface {
 	InsertAppIdentifier(ctx context.Context, appId string, platform types.Platform, identifier string) (string, error)
 	GetAppIdentifiers(ctx context.Context, appId string) ([]store.AppIdentifierRow, error)
 	GetAppIdentifierByID(ctx context.Context, appId string, identifierId string) (*store.AppIdentifierRef, error)
+	GetAppIdentifierByPlatformAndIdentifier(ctx context.Context, appId string, platform types.Platform, identifier string) (*store.AppIdentifierRef, error)
 	DeleteAppIdentifier(ctx context.Context, appId string, identifierId string) error
 	SetBuildNumber(ctx context.Context, appId string, identifierId string, buildNumber string) error
 	AllocateBuildNumber(ctx context.Context, appId string, identifierId string, next func(types.Platform, string) (string, error)) (*store.AppIdentifierRef, error)
