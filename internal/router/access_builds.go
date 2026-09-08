@@ -8,6 +8,7 @@ import (
 	"xprem/internal/helpers"
 	"xprem/internal/services"
 	"xprem/internal/store"
+	"xprem/internal/types"
 	"xprem/internal/validation"
 
 	"github.com/google/uuid"
@@ -47,18 +48,25 @@ func (g buildGroup) guard(action apikeyrestrictions.BuildAction) mux.MiddlewareF
 				handlers.RenderBuildInputError(w, store.ErrNotSupportedInStatelessMode)
 				return
 			}
-			identifierID, err := uuid.Parse(vars["IDENTIFIER_ID"])
-			if err != nil {
-				handlers.RenderBuildInputError(w, validation.Errorf("identifierId", "invalid identifier id"))
-				return
+			var ref *store.AppIdentifierRef
+			target := vars["APPLICATION_ID"]
+			if target != "" {
+				ref, err = g.identifiers.GetAppIdentifierByPlatformAndIdentifier(r.Context(), credential.AppID, types.PlatformAndroid, target)
+			} else {
+				identifierID, parseErr := uuid.Parse(vars["IDENTIFIER_ID"])
+				if parseErr != nil {
+					handlers.RenderBuildInputError(w, validation.Errorf("identifierId", "invalid identifier id"))
+					return
+				}
+				target = identifierID.String()
+				ref, err = g.identifiers.GetAppIdentifierByID(r.Context(), credential.AppID, target)
 			}
-			ref, err := g.identifiers.GetAppIdentifierByID(r.Context(), credential.AppID, identifierID.String())
 			if err != nil {
 				handlers.RenderBuildInputError(w, err)
 				return
 			}
 			if ref == nil {
-				handlers.RenderBuildInputError(w, &store.ErrResourceNotFound{Resource: "app identifier", Identifier: identifierID.String()})
+				handlers.RenderBuildInputError(w, &store.ErrResourceNotFound{Resource: "app identifier", Identifier: target})
 				return
 			}
 			err = g.apiKeyAccess.AuthorizeBuild(r.Context(), apikeyrestrictions.BuildRequest{
@@ -70,9 +78,9 @@ func (g buildGroup) guard(action apikeyrestrictions.BuildAction) mux.MiddlewareF
 				handlers.RenderCliAuthError(w, err)
 				return
 			}
-			// Both exports use the resolved canonical ID, never a payload-selected target.
-			vars["IDENTIFIER_ID"] = ref.Id
-			next.ServeHTTP(w, r.WithContext(services.WithCliAuth(r.Context(), credential)))
+			ctx := services.WithCliAuth(r.Context(), credential)
+			ctx = services.WithBuildIdentifier(ctx, ref.Id)
+			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
 }

@@ -18,7 +18,7 @@ import (
 )
 
 // ApiKeyAccess contains per-domain permissions and permitted source networks.
-// Empty rule lists grant no access to that domain.
+// Empty Build and Submit rule lists are unrestricted; Updates requires a grant.
 type ApiKeyAccess struct {
 	ApiKeyID    int64
 	AllowedIps  []netip.Prefix

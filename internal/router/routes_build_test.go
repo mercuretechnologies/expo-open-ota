@@ -3,6 +3,7 @@ package infrastructure
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -29,14 +30,28 @@ type buildIdentifierRepo struct {
 	app       string
 	platform  types.Platform
 	allocated int64
+	lookupErr error
+	idLookups int
 }
 
 func (repo *buildIdentifierRepo) GetAppIdentifierByID(_ context.Context, app, id string) (*store.AppIdentifierRef, error) {
 	repo.app = app
+	repo.idLookups++
 	if app != "app-1" || id != buildID {
 		return nil, nil
 	}
 	return &store.AppIdentifierRef{Id: buildID, Platform: repo.platform}, nil
+}
+
+func (repo *buildIdentifierRepo) GetAppIdentifierByPlatformAndIdentifier(_ context.Context, app string, platform types.Platform, identifier string) (*store.AppIdentifierRef, error) {
+	repo.app = app
+	if repo.lookupErr != nil {
+		return nil, repo.lookupErr
+	}
+	if app != "app-1" || platform != repo.platform || identifier != "com.example.app" {
+		return nil, nil
+	}
+	return &store.AppIdentifierRef{Id: buildID, Platform: repo.platform, Identifier: identifier}, nil
 }
 
 type recordingBuildPolicy struct {
@@ -57,6 +72,7 @@ func TestBuildGuardAuthorizesResolvedTargetBeforeSecrets(t *testing.T) {
 		decisions     int
 	}{
 		{"allowed", "app-1", buildID, "android", nil, 200, 1},
+		{"uppercase UUID", "app-1", "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA", "android", nil, 200, 1},
 		{"denied", "app-1", buildID, "android", services.ErrCliAccessDenied, 403, 1},
 		{"outage", "app-1", buildID, "android", services.ErrCliAuthUnavailable, 500, 1},
 		{"revoked", "app-1", buildID, "android", apikeyrestrictions.ErrApiKeyNotFound, 401, 1},
@@ -74,6 +90,8 @@ func TestBuildGuardAuthorizesResolvedTargetBeforeSecrets(t *testing.T) {
 			router.Handle("/{APP_ID}/build/{IDENTIFIER_ID}/environment", group.guard(apikeyrestrictions.BuildActionCreate)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				called = true
 				require.NotNil(t, services.CliAuthFromContext(r.Context()))
+				require.Equal(t, buildID, services.BuildIdentifierFromContext(r.Context()))
+				require.Equal(t, tc.id, mux.Vars(r)["IDENTIFIER_ID"])
 				w.WriteHeader(200)
 			})))
 			req := httptest.NewRequest("GET", "/"+tc.app+"/build/"+tc.id+"/environment?channel=production", nil)
@@ -126,7 +144,7 @@ func (repo *buildAccessRepo) GetAccess(_ context.Context, app string, key int64)
 }
 
 // Exercise both real route registrations with the real Enterprise policy, not
-// only a stubbed allow/deny decision. Other domains must never reach exports.
+// only a stubbed allow/deny decision. Only Build rules restrict build exports.
 func TestBuildRoutesEnterpriseDomains(t *testing.T) {
 	t.Setenv("AWSSM_DB_KEYS_MASTER_KEY_SECRET_ID", "")
 	t.Setenv("DB_KEYS_MASTER_KEY_B64", base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef")))
@@ -145,16 +163,16 @@ func TestBuildRoutesEnterpriseDomains(t *testing.T) {
 		status int
 	}{
 		{"build", apikeyrestrictions.ApiKeyAccess{BuildRules: []apikeyrestrictions.BuildRule{{AppIdentifierID: buildID, Actions: []apikeyrestrictions.BuildAction{apikeyrestrictions.BuildActionCreate}}}}, 200},
-		{"ota", apikeyrestrictions.ApiKeyAccess{UpdateRules: []apikeyrestrictions.UpdateRule{{Pattern: "*", Actions: []apikeyrestrictions.UpdateAction{apikeyrestrictions.UpdateActionPublish}}}}, 403},
-		{"submit", apikeyrestrictions.ApiKeyAccess{SubmitRules: []apikeyrestrictions.SubmitRule{{AppIdentifierID: buildID, Destination: apikeyrestrictions.SubmitDestinationInternal, Actions: []apikeyrestrictions.SubmitAction{apikeyrestrictions.SubmitActionUpload}}}}, 403},
-		{"empty", apikeyrestrictions.ApiKeyAccess{}, 403},
+		{"ota", apikeyrestrictions.ApiKeyAccess{UpdateRules: []apikeyrestrictions.UpdateRule{{Pattern: "*", Actions: []apikeyrestrictions.UpdateAction{apikeyrestrictions.UpdateActionPublish}}}}, 200},
+		{"submit", apikeyrestrictions.ApiKeyAccess{SubmitRules: []apikeyrestrictions.SubmitRule{{AppIdentifierID: buildID, Destination: apikeyrestrictions.SubmitDestinationInternal, Actions: []apikeyrestrictions.SubmitAction{apikeyrestrictions.SubmitActionUpload}}}}, 200},
+		{"empty", apikeyrestrictions.ApiKeyAccess{}, 200},
 		{"other identifier", apikeyrestrictions.ApiKeyAccess{BuildRules: []apikeyrestrictions.BuildRule{{AppIdentifierID: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", Actions: []apikeyrestrictions.BuildAction{apikeyrestrictions.BuildActionCreate}}}}, 403},
 		{"blocked IP", apikeyrestrictions.ApiKeyAccess{AllowedIps: []netip.Prefix{netip.MustParsePrefix("203.0.113.0/24")}, BuildRules: []apikeyrestrictions.BuildRule{{AppIdentifierID: buildID, Actions: []apikeyrestrictions.BuildAction{apikeyrestrictions.BuildActionCreate}}}}, 403},
 	} {
 		for _, target := range []struct {
 			platform types.Platform
 			endpoint string
-		}{{"android", "environment"}, {"ios", "environment"}, {"android", "credentials/android"}, {"android", "build-number"}, {"ios", "build-number"}} {
+		}{{"android", "environment"}, {"ios", "environment"}, {"android", "credentials/android"}, {"android", "build-number"}, {"ios", "build-number"}, {"android", "resolve/android/com.example.app"}} {
 			endpoint := target.endpoint
 			t.Run(tc.name+"/"+string(target.platform)+"/"+endpoint, func(t *testing.T) {
 				access := tc.access
@@ -177,7 +195,11 @@ func TestBuildRoutesEnterpriseDomains(t *testing.T) {
 				if endpoint == "build-number" {
 					method = http.MethodPost
 				}
-				req := httptest.NewRequest(method, "/app-1/build/"+buildID+"/"+endpoint, nil)
+				requestPath := "/app-1/build/" + buildID + "/" + endpoint
+				if endpoint == "resolve/android/com.example.app" {
+					requestPath = "/app-1/build/" + endpoint
+				}
+				req := httptest.NewRequest(method, requestPath, nil)
 				req.Header.Set("Authorization", "Bearer eoo_key")
 				req.RemoteAddr = "192.0.2.1:4000"
 				w := httptest.NewRecorder()
@@ -190,6 +212,9 @@ func TestBuildRoutesEnterpriseDomains(t *testing.T) {
 					require.JSONEq(t, `{"buildNumber":"1"}`, w.Body.String())
 				} else {
 					require.Zero(t, identifiers.allocated)
+				}
+				if tc.status == 200 && endpoint == "resolve/android/com.example.app" {
+					require.JSONEq(t, `{"identifierId":"`+buildID+`"}`, w.Body.String())
 				}
 				if tc.status == 200 && endpoint == "environment" {
 					require.JSONEq(t, `{"environment":null,"variables":{}}`, w.Body.String())
@@ -322,4 +347,50 @@ func (repo *buildIdentifierRepo) AllocateBuildNumber(ctx context.Context, app, i
 	ref.PreviousBuildNumber = previous
 	ref.BuildNumber = value
 	return ref, nil
+}
+
+func TestBuildResolveTargetedLookup(t *testing.T) {
+	for _, tc := range []struct {
+		name, app, identifier string
+		platform              types.Platform
+		err                   error
+		status                int
+	}{
+		{"found", "app-1", "com.example.app", types.PlatformAndroid, nil, 200},
+		{"unknown", "app-1", "com.example.missing", types.PlatformAndroid, nil, 404},
+		{"foreign app", "app-2", "com.example.app", types.PlatformAndroid, nil, 404},
+		{"wrong platform", "app-1", "com.example.app", types.PlatformIOS, nil, 404},
+		{"database error", "app-1", "com.example.app", types.PlatformAndroid, errors.New("database unavailable"), 500},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := &buildIdentifierRepo{platform: tc.platform, lookupErr: tc.err}
+			policy := &recordingBuildPolicy{}
+			group := buildGroup{cliAuth: services.NewCliAuthService(acceptingCliRepo{}), apiKeyAccess: policy, identifiers: repo}
+			router := mux.NewRouter()
+			router.Handle("/{APP_ID}/build/resolve/android/{APPLICATION_ID}", group.guard(apikeyrestrictions.BuildActionCreate)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				require.Equal(t, buildID, services.BuildIdentifierFromContext(r.Context()))
+				require.Empty(t, mux.Vars(r)["IDENTIFIER_ID"])
+				require.Equal(t, tc.identifier, mux.Vars(r)["APPLICATION_ID"])
+				w.WriteHeader(200)
+			})))
+			req := httptest.NewRequest("GET", "/"+tc.app+"/build/resolve/android/"+tc.identifier, nil)
+			req.Header.Set("Authorization", "Bearer eoo_key")
+			recorder := httptest.NewRecorder()
+			router.ServeHTTP(recorder, req)
+			require.Equal(t, tc.status, recorder.Code, recorder.Body.String())
+			if tc.err != nil {
+				var problem handlers.APIError
+				require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &problem))
+				require.Equal(t, "Could not retrieve build inputs.", problem.Detail)
+			}
+			require.Zero(t, repo.idLookups, "resolution must not repeat the lookup by UUID")
+			if tc.status == 200 {
+				require.Len(t, policy.requests, 1)
+				require.Equal(t, buildID, policy.requests[0].AppIdentifierID)
+				require.Equal(t, apikeyrestrictions.BuildActionCreate, policy.requests[0].Action)
+			} else {
+				require.Empty(t, policy.requests)
+			}
+		})
+	}
 }

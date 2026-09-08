@@ -20,6 +20,13 @@ afterEach(async () => {
 });
 
 describe('xprem.json contract', () => {
+  it('points to build:configure when the configuration file is missing', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'xprem-config-'));
+    directories.push(dir);
+    await expect(readConfig(path.join(dir, 'xprem.json'))).rejects.toThrow(
+      'xprem.json was not found. Run "eoas build:configure" to create it.'
+    );
+  });
   it('accepts explicit profiles with or without a resource selection', () => {
     expect(validateConfig(config())).toEqual([]);
     const offline = config();

@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"net/http/httptest"
 	"strconv"
 	"testing"
@@ -46,7 +47,8 @@ func (repo *buildIdentifierRepository) GetAppIdentifierByID(_ context.Context, a
 	}
 	return &store.AppIdentifierRef{Id: id, Platform: types.PlatformAndroid}, nil
 }
-func (repo *buildIdentifierRepository) AllocateBuildNumber(_ context.Context, _, _ string, next func(types.Platform, string) (string, error)) (*store.AppIdentifierRef, error) {
+func (repo *buildIdentifierRepository) AllocateBuildNumber(_ context.Context, app, id string, next func(types.Platform, string) (string, error)) (*store.AppIdentifierRef, error) {
+	repo.app, repo.id = app, id
 	previous := strconv.FormatInt(repo.allocated, 10)
 	value, err := next(types.PlatformAndroid, previous)
 	if err != nil {
@@ -68,7 +70,7 @@ func TestBuildCredentialsAllowlistAndWholeFile(t *testing.T) {
 	unreadablePlaySecret := "not a decryptable Google Play secret"
 	repo.credentials.SealedGoogleServiceAccountKey = &unreadablePlaySecret
 	h := NewBuildHandler(nil, credentials, nil)
-	req := mux.SetURLVars(httptest.NewRequest("GET", "/", nil), map[string]string{"APP_ID": "app-1", "IDENTIFIER_ID": "id-1"})
+	req := mux.SetURLVars(buildTestRequest("GET"), map[string]string{"APP_ID": "app-1", "IDENTIFIER_ID": "untrusted-route-id"})
 	w := httptest.NewRecorder()
 	h.AndroidCredentials(w, req)
 	require.Equal(t, 200, w.Code)
@@ -89,7 +91,7 @@ func TestBuildCredentialsErrorsDoNotExposeSecrets(t *testing.T) {
 	} {
 		h := NewBuildHandler(nil, services.NewCredentialsService(&buildCredentialRepository{err: tc.err}, &buildIdentifierRepository{}), nil)
 		w := httptest.NewRecorder()
-		h.AndroidCredentials(w, mux.SetURLVars(httptest.NewRequest("GET", "/", nil), map[string]string{"APP_ID": "app-1", "IDENTIFIER_ID": "id-1"}))
+		h.AndroidCredentials(w, mux.SetURLVars(buildTestRequest("GET"), map[string]string{"APP_ID": "app-1", "IDENTIFIER_ID": "untrusted-route-id"}))
 		require.Equal(t, tc.status, w.Code)
 		require.NotContains(t, w.Body.String(), "secret sentinel")
 	}
@@ -116,8 +118,40 @@ func TestAllocateBuildNumber(t *testing.T) {
 		repo := &buildIdentifierRepository{allocated: tc.allocated}
 		h := NewBuildHandler(nil, nil, services.NewAppIdentifierService(repo))
 		w := httptest.NewRecorder()
-		h.AllocateBuildNumber(w, mux.SetURLVars(httptest.NewRequest("POST", "/", nil), map[string]string{"APP_ID": "app-1", "IDENTIFIER_ID": "id-1"}))
+		h.AllocateBuildNumber(w, mux.SetURLVars(buildTestRequest("POST"), map[string]string{"APP_ID": "app-1", "IDENTIFIER_ID": "untrusted-route-id"}))
 		require.Equal(t, tc.status, w.Code, w.Body.String())
 		require.JSONEq(t, tc.body, w.Body.String())
+		require.Equal(t, "app-1", repo.app)
+		require.Equal(t, "id-1", repo.id)
 	}
+}
+
+func buildTestRequest(method string) *http.Request {
+	req := httptest.NewRequest(method, "/", nil)
+	return req.WithContext(services.WithBuildIdentifier(req.Context(), "id-1"))
+}
+
+func TestBuildHandlersRequireResolvedIdentifier(t *testing.T) {
+	h := NewBuildHandler(nil, nil, nil)
+	for name, handler := range map[string]http.HandlerFunc{
+		"resolve":     h.ResolveIdentifier,
+		"credentials": h.AndroidCredentials,
+		"counter":     h.AllocateBuildNumber,
+	} {
+		t.Run(name, func(t *testing.T) {
+			req := mux.SetURLVars(httptest.NewRequest("GET", "/", nil), map[string]string{"APP_ID": "app-1", "IDENTIFIER_ID": "id-1"})
+			recorder := httptest.NewRecorder()
+			handler(recorder, req)
+			require.Equal(t, http.StatusUnauthorized, recorder.Code)
+		})
+	}
+}
+
+func TestBuildResolveUsesContext(t *testing.T) {
+	h := NewBuildHandler(nil, nil, nil)
+	req := mux.SetURLVars(buildTestRequest("GET"), map[string]string{"IDENTIFIER_ID": "untrusted-route-id"})
+	recorder := httptest.NewRecorder()
+	h.ResolveIdentifier(recorder, req)
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.JSONEq(t, `{"identifierId":"id-1"}`, recorder.Body.String())
 }

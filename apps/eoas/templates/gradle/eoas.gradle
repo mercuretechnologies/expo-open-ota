@@ -1,0 +1,44 @@
+def credentials = new groovy.json.JsonSlurper().parse(new File(System.getenv('EOAS_SIGNING_FILE')))
+def allocatedVersionCode = credentials.versionCode as Integer
+
+if (!android.productFlavors.isEmpty()) {
+  throw new GradleException('EOAS build does not yet support Android product flavors')
+}
+
+android {
+  defaultConfig {
+    applicationId credentials.applicationId
+    versionCode allocatedVersionCode
+  }
+  signingConfigs {
+    eoas {
+      storeFile new File(credentials.keystore)
+      storePassword credentials.keystorePassword
+      keyAlias credentials.keyAlias
+      keyPassword credentials.keyPassword
+    }
+  }
+  buildTypes {
+    all {
+      signingConfig signingConfigs.eoas
+    }
+  }
+}
+
+// A project's own per-output versionCodeOverride would win over defaultConfig.
+// AGP 9 removes applicationVariants; androidComponents replaces it there.
+def androidExtension = project.extensions.getByName('android')
+if (androidExtension.hasProperty('applicationVariants')) {
+  androidExtension.applicationVariants.all { variant ->
+    variant.outputs.each { output ->
+      output.versionCodeOverride = allocatedVersionCode
+    }
+  }
+} else {
+  def androidComponents = project.extensions.getByName('androidComponents')
+  androidComponents.onVariants(androidComponents.selector().all()) { variant ->
+    variant.outputs.each { output ->
+      output.versionCode.set(allocatedVersionCode)
+    }
+  }
+}

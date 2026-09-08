@@ -223,3 +223,7 @@ func TestAllocateBuildNumberPlatformRules(t *testing.T) {
 		})
 	}
 }
+
+func (f *fakeAppIdentifierRepo) GetAppIdentifierByPlatformAndIdentifier(context.Context, string, types.Platform, string) (*store.AppIdentifierRef, error) {
+	panic("not used in these tests")
+}

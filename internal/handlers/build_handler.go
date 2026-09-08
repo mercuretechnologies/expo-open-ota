@@ -85,8 +85,12 @@ type AndroidBuildCredentials struct {
 }
 
 func (h *BuildHandler) AndroidCredentials(w http.ResponseWriter, r *http.Request) {
-	vars := mux.Vars(r)
-	exported, err := h.credentials.ExportAndroidKeystore(r.Context(), vars["APP_ID"], vars["IDENTIFIER_ID"])
+	identifierID := services.BuildIdentifierFromContext(r.Context())
+	if identifierID == "" {
+		RenderCliAuthError(w, services.ErrUnauthorized)
+		return
+	}
+	exported, err := h.credentials.ExportAndroidKeystore(r.Context(), mux.Vars(r)["APP_ID"], identifierID)
 	if err != nil {
 		RenderBuildInputError(w, err)
 		return
@@ -95,11 +99,24 @@ func (h *BuildHandler) AndroidCredentials(w http.ResponseWriter, r *http.Request
 }
 
 func (h *BuildHandler) AllocateBuildNumber(w http.ResponseWriter, r *http.Request) {
-	vars := mux.Vars(r)
-	buildNumber, err := h.identifiers.AllocateBuildNumber(r.Context(), vars["APP_ID"], vars["IDENTIFIER_ID"])
+	identifierID := services.BuildIdentifierFromContext(r.Context())
+	if identifierID == "" {
+		RenderCliAuthError(w, services.ErrUnauthorized)
+		return
+	}
+	buildNumber, err := h.identifiers.AllocateBuildNumber(r.Context(), mux.Vars(r)["APP_ID"], identifierID)
 	if err != nil {
 		RenderBuildInputError(w, err)
 		return
 	}
 	RenderJSON(w, http.StatusOK, map[string]any{"buildNumber": buildNumber})
+}
+
+func (h *BuildHandler) ResolveIdentifier(w http.ResponseWriter, r *http.Request) {
+	identifierID := services.BuildIdentifierFromContext(r.Context())
+	if identifierID == "" {
+		RenderCliAuthError(w, services.ErrUnauthorized)
+		return
+	}
+	RenderJSON(w, http.StatusOK, map[string]string{"identifierId": identifierID})
 }

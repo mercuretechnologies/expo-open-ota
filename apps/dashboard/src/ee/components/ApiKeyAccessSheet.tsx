@@ -431,7 +431,7 @@ const NativeRulesEditor = (props: NativeEditorProps) => {
         {domain === 'Build'
           ? 'Allow builds only for the identifiers listed, with any build profile.'
           : 'Allow uploads only for the identifiers and destinations listed.'}
-        {' '}An empty list grants no access.
+        {' '}Leave empty to allow all {domain === 'Build' ? 'builds' : 'uploads'} for this app.
       </p>
       {rules.map((rule, index) => {
         const identifier = identifiers.find(item => item.id === rule.appIdentifierId);

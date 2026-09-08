@@ -114,6 +114,7 @@ func describeSubmitRules(rules []SubmitRule) []string {
 }
 
 // AuthorizeSubmit checks the authenticated key and IP, then only Submit grants.
+// An empty rule list imposes no restrictions on valid operations in this domain.
 // It is a no-op without an active Enterprise license or control plane.
 func (s *ApiKeyAccessService) AuthorizeSubmit(ctx context.Context, req SubmitRequest) error {
 	access, err := s.authorizationAccess(ctx, req.APIKeyContext)
@@ -122,6 +123,9 @@ func (s *ApiKeyAccessService) AuthorizeSubmit(ctx context.Context, req SubmitReq
 	}
 	identifierID, err := normalizeIdentifierID(req.AppIdentifierID)
 	if err == nil {
+		if len(access.SubmitRules) == 0 && req.Action == SubmitActionUpload && req.Destination.platform() != "" {
+			return nil
+		}
 		for _, rule := range access.SubmitRules {
 			if rule.Allows(identifierID, req.Destination, req.Action) {
 				return nil
