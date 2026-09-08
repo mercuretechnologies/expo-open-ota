@@ -82,5 +82,3 @@ type ErrEnvironmentHasChannels struct {
 func (e *ErrEnvironmentHasChannels) Error() string {
 	return fmt.Sprintf("cannot delete environment %q because channels still point to it. Unbind or delete these channels first.", e.EnvironmentName)
 }
-
-var ErrDottedBuildNumberAllocationUnsupported = errors.New("allocation of dotted iOS build numbers is not implemented")

@@ -211,14 +211,18 @@ func (s *AppIdentifierService) nextBuildNumber(platform types.Platform, current 
 	if err := validation.BuildNumber(platform, current); err != nil {
 		return "", err
 	}
-	if platform == types.PlatformIOS && strings.Contains(current, ".") {
-		return "", store.ErrDottedBuildNumberAllocationUnsupported
+	// Only the last iOS component changes; the prefix is preserved verbatim.
+	prefix, component := "", current
+	if platform == types.PlatformIOS {
+		if dot := strings.LastIndexByte(current, '.'); dot >= 0 {
+			prefix, component = current[:dot+1], current[dot+1:]
+		}
 	}
-	// Validation guarantees a decimal integer. big.Int keeps iOS exact beyond
-	// int64 without imposing Android's versionCode limit on it.
-	number, _ := new(big.Int).SetString(current, 10)
+	// Validation guarantees a decimal component. big.Int keeps it exact beyond
+	// int64 without imposing Android's versionCode limit on iOS.
+	number, _ := new(big.Int).SetString(component, 10)
 	if platform == types.PlatformAndroid && number.Cmp(big.NewInt(validation.MaxAndroidBuildNumber)) >= 0 {
 		return "", store.ErrBuildNumberExhausted
 	}
-	return number.Add(number, big.NewInt(1)).String(), nil
+	return prefix + number.Add(number, big.NewInt(1)).String(), nil
 }

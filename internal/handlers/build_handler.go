@@ -24,7 +24,7 @@ func NewBuildHandler(environments *services.EnvironmentService, credentials *ser
 func RenderBuildInputError(w http.ResponseWriter, err error) {
 	var missing *store.ErrResourceNotFound
 	switch {
-	case errors.Is(err, store.ErrBuildNumberExhausted), errors.Is(err, store.ErrDottedBuildNumberAllocationUnsupported):
+	case errors.Is(err, store.ErrBuildNumberExhausted):
 		RenderError(w, http.StatusConflict, err.Error())
 	case validation.IsValidationError(err):
 		RenderError(w, http.StatusBadRequest, err.Error())

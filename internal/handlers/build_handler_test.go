@@ -121,10 +121,3 @@ func TestAllocateBuildNumber(t *testing.T) {
 		require.JSONEq(t, tc.body, w.Body.String())
 	}
 }
-
-func TestDottedBuildNumberAllocationErrorIsExplicit(t *testing.T) {
-	w := httptest.NewRecorder()
-	RenderBuildInputError(w, store.ErrDottedBuildNumberAllocationUnsupported)
-	require.Equal(t, 409, w.Code)
-	require.Contains(t, w.Body.String(), "allocation of dotted iOS build numbers is not implemented")
-}

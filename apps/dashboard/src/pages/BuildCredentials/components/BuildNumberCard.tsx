@@ -58,8 +58,10 @@ export const BuildNumberCard = ({ identifier, canManage }: Props) => {
       <CardHeader className="border-b">
         <CardTitle className="text-base">Build number</CardTitle>
         <CardDescription>
-          Last {counterName} handed to a build. Integer counters increase by one for each
-          reservation.
+          Last {counterName} handed to a build.{' '}
+          {identifier.platform === 'ios'
+            ? 'Each reservation increases the last component by one, for example 1.3.9 → 1.3.10.'
+            : 'Each reservation increases the counter by one.'}
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-3 pt-4">
@@ -90,8 +92,6 @@ export const BuildNumberCard = ({ identifier, canManage }: Props) => {
         {canManage && (
           <p className="text-xs text-muted-foreground">
             Use 0 to start at 1. Lowering it can hand out a number a build already used.
-            {identifier.platform === 'ios' &&
-              ' Values with dots can be saved, but their automatic increment is not implemented.'}
           </p>
         )}
       </CardContent>

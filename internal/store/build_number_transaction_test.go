@@ -21,9 +21,13 @@ func TestBuildNumberConcurrentReservations(t *testing.T) {
 	ctx := context.Background()
 	service := services.NewAppIdentifierService(identifiers)
 	app := insertBareApp(t, pool)
-	for _, platform := range []types.Platform{types.PlatformAndroid, types.PlatformIOS} {
-		t.Run(string(platform), func(t *testing.T) {
-			id := insertIdentifier(t, identifiers, app, platform, "com.example.concurrent")
+	for _, tc := range []struct {
+		platform types.Platform
+		prefix   string
+	}{{types.PlatformAndroid, ""}, {types.PlatformIOS, ""}, {types.PlatformIOS, "1.3."}} {
+		t.Run(string(tc.platform)+"/"+tc.prefix, func(t *testing.T) {
+			id := insertIdentifier(t, identifiers, app, tc.platform, "com.example.concurrent"+strconv.Itoa(len(tc.prefix)))
+			require.NoError(t, identifiers.SetBuildNumber(ctx, app, id, tc.prefix+"0"))
 			const count = 24
 			audits := make(chan auditlog.Event, count)
 			service.SetOnAuditEvent(func(_ context.Context, event auditlog.Event) { audits <- event })
@@ -46,9 +50,9 @@ func TestBuildNumberConcurrentReservations(t *testing.T) {
 			close(numbers)
 			close(audits)
 			for event := range audits {
-				previous, err := strconv.Atoi(event.Metadata["from"].(string))
+				previous, err := strconv.Atoi(strings.TrimPrefix(event.Metadata["from"].(string), tc.prefix))
 				require.NoError(t, err)
-				require.Equal(t, strconv.Itoa(previous+1), event.Metadata["to"])
+				require.Equal(t, tc.prefix+strconv.Itoa(previous+1), event.Metadata["to"])
 			}
 			close(failures)
 			for err := range failures {
@@ -61,11 +65,11 @@ func TestBuildNumberConcurrentReservations(t *testing.T) {
 			}
 			require.Len(t, seen, count)
 			for n := 1; n <= count; n++ {
-				require.True(t, seen[strconv.Itoa(n)])
+				require.True(t, seen[tc.prefix+strconv.Itoa(n)])
 			}
 			ref, err := identifiers.GetAppIdentifierByID(ctx, app, id)
 			require.NoError(t, err)
-			require.Equal(t, "24", ref.BuildNumber)
+			require.Equal(t, tc.prefix+"24", ref.BuildNumber)
 		})
 	}
 }
@@ -75,9 +79,13 @@ func TestBuildNumberSetAndAllocateSerialize(t *testing.T) {
 	ctx := context.Background()
 	service := services.NewAppIdentifierService(identifiers)
 	app := insertBareApp(t, pool)
-	for _, platform := range []types.Platform{types.PlatformAndroid, types.PlatformIOS} {
-		t.Run(string(platform), func(t *testing.T) {
-			id := insertIdentifier(t, identifiers, app, platform, "com.example.race")
+	for _, tc := range []struct {
+		platform types.Platform
+		prefix   string
+	}{{types.PlatformAndroid, ""}, {types.PlatformIOS, ""}, {types.PlatformIOS, "1.3."}} {
+		t.Run(string(tc.platform)+"/"+tc.prefix, func(t *testing.T) {
+			id := insertIdentifier(t, identifiers, app, tc.platform, "com.example.race"+strconv.Itoa(len(tc.prefix)))
+			require.NoError(t, identifiers.SetBuildNumber(ctx, app, id, tc.prefix+"0"))
 			tx, err := pool.Begin(ctx)
 			require.NoError(t, err)
 			defer tx.Rollback(ctx)
@@ -89,7 +97,7 @@ func TestBuildNumberSetAndAllocateSerialize(t *testing.T) {
 				err error
 			}
 			allocated := make(chan allocation, 1)
-			go func() { setDone <- identifiers.SetBuildNumber(ctx, app, id, "100") }()
+			go func() { setDone <- identifiers.SetBuildNumber(ctx, app, id, tc.prefix+"100") }()
 			go func() { ref, err := service.AllocateBuildNumber(ctx, app, id); allocated <- allocation{ref, err} }()
 			require.NoError(t, tx.Commit(ctx))
 			require.NoError(t, <-setDone)
@@ -97,24 +105,24 @@ func TestBuildNumberSetAndAllocateSerialize(t *testing.T) {
 			require.NoError(t, got.err)
 			current, err := identifiers.GetAppIdentifierByID(ctx, app, id)
 			require.NoError(t, err)
-			if got.ref == "1" {
-				require.Equal(t, "100", current.BuildNumber)
+			if got.ref == tc.prefix+"1" {
+				require.Equal(t, tc.prefix+"100", current.BuildNumber)
 			} else {
-				require.Equal(t, "101", got.ref)
-				require.Equal(t, "101", current.BuildNumber)
+				require.Equal(t, tc.prefix+"101", got.ref)
+				require.Equal(t, tc.prefix+"101", current.BuildNumber)
 			}
 		})
 	}
 }
 
-func TestIOSBuildNumberPreservedAndAllocationRefused(t *testing.T) {
+func TestIOSBuildNumberAllocationAndInvalidValues(t *testing.T) {
 	_, identifiers, pool := setupCredentialsStores(t)
 	ctx := context.Background()
 	service := services.NewAppIdentifierService(identifiers)
 	app := insertBareApp(t, pool)
 	id := insertIdentifier(t, identifiers, app, "ios", "com.example.ios")
 	for _, tc := range []struct{ previous, next string }{
-		{"2100000000", "2100000001"}, {"9223372036854775807", "9223372036854775808"},
+		{"1.3.9", "1.3.10"}, {"1.9", "1.10"}, {"1.2.9223372036854775807", "1.2.9223372036854775808"}, {"2100000000", "2100000001"}, {"9223372036854775807", "9223372036854775808"},
 		{"99999999999999999999999999999999", "100000000000000000000000000000000"},
 	} {
 		require.NoError(t, identifiers.SetBuildNumber(ctx, app, id, tc.previous))
@@ -122,15 +130,12 @@ func TestIOSBuildNumberPreservedAndAllocationRefused(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, tc.next, ref)
 	}
-	for _, value := range []string{"1.2.0", "invalid", "-1", "1e3"} {
+	for _, value := range []string{"1..0", "invalid", "-1", "1e3"} {
 		// Invalid legacy/corrupt rows must fail without being converted or overwritten.
 		require.NoError(t, identifiers.SetBuildNumber(ctx, app, id, value))
 		ref, err := service.AllocateBuildNumber(ctx, app, id)
 		require.Error(t, err)
 		require.Empty(t, ref)
-		if value == "1.2.0" {
-			require.ErrorIs(t, err, store.ErrDottedBuildNumberAllocationUnsupported)
-		}
 		current, err := identifiers.GetAppIdentifierByID(ctx, app, id)
 		require.NoError(t, err)
 		require.Equal(t, value, current.BuildNumber)
