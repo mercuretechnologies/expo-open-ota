@@ -164,7 +164,7 @@ export const AndroidCredentialsForm = ({
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!keystoreFile || !isComplete) return;
+    if (isSaving || isGenerating || !keystoreFile || !isComplete) return;
     setIsSaving(true);
     try {
       const keystore = arrayBufferToBase64(await keystoreFile.arrayBuffer());
@@ -199,20 +199,39 @@ export const AndroidCredentialsForm = ({
   };
 
   const handleGenerate = async () => {
+    if (isSaving || isGenerating) return;
     setIsGenerating(true);
+    let generated = false;
     try {
       await api.generateAndroidCredentials(identifierId);
-      queryClient.invalidateQueries({ queryKey: ['identifiers', selectedAppId] });
-      queryClient.invalidateQueries({
-        queryKey: ['androidCredentials', selectedAppId, identifierId],
-      });
+      generated = true;
+      // A completed generation supersedes any upload draft, even if refetch fails.
+      setKeystoreFile(null);
+      setKeystorePassword('');
+      setKeyAlias('');
+      setKeyPassword('');
+      await Promise.all([
+        queryClient.invalidateQueries(
+          { queryKey: ['identifiers', selectedAppId] },
+          { throwOnError: true }
+        ),
+        queryClient.invalidateQueries(
+          { queryKey: ['androidCredentials', selectedAppId, identifierId] },
+          { throwOnError: true }
+        ),
+      ]);
       toast({
         title: 'Keystore generated',
         description: 'xprem generated and securely stored the Android signing credentials.',
       });
       onSaved?.();
     } catch (error) {
-      const message = describeApiError(error, 'Error generating keystore');
+      const message = generated
+        ? {
+            title: 'Keystore generated, but refresh failed',
+            description: 'The credentials were stored. Refresh the page to view them.',
+          }
+        : describeApiError(error, 'Error generating keystore');
       toast({ title: message.title, description: message.description, variant: 'destructive' });
     } finally {
       setIsGenerating(false);

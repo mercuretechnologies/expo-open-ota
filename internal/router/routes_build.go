@@ -17,9 +17,11 @@ func registerBuildRoutes(r *mux.Router, container *AppContainer) {
 		router:       router,
 		cliAuth:      container.CliAuthService,
 		apiKeyAccess: container.ApiKeyAccessService,
-		identifiers:   container.AppIdentifierRepo,
+		identifiers:  container.AppIdentifierRepo,
 	}
 
+	build.route(http.MethodPost, "/build-number", container.BuildHandler.AllocateBuildNumber,
+		apikeyrestrictions.BuildActionCreate)
 	build.route(http.MethodGet, "/environment", container.BuildHandler.Environment,
 		apikeyrestrictions.BuildActionCreate)
 	build.route(http.MethodGet, "/credentials/android", container.BuildHandler.AndroidCredentials,

@@ -17,6 +17,8 @@ var ErrRolloutSupersededByNewerUpdate = errors.New("rollout activation refused: 
 // when the target is the last remaining admin.
 var ErrWouldLeaveNoAdmin = errors.New("operation refused: it would leave the dashboard without any admin account")
 
+var ErrBuildNumberExhausted = errors.New("build number limit reached")
+
 type ErrBranchHasActiveChannels struct {
 	BranchName   string
 	ChannelNames []string

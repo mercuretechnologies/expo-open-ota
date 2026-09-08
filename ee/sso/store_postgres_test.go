@@ -270,6 +270,12 @@ func TestSSOMigrationDownAndUp(t *testing.T) {
 	// keys whose empty Updates rules would become full access in the old code.
 	_, err = pool.Exec(ctx, "DELETE FROM api_keys")
 	require.NoError(t, err)
+	// The roundtrip also reverts text build counters to BIGINT. Other packages
+	// leave valid dotted/large iOS counters in this shared test database; those
+	// deliberately cannot be downgraded losslessly. Clear these fixtures before
+	// the schema test, without weakening the production migration's safeguard.
+	_, err = pool.Exec(ctx, "DELETE FROM app_identifiers")
+	require.NoError(t, err)
 	require.NoError(t, goose.DownTo(db, "migrations", 20260718110000))
 	assert.Equal(t, 0, tableCount())
 	require.NoError(t, goose.Up(db, "migrations"))

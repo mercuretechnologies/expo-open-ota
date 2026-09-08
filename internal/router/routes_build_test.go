@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"strconv"
 	"testing"
 	"xprem/config"
 	"xprem/ee/apikeyrestrictions"
@@ -25,8 +26,9 @@ const buildID = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
 
 type buildIdentifierRepo struct {
 	services.AppIdentifierRepository
-	app      string
-	platform string
+	app       string
+	platform  types.Platform
+	allocated int64
 }
 
 func (repo *buildIdentifierRepo) GetAppIdentifierByID(_ context.Context, app, id string) (*store.AppIdentifierRef, error) {
@@ -48,10 +50,11 @@ func (p *recordingBuildPolicy) AuthorizeBuild(_ context.Context, req apikeyrestr
 }
 func TestBuildGuardAuthorizesResolvedTargetBeforeSecrets(t *testing.T) {
 	for _, tc := range []struct {
-		name, app, id, platform string
-		deny                    error
-		status                  int
-		decisions               int
+		name, app, id string
+		platform      types.Platform
+		deny          error
+		status        int
+		decisions     int
 	}{
 		{"allowed", "app-1", buildID, "android", nil, 200, 1},
 		{"denied", "app-1", buildID, "android", services.ErrCliAccessDenied, 403, 1},
@@ -148,9 +151,12 @@ func TestBuildRoutesEnterpriseDomains(t *testing.T) {
 		{"other identifier", apikeyrestrictions.ApiKeyAccess{BuildRules: []apikeyrestrictions.BuildRule{{AppIdentifierID: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", Actions: []apikeyrestrictions.BuildAction{apikeyrestrictions.BuildActionCreate}}}}, 403},
 		{"blocked IP", apikeyrestrictions.ApiKeyAccess{AllowedIps: []netip.Prefix{netip.MustParsePrefix("203.0.113.0/24")}, BuildRules: []apikeyrestrictions.BuildRule{{AppIdentifierID: buildID, Actions: []apikeyrestrictions.BuildAction{apikeyrestrictions.BuildActionCreate}}}}, 403},
 	} {
-		for _, target := range []struct{ platform, endpoint string }{{"android", "environment"}, {"ios", "environment"}, {"android", "credentials/android"}} {
+		for _, target := range []struct {
+			platform types.Platform
+			endpoint string
+		}{{"android", "environment"}, {"ios", "environment"}, {"android", "credentials/android"}, {"android", "build-number"}, {"ios", "build-number"}} {
 			endpoint := target.endpoint
-			t.Run(tc.name+"/"+target.platform+"/"+endpoint, func(t *testing.T) {
+			t.Run(tc.name+"/"+string(target.platform)+"/"+endpoint, func(t *testing.T) {
 				access := tc.access
 				access.ApiKeyID = 42
 				repo := &buildAccessRepo{access: access}
@@ -158,16 +164,20 @@ func TestBuildRoutesEnterpriseDomains(t *testing.T) {
 				environments := services.NewEnvironmentService(nil)
 				vault := &buildCredentialsRepo{}
 				credentials := services.NewCredentialsService(vault, identifiers)
-				if target.platform == services.PlatformAndroid {
+				if target.platform == types.PlatformAndroid {
 					require.NoError(t, credentials.SaveAndroidCredentials(context.Background(), "app-1", buildID, services.AndroidCredentialsInput{
 						KeystoreBase64:   base64.StdEncoding.EncodeToString(androidtest.JKSKeystore("store-pass", "key-pass", "upload")),
 						KeystorePassword: "store-pass", KeyPassword: "key-pass", KeyAlias: "upload",
 					}))
 				}
-				container := &AppContainer{AppRepo: buildAppRepo{}, CliAuthService: services.NewCliAuthService(acceptingCliRepo{}), ApiKeyAccessService: apikeyrestrictions.NewApiKeyAccessService(repo), AppIdentifierRepo: identifiers, BuildHandler: handlers.NewBuildHandler(environments, credentials)}
+				container := &AppContainer{AppRepo: buildAppRepo{}, CliAuthService: services.NewCliAuthService(acceptingCliRepo{}), ApiKeyAccessService: apikeyrestrictions.NewApiKeyAccessService(repo), AppIdentifierRepo: identifiers, BuildHandler: handlers.NewBuildHandler(environments, credentials, services.NewAppIdentifierService(identifiers))}
 				router := mux.NewRouter()
 				registerBuildRoutes(router, container)
-				req := httptest.NewRequest("GET", "/app-1/build/"+buildID+"/"+endpoint, nil)
+				method := http.MethodGet
+				if endpoint == "build-number" {
+					method = http.MethodPost
+				}
+				req := httptest.NewRequest(method, "/app-1/build/"+buildID+"/"+endpoint, nil)
 				req.Header.Set("Authorization", "Bearer eoo_key")
 				req.RemoteAddr = "192.0.2.1:4000"
 				w := httptest.NewRecorder()
@@ -175,6 +185,12 @@ func TestBuildRoutesEnterpriseDomains(t *testing.T) {
 				require.Equal(t, tc.status, w.Code, w.Body.String())
 				require.Equal(t, "app-1", repo.app)
 				require.Equal(t, tc.status == 200 && endpoint == "credentials/android", vault.read)
+				if tc.status == 200 && endpoint == "build-number" {
+					require.Equal(t, int64(1), identifiers.allocated)
+					require.JSONEq(t, `{"buildNumber":"1"}`, w.Body.String())
+				} else {
+					require.Zero(t, identifiers.allocated)
+				}
 				if tc.status == 200 && endpoint == "environment" {
 					require.JSONEq(t, `{"environment":null,"variables":{}}`, w.Body.String())
 				}
@@ -251,11 +267,11 @@ func TestBuildGuardAllowsRegisteredCommunityToken(t *testing.T) {
 // The actual credentials service validates Android before reading/decrypting
 // the keystore. The common guard must still authorize the target first.
 func TestAndroidBuildCredentialsPlatform(t *testing.T) {
-	for _, platform := range []string{services.PlatformAndroid, services.PlatformIOS} {
-		t.Run(platform, func(t *testing.T) {
+	for _, platform := range []types.Platform{types.PlatformAndroid, types.PlatformIOS} {
+		t.Run(string(platform), func(t *testing.T) {
 			identifiers := &buildIdentifierRepo{platform: platform}
 			credentials := &buildCredentialsRepo{}
-			handler := handlers.NewBuildHandler(nil, services.NewCredentialsService(credentials, identifiers))
+			handler := handlers.NewBuildHandler(nil, services.NewCredentialsService(credentials, identifiers), nil)
 			policy := &recordingBuildPolicy{}
 			group := buildGroup{router: mux.NewRouter(), cliAuth: services.NewCliAuthService(acceptingCliRepo{}), apiKeyAccess: policy, identifiers: identifiers}
 			group.route(http.MethodGet, "/{APP_ID}/build/{IDENTIFIER_ID}/credentials/android", handler.AndroidCredentials, apikeyrestrictions.BuildActionCreate)
@@ -264,7 +280,7 @@ func TestAndroidBuildCredentialsPlatform(t *testing.T) {
 			group.router.ServeHTTP(w, req)
 			require.Len(t, policy.requests, 1)
 			require.Equal(t, buildID, policy.requests[0].AppIdentifierID)
-			if platform == services.PlatformIOS {
+			if platform == types.PlatformIOS {
 				require.Equal(t, http.StatusBadRequest, w.Code, w.Body.String())
 				require.False(t, credentials.read)
 			} else {
@@ -290,4 +306,20 @@ func (repo *buildCredentialsRepo) GetAndroidCredentials(context.Context, string)
 func (repo *buildCredentialsRepo) UpsertAndroidCredentials(_ context.Context, _ string, credentials store.SealedAndroidCredentials) error {
 	repo.credentials = &credentials
 	return nil
+}
+
+func (repo *buildIdentifierRepo) AllocateBuildNumber(ctx context.Context, app, id string, next func(types.Platform, string) (string, error)) (*store.AppIdentifierRef, error) {
+	ref, err := repo.GetAppIdentifierByID(ctx, app, id)
+	if err != nil || ref == nil {
+		return nil, &store.ErrResourceNotFound{Resource: "app identifier", Identifier: id}
+	}
+	previous := strconv.FormatInt(repo.allocated, 10)
+	value, err := next(ref.Platform, previous)
+	if err != nil {
+		return nil, err
+	}
+	repo.allocated++
+	ref.PreviousBuildNumber = previous
+	ref.BuildNumber = value
+	return ref, nil
 }

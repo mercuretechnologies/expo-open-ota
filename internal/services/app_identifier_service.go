@@ -2,43 +2,38 @@ package services
 
 import (
 	"context"
+	"math/big"
 	"regexp"
+	"strings"
 	"time"
 	"xprem/internal/auditlog"
 	"xprem/internal/cache"
 	"xprem/internal/dashboard"
 	"xprem/internal/store"
+	"xprem/internal/types"
 	"xprem/internal/validation"
-)
-
-const (
-	PlatformAndroid = "android"
-	PlatformIOS     = "ios"
 )
 
 var androidPackagePattern = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_]*(\.[a-zA-Z][a-zA-Z0-9_]*)+$`)
 var iosBundleIdPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9.-]*$`)
 
-// maxBuildNumber is the Play Store's hard versionCode ceiling; Apple has no
-// documented one, so the stricter bound applies to both platforms.
-const maxBuildNumber = 2_100_000_000
-
 type AppIdentifierRepository interface {
-	InsertAppIdentifier(ctx context.Context, appId string, platform string, identifier string) (string, error)
+	InsertAppIdentifier(ctx context.Context, appId string, platform types.Platform, identifier string) (string, error)
 	GetAppIdentifiers(ctx context.Context, appId string) ([]store.AppIdentifierRow, error)
 	GetAppIdentifierByID(ctx context.Context, appId string, identifierId string) (*store.AppIdentifierRef, error)
 	DeleteAppIdentifier(ctx context.Context, appId string, identifierId string) error
-	SetBuildNumber(ctx context.Context, appId string, identifierId string, buildNumber int64) error
+	SetBuildNumber(ctx context.Context, appId string, identifierId string, buildNumber string) error
+	AllocateBuildNumber(ctx context.Context, appId string, identifierId string, next func(types.Platform, string) (string, error)) (*store.AppIdentifierRef, error)
 }
 
 // AppIdentifier is the dashboard projection of one store identity.
 type AppIdentifier struct {
-	Id                    string `json:"id"`
-	Platform              string `json:"platform"`
-	Identifier            string `json:"identifier"`
-	BuildNumber           int64  `json:"buildNumber"`
-	HasAndroidCredentials bool   `json:"hasAndroidCredentials"`
-	CreatedAt             string `json:"createdAt"`
+	Id                    string         `json:"id"`
+	Platform              types.Platform `json:"platform"`
+	Identifier            string         `json:"identifier"`
+	BuildNumber           string         `json:"buildNumber"`
+	HasAndroidCredentials bool           `json:"hasAndroidCredentials"`
+	CreatedAt             string         `json:"createdAt"`
 }
 
 type AppIdentifierService struct {
@@ -61,26 +56,26 @@ func (s *AppIdentifierService) SetOnAuditEvent(record auditlog.RecordFunc) {
 	s.onAuditEvent = record
 }
 
-func validateIdentifier(platform string, identifier string) error {
+func validateIdentifier(platform types.Platform, identifier string) error {
 	if len(identifier) > 255 {
 		return validation.Errorf("identifier", "identifier must be at most 255 characters")
 	}
 	switch platform {
-	case PlatformAndroid:
+	case types.PlatformAndroid:
 		if !androidPackagePattern.MatchString(identifier) {
 			return validation.Errorf("identifier", "%q is not a valid Android application id", identifier)
 		}
-	case PlatformIOS:
+	case types.PlatformIOS:
 		if !iosBundleIdPattern.MatchString(identifier) {
 			return validation.Errorf("identifier", "%q is not a valid iOS bundle identifier", identifier)
 		}
 	default:
-		return validation.Errorf("platform", "platform must be %q or %q", PlatformAndroid, PlatformIOS)
+		return validation.Errorf("platform", "platform must be %q or %q", types.PlatformAndroid, types.PlatformIOS)
 	}
 	return nil
 }
 
-func (s *AppIdentifierService) CreateAppIdentifier(ctx context.Context, appId string, platform string, identifier string) (string, error) {
+func (s *AppIdentifierService) CreateAppIdentifier(ctx context.Context, appId string, platform types.Platform, identifier string) (string, error) {
 	if s.repo == nil {
 		return "", store.ErrNotSupportedInStatelessMode
 	}
@@ -126,12 +121,9 @@ func (s *AppIdentifierService) GetAppIdentifiers(ctx context.Context, appId stri
 
 // SetBuildNumber overwrites the store build counter, the manual escape hatch
 // when it drifts from what the store actually holds.
-func (s *AppIdentifierService) SetBuildNumber(ctx context.Context, appId string, identifierId string, buildNumber int64) error {
+func (s *AppIdentifierService) SetBuildNumber(ctx context.Context, appId string, identifierId string, buildNumber string) error {
 	if s.repo == nil {
 		return store.ErrNotSupportedInStatelessMode
-	}
-	if buildNumber < 0 || buildNumber > maxBuildNumber {
-		return validation.Errorf("buildNumber", "build number must be between 0 and %d", maxBuildNumber)
 	}
 	ref, err := s.repo.GetAppIdentifierByID(ctx, appId, identifierId)
 	if err != nil {
@@ -139,6 +131,9 @@ func (s *AppIdentifierService) SetBuildNumber(ctx context.Context, appId string,
 	}
 	if ref == nil {
 		return &store.ErrResourceNotFound{Resource: "app identifier", Identifier: identifierId}
+	}
+	if err := validation.BuildNumber(ref.Platform, buildNumber); err != nil {
+		return err
 	}
 	if err := s.repo.SetBuildNumber(ctx, appId, identifierId, buildNumber); err != nil {
 		return err
@@ -165,7 +160,7 @@ func (s *AppIdentifierService) DeleteAppIdentifier(ctx context.Context, appId st
 	// Read before the delete: afterwards there is no row left to name in the
 	// audit entry. Best-effort, like the entry itself.
 	displayName := identifierId
-	var platform string
+	var platform types.Platform
 	if ref, err := s.repo.GetAppIdentifierByID(ctx, appId, identifierId); err == nil && ref != nil {
 		displayName = ref.Identifier
 		platform = ref.Platform
@@ -183,4 +178,51 @@ func (s *AppIdentifierService) DeleteAppIdentifier(ctx context.Context, appId st
 		Metadata:      map[string]any{"platform": platform},
 	})
 	return nil
+}
+
+// AllocateBuildNumber reserves the next build number of an identifier.
+func (s *AppIdentifierService) AllocateBuildNumber(ctx context.Context, appId string, identifierId string) (string, error) {
+	if s.repo == nil {
+		return "", store.ErrNotSupportedInStatelessMode
+	}
+	ref, err := s.repo.AllocateBuildNumber(ctx, appId, identifierId, s.nextBuildNumber)
+	if err != nil {
+		return "", err
+	}
+	recordManagementEvent(ctx, s.onAuditEvent, auditlog.Event{
+		Action:        auditlog.ActionAppIdentifierBuildNumberAllocated,
+		TargetType:    "app_identifier",
+		TargetID:      ref.Id,
+		TargetDisplay: ref.Identifier,
+		AppID:         appId,
+		Metadata: map[string]any{
+			"platform":    ref.Platform,
+			"buildNumber": ref.BuildNumber,
+			"from":        ref.PreviousBuildNumber,
+			"to":          ref.BuildNumber,
+		},
+	})
+	return ref.BuildNumber, nil
+}
+
+// nextBuildNumber runs against the current counter while the repository holds
+// the identifier row lock; errors abort the transaction without a reservation.
+func (s *AppIdentifierService) nextBuildNumber(platform types.Platform, current string) (string, error) {
+	if err := validation.BuildNumber(platform, current); err != nil {
+		return "", err
+	}
+	// Only the last iOS component changes; the prefix is preserved verbatim.
+	prefix, component := "", current
+	if platform == types.PlatformIOS {
+		if dot := strings.LastIndexByte(current, '.'); dot >= 0 {
+			prefix, component = current[:dot+1], current[dot+1:]
+		}
+	}
+	// Validation guarantees a decimal component. big.Int keeps it exact beyond
+	// int64 without imposing Android's versionCode limit on iOS.
+	number, _ := new(big.Int).SetString(component, 10)
+	if platform == types.PlatformAndroid && number.Cmp(big.NewInt(validation.MaxAndroidBuildNumber)) >= 0 {
+		return "", store.ErrBuildNumberExhausted
+	}
+	return prefix + number.Add(number, big.NewInt(1)).String(), nil
 }

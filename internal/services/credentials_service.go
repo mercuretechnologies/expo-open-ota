@@ -11,6 +11,7 @@ import (
 	"xprem/internal/crypto"
 	"xprem/internal/keyStore"
 	"xprem/internal/store"
+	"xprem/internal/types"
 	"xprem/internal/validation"
 )
 
@@ -105,7 +106,7 @@ func (s *CredentialsService) resolveAndroidIdentifier(ctx context.Context, appId
 	if ref == nil {
 		return nil, &store.ErrResourceNotFound{Resource: "app identifier", Identifier: identifierId}
 	}
-	if ref.Platform != PlatformAndroid {
+	if ref.Platform != types.PlatformAndroid {
 		return nil, validation.Errorf("identifier", "identifier %q is an %s identifier, android credentials require an android one", ref.Identifier, ref.Platform)
 	}
 	return ref, nil

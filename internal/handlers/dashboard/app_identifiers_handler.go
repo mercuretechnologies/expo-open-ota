@@ -7,6 +7,7 @@ import (
 	"xprem/internal/handlers"
 	"xprem/internal/services"
 	"xprem/internal/store"
+	"xprem/internal/types"
 	"xprem/internal/validation"
 
 	"github.com/google/uuid"
@@ -43,8 +44,8 @@ func (h *AppIdentifiersHandler) GetAppIdentifiersHandler(w http.ResponseWriter, 
 func (h *AppIdentifiersHandler) CreateAppIdentifierHandler(w http.ResponseWriter, r *http.Request) {
 	appId := mux.Vars(r)["APP_ID"]
 	var requestBody struct {
-		Platform   string `json:"platform"`
-		Identifier string `json:"identifier"`
+		Platform   types.Platform `json:"platform"`
+		Identifier string         `json:"identifier"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&requestBody); err != nil {
 		handlers.RenderError(w, http.StatusBadRequest, "invalid request body")
@@ -85,13 +86,25 @@ func (h *AppIdentifiersHandler) SetBuildNumberHandler(w http.ResponseWriter, r *
 		return
 	}
 	var requestBody struct {
-		BuildNumber *int64 `json:"buildNumber"`
+		BuildNumber json.RawMessage `json:"buildNumber"`
 	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&requestBody); err != nil || requestBody.BuildNumber == nil {
-		handlers.RenderError(w, http.StatusBadRequest, "invalid request body, expected {\"buildNumber\": <integer>}")
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&requestBody); err != nil || len(requestBody.BuildNumber) == 0 {
+		handlers.RenderError(w, http.StatusBadRequest, "invalid request body, expected {\"buildNumber\": <string or integer>}")
 		return
 	}
-	err := h.identifierService.SetBuildNumber(r.Context(), appId, identifierId, *requestBody.BuildNumber)
+	var buildNumber string
+	if err := json.Unmarshal(requestBody.BuildNumber, &buildNumber); err != nil {
+		// Preserve legacy integer inputs without floating-point conversion. Fractions
+		// must not accidentally become dotted iOS versions.
+		buildNumber = string(requestBody.BuildNumber)
+		for _, c := range buildNumber {
+			if c < '0' || c > '9' {
+				handlers.RenderError(w, http.StatusBadRequest, "buildNumber must be a string or a non-negative integer")
+				return
+			}
+		}
+	}
+	err := h.identifierService.SetBuildNumber(r.Context(), appId, identifierId, buildNumber)
 	if err != nil {
 		var valErr *validation.Error
 		if errors.As(err, &valErr) {

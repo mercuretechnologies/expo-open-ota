@@ -17,7 +17,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { PlatformLogo } from './PlatformLogo';
-import { PLATFORMS, Platform } from './platforms';
+import { PLATFORMS, Platform } from '../platforms';
 
 export const CreateIdentifierDialog = ({
   isOpen,
@@ -77,8 +77,8 @@ export const CreateIdentifierDialog = ({
           <DialogHeader>
             <DialogTitle>New application identifier</DialogTitle>
             <DialogDescription>
-              An application identifier ties build credentials to one app on one platform. You
-              will set up its credentials right after.
+              An application identifier ties build credentials to one app on one platform. You will
+              set up its credentials right after.
             </DialogDescription>
           </DialogHeader>
 

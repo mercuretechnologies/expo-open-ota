@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 	"xprem/internal/android/androidtest"
 	"xprem/internal/services"
 	"xprem/internal/store"
+	"xprem/internal/types"
 
 	"github.com/gorilla/mux"
 	"github.com/stretchr/testify/require"
@@ -33,7 +35,8 @@ func (repo *buildCredentialRepository) GetAndroidCredentials(_ context.Context, 
 
 type buildIdentifierRepository struct {
 	services.AppIdentifierRepository
-	app, id string
+	app, id   string
+	allocated int64
 }
 
 func (repo *buildIdentifierRepository) GetAppIdentifierByID(_ context.Context, app, id string) (*store.AppIdentifierRef, error) {
@@ -41,7 +44,16 @@ func (repo *buildIdentifierRepository) GetAppIdentifierByID(_ context.Context, a
 	if app != "app-1" || id != "id-1" {
 		return nil, nil
 	}
-	return &store.AppIdentifierRef{Id: id, Platform: services.PlatformAndroid}, nil
+	return &store.AppIdentifierRef{Id: id, Platform: types.PlatformAndroid}, nil
+}
+func (repo *buildIdentifierRepository) AllocateBuildNumber(_ context.Context, _, _ string, next func(types.Platform, string) (string, error)) (*store.AppIdentifierRef, error) {
+	previous := strconv.FormatInt(repo.allocated, 10)
+	value, err := next(types.PlatformAndroid, previous)
+	if err != nil {
+		return nil, err
+	}
+	repo.allocated++
+	return &store.AppIdentifierRef{Id: "id-1", Platform: types.PlatformAndroid, BuildNumber: value, PreviousBuildNumber: previous}, nil
 }
 func TestBuildCredentialsAllowlistAndWholeFile(t *testing.T) {
 	t.Setenv("AWSSM_DB_KEYS_MASTER_KEY_SECRET_ID", "")
@@ -55,7 +67,7 @@ func TestBuildCredentialsAllowlistAndWholeFile(t *testing.T) {
 	}))
 	unreadablePlaySecret := "not a decryptable Google Play secret"
 	repo.credentials.SealedGoogleServiceAccountKey = &unreadablePlaySecret
-	h := NewBuildHandler(nil, credentials)
+	h := NewBuildHandler(nil, credentials, nil)
 	req := mux.SetURLVars(httptest.NewRequest("GET", "/", nil), map[string]string{"APP_ID": "app-1", "IDENTIFIER_ID": "id-1"})
 	w := httptest.NewRecorder()
 	h.AndroidCredentials(w, req)
@@ -75,7 +87,7 @@ func TestBuildCredentialsErrorsDoNotExposeSecrets(t *testing.T) {
 		{&store.ErrResourceNotFound{Resource: "android credentials", Identifier: "id"}, 404},
 		{store.ErrNotSupportedInStatelessMode, 400},
 	} {
-		h := NewBuildHandler(nil, services.NewCredentialsService(&buildCredentialRepository{err: tc.err}, &buildIdentifierRepository{}))
+		h := NewBuildHandler(nil, services.NewCredentialsService(&buildCredentialRepository{err: tc.err}, &buildIdentifierRepository{}), nil)
 		w := httptest.NewRecorder()
 		h.AndroidCredentials(w, mux.SetURLVars(httptest.NewRequest("GET", "/", nil), map[string]string{"APP_ID": "app-1", "IDENTIFIER_ID": "id-1"}))
 		require.Equal(t, tc.status, w.Code)
@@ -85,10 +97,27 @@ func TestBuildCredentialsErrorsDoNotExposeSecrets(t *testing.T) {
 func TestBuildEnvironmentRejectsAmbiguousQuery(t *testing.T) {
 	for _, query := range []string{"channel=a&environment=b", "channel=a&channel=b", "environment=", "channel=", "other=x", "environment=%zz", "environment=a;b"} {
 		t.Run(query, func(t *testing.T) {
-			h := NewBuildHandler(nil, nil) // invalid requests cannot reach the service
+			h := NewBuildHandler(nil, nil, nil) // invalid requests cannot reach the service
 			w := httptest.NewRecorder()
 			h.Environment(w, httptest.NewRequest("GET", "/?"+query, nil))
 			require.Equal(t, 400, w.Code, w.Body.String())
 		})
+	}
+}
+func TestAllocateBuildNumber(t *testing.T) {
+	for _, tc := range []struct {
+		allocated int64
+		status    int
+		body      string
+	}{
+		{0, 200, `{"buildNumber":"1"}`},
+		{2_100_000_000, 409, `{"title":"Conflict","detail":"build number limit reached","status":409}`},
+	} {
+		repo := &buildIdentifierRepository{allocated: tc.allocated}
+		h := NewBuildHandler(nil, nil, services.NewAppIdentifierService(repo))
+		w := httptest.NewRecorder()
+		h.AllocateBuildNumber(w, mux.SetURLVars(httptest.NewRequest("POST", "/", nil), map[string]string{"APP_ID": "app-1", "IDENTIFIER_ID": "id-1"}))
+		require.Equal(t, tc.status, w.Code, w.Body.String())
+		require.JSONEq(t, tc.body, w.Body.String())
 	}
 }
