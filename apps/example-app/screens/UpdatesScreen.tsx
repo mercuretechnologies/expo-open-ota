@@ -2,12 +2,12 @@ import { useEffect, useState } from 'react'
 import {
   ActivityIndicator,
   Platform,
-  SafeAreaView,
-  ScrollView,
+ScrollView,
   StyleSheet,
   TouchableOpacity,
   View,
 } from 'react-native'
+import { SafeAreaView } from 'react-native-safe-area-context'
 import * as Updates from 'expo-updates'
 import Constants from 'expo-constants'
 import * as Clipboard from 'expo-clipboard'

@@ -1,5 +1,6 @@
 import { useEffect } from 'react'
-import { SafeAreaView, ScrollView, StyleSheet } from 'react-native'
+import { ScrollView, StyleSheet } from 'react-native'
+import { SafeAreaView } from 'react-native-safe-area-context'
 import { useObserve } from 'expo-observe'
 
 import { ThemedText } from '@/components/ThemedText'
