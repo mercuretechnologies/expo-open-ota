@@ -48,7 +48,7 @@ func (f *fakeLicenseServer) client(t *testing.T) *Client {
 	}
 	server := httptest.NewServer(router)
 	t.Cleanup(server.Close)
-	return NewClient(server.URL)
+	return newClient(server.URL)
 }
 
 func writeJSONBody(w http.ResponseWriter, status int, body string) {
@@ -145,7 +145,7 @@ func TestClientTrimsTrailingSlashFromBaseURL(t *testing.T) {
 	server := httptest.NewServer(router)
 	t.Cleanup(server.Close)
 
-	result, err := NewClient(server.URL+"/").Check(context.Background(), testKeyParams("XPREM-KEY"))
+	result, err := newClient(server.URL+"/").Check(context.Background(), testKeyParams("XPREM-KEY"))
 	require.NoError(t, err)
 	assert.True(t, result.Valid)
 }
@@ -194,6 +194,6 @@ func TestClientUnexpectedStatusIsUnreachable(t *testing.T) {
 func TestClientConnectionFailureIsUnreachable(t *testing.T) {
 	server := httptest.NewServer(http.NotFoundHandler())
 	server.Close()
-	_, err := NewClient(server.URL).Check(context.Background(), testKeyParams("XPREM-KEY"))
+	_, err := newClient(server.URL).Check(context.Background(), testKeyParams("XPREM-KEY"))
 	require.ErrorIs(t, err, ErrServerUnreachable)
 }

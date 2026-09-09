@@ -128,7 +128,7 @@ func repoWithAcme() *fakeLicenseRepo {
 }
 
 func TestServiceStatelessModeAnswersControlPlaneError(t *testing.T) {
-	service := newTestService(t, nil, NewClient(""))
+	service := newTestService(t, nil, NewClient())
 	if _, err := service.Status(context.Background()); !errors.Is(err, ErrLicenseRequiresControlPlane) {
 		t.Fatalf("expected ErrLicenseRequiresControlPlane, got %v", err)
 	}
@@ -387,7 +387,7 @@ func TestValidateNowSkipsWithoutInstanceIdInsteadOfBurningGrace(t *testing.T) {
 	repo := repoWithAcme()
 	Deactivate()
 	t.Cleanup(Deactivate)
-	service := NewLicenseService(repo, NewClient("http://127.0.0.1:1"), "", "https://updates.example.com")
+	service := NewLicenseService(repo, newClient("http://127.0.0.1:1"), "", "https://updates.example.com")
 	Activate(repo.stored.License)
 
 	service.ValidateNow(context.Background())
@@ -399,7 +399,7 @@ func TestValidateNowSkipsWithoutInstanceIdInsteadOfBurningGrace(t *testing.T) {
 func TestValidateNowSkipsWhenSecretUnreadableInsteadOfBurningGrace(t *testing.T) {
 	repo := repoWithAcme()
 	repo.secretErr = errors.New("failed to unseal the license activation secret")
-	service := newTestService(t, repo, NewClient("http://127.0.0.1:1"))
+	service := newTestService(t, repo, newClient("http://127.0.0.1:1"))
 	Activate(repo.stored.License)
 
 	service.ValidateNow(context.Background())
@@ -410,7 +410,7 @@ func TestValidateNowSkipsWhenSecretUnreadableInsteadOfBurningGrace(t *testing.T)
 
 func TestValidateNowIgnoresShutdownCancellation(t *testing.T) {
 	repo := repoWithAcme()
-	service := newTestService(t, repo, NewClient("http://127.0.0.1:1"))
+	service := newTestService(t, repo, newClient("http://127.0.0.1:1"))
 	Activate(repo.stored.License)
 	cancelled, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -425,7 +425,7 @@ func TestActivateFromStoreWithinGrace(t *testing.T) {
 	repo := repoWithAcme()
 	failedAt := time.Now().Add(-time.Hour).UTC()
 	repo.stored.ValidationFailedAt = &failedAt
-	service := newTestService(t, repo, NewClient(""))
+	service := newTestService(t, repo, NewClient())
 
 	require.NoError(t, service.ActivateFromStore(context.Background()))
 	assert.True(t, IsEnterprise())
@@ -435,7 +435,7 @@ func TestActivateFromStoreSuspendedRunsCommunity(t *testing.T) {
 	repo := repoWithAcme()
 	failedAt := time.Now().Add(-GracePeriod - time.Hour).UTC()
 	repo.stored.ValidationFailedAt = &failedAt
-	service := newTestService(t, repo, NewClient(""))
+	service := newTestService(t, repo, NewClient())
 
 	require.NoError(t, service.ActivateFromStore(context.Background()))
 	assert.False(t, IsEnterprise())
@@ -449,7 +449,7 @@ func TestActivateFromStoreSuspendedRunsCommunity(t *testing.T) {
 
 func TestRemoveDropsToCommunity(t *testing.T) {
 	repo := repoWithAcme()
-	service := newTestService(t, repo, NewClient(""))
+	service := newTestService(t, repo, NewClient())
 	Activate(repo.stored.License)
 
 	require.NoError(t, service.Remove(context.Background()))
