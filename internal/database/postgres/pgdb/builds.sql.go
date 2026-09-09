@@ -132,6 +132,67 @@ func (q *Queries) InsertBuild(ctx context.Context, arg InsertBuildParams) (Build
 	return i, err
 }
 
+const insertBuildShare = `-- name: InsertBuildShare :one
+INSERT INTO build_shares(id,build_id,token_hash,expires_at) VALUES ($1,$2,$3,$4) RETURNING id, build_id, token_hash, created_at, expires_at, revoked_at
+`
+
+type InsertBuildShareParams struct {
+	ID        pgtype.UUID        `json:"id"`
+	BuildID   pgtype.UUID        `json:"build_id"`
+	TokenHash string             `json:"token_hash"`
+	ExpiresAt pgtype.Timestamptz `json:"expires_at"`
+}
+
+func (q *Queries) InsertBuildShare(ctx context.Context, arg InsertBuildShareParams) (BuildShare, error) {
+	row := q.db.QueryRow(ctx, insertBuildShare,
+		arg.ID,
+		arg.BuildID,
+		arg.TokenHash,
+		arg.ExpiresAt,
+	)
+	var i BuildShare
+	err := row.Scan(
+		&i.ID,
+		&i.BuildID,
+		&i.TokenHash,
+		&i.CreatedAt,
+		&i.ExpiresAt,
+		&i.RevokedAt,
+	)
+	return i, err
+}
+
+const listBuildShares = `-- name: ListBuildShares :many
+SELECT id, build_id, token_hash, created_at, expires_at, revoked_at FROM build_shares WHERE build_id=$1 ORDER BY created_at DESC
+`
+
+func (q *Queries) ListBuildShares(ctx context.Context, buildID pgtype.UUID) ([]BuildShare, error) {
+	rows, err := q.db.Query(ctx, listBuildShares, buildID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []BuildShare
+	for rows.Next() {
+		var i BuildShare
+		if err := rows.Scan(
+			&i.ID,
+			&i.BuildID,
+			&i.TokenHash,
+			&i.CreatedAt,
+			&i.ExpiresAt,
+			&i.RevokedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listBuilds = `-- name: ListBuilds :many
 SELECT id, app_id, app_identifier_id, platform, application_id, status, artifact_type, size, sha256, artifact_key, metadata, actor_type, actor_id, actor_display, started_at, finished_at, duration_ms, created_at, updated_at, ready_at FROM builds WHERE app_id=$1 ORDER BY created_at DESC,id DESC LIMIT $2 OFFSET $3
 `
@@ -218,6 +279,41 @@ func (q *Queries) LockBuild(ctx context.Context, arg LockBuildParams) (Build, er
 		&i.ReadyAt,
 	)
 	return i, err
+}
+
+const resolveBuildShare = `-- name: ResolveBuildShare :one
+SELECT b.id, b.app_id, s.expires_at AS share_expires_at FROM build_shares s JOIN builds b ON b.id=s.build_id
+WHERE s.token_hash=$1 AND s.revoked_at IS NULL AND s.expires_at>now() AND b.status='ready' AND b.artifact_type='apk'
+`
+
+type ResolveBuildShareRow struct {
+	ID             pgtype.UUID        `json:"id"`
+	AppID          pgtype.UUID        `json:"app_id"`
+	ShareExpiresAt pgtype.Timestamptz `json:"share_expires_at"`
+}
+
+func (q *Queries) ResolveBuildShare(ctx context.Context, tokenHash string) (ResolveBuildShareRow, error) {
+	row := q.db.QueryRow(ctx, resolveBuildShare, tokenHash)
+	var i ResolveBuildShareRow
+	err := row.Scan(&i.ID, &i.AppID, &i.ShareExpiresAt)
+	return i, err
+}
+
+const revokeBuildShare = `-- name: RevokeBuildShare :execrows
+UPDATE build_shares SET revoked_at=COALESCE(revoked_at,now()) WHERE build_id=$1 AND id=$2
+`
+
+type RevokeBuildShareParams struct {
+	BuildID pgtype.UUID `json:"build_id"`
+	ID      pgtype.UUID `json:"id"`
+}
+
+func (q *Queries) RevokeBuildShare(ctx context.Context, arg RevokeBuildShareParams) (int64, error) {
+	result, err := q.db.Exec(ctx, revokeBuildShare, arg.BuildID, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const updateBuild = `-- name: UpdateBuild :one

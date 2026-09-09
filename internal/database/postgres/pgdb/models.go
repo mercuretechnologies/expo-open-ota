@@ -157,6 +157,15 @@ type BuildArtifactCleanup struct {
 	CreatedAt       pgtype.Timestamptz `json:"created_at"`
 }
 
+type BuildShare struct {
+	ID        pgtype.UUID        `json:"id"`
+	BuildID   pgtype.UUID        `json:"build_id"`
+	TokenHash string             `json:"token_hash"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	ExpiresAt pgtype.Timestamptz `json:"expires_at"`
+	RevokedAt pgtype.Timestamptz `json:"revoked_at"`
+}
+
 type BuildStagingSweep struct {
 	BuildID pgtype.UUID        `json:"build_id"`
 	SweptAt pgtype.Timestamptz `json:"swept_at"`

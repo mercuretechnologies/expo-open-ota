@@ -30,6 +30,9 @@ func registerAppRoutes(
 	app.route(http.MethodGet, "/builds", container.BuildRegistryHandler.List, NeedsPermission(rbac.PermBuildRead, rbac.FallbackAnyMember))
 	app.route(http.MethodGet, "/builds/{BUILD_ID}", container.BuildRegistryHandler.Get, NeedsPermission(rbac.PermBuildRead, rbac.FallbackAnyMember))
 	app.route(http.MethodGet, "/builds/{BUILD_ID}/download", container.BuildRegistryHandler.Download, NeedsPermission(rbac.PermBuildDownload, rbac.FallbackAnyMember))
+	app.route(http.MethodGet, "/builds/{BUILD_ID}/shares", container.BuildRegistryHandler.ListShares, NeedsPermission(rbac.PermBuildShare, rbac.FallbackAdminOnly))
+	app.route(http.MethodPost, "/builds/{BUILD_ID}/shares", container.BuildRegistryHandler.CreateShare, NeedsPermission(rbac.PermBuildShare, rbac.FallbackAdminOnly))
+	app.route(http.MethodDelete, "/builds/{BUILD_ID}/shares/{SHARE_ID}", container.BuildRegistryHandler.RevokeShare, NeedsPermission(rbac.PermBuildShare, rbac.FallbackAdminOnly))
 
 	app.route(http.MethodGet, "", container.AppHandler.GetAppHandler,
 		AnyViewer())

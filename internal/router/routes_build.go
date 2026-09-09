@@ -25,6 +25,8 @@ func registerBuildRoutes(r *mux.Router, container *AppContainer) {
 	build.route(http.MethodPost, "/{IDENTIFIER_ID}/artifacts/{BUILD_ID}/failed", container.BuildRegistryHandler.Fail, apikeyrestrictions.BuildActionCreate)
 	build.route(http.MethodPost, "/{IDENTIFIER_ID}/artifacts/{BUILD_ID}/complete", container.BuildRegistryHandler.Complete, apikeyrestrictions.BuildActionCreate)
 	build.route(http.MethodPut, "/{IDENTIFIER_ID}/artifacts/{BUILD_ID}/upload", container.BuildRegistryHandler.UploadLocal, apikeyrestrictions.BuildActionCreate)
+	r.HandleFunc("/build-shares/{TOKEN}", container.BuildRegistryHandler.PublicShare).Methods(http.MethodGet)
+	r.HandleFunc("/build-shares/{TOKEN}/download", container.BuildRegistryHandler.PublicShare).Methods(http.MethodGet)
 
 	build.route(http.MethodGet, "/resolve/{PLATFORM}/{APPLICATION_ID}", container.BuildHandler.ResolveIdentifier,
 		apikeyrestrictions.BuildActionCreate)

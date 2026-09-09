@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -31,11 +32,12 @@ const (
 type memoryBuildRepo struct {
 	mu     sync.Mutex
 	builds map[string]types.BuildRecord
+	shares map[string]types.BuildShare
 	err    error
 }
 
 func newMemoryBuildRepo() *memoryBuildRepo {
-	return &memoryBuildRepo{builds: map[string]types.BuildRecord{}}
+	return &memoryBuildRepo{builds: map[string]types.BuildRecord{}, shares: map[string]types.BuildShare{}}
 }
 
 func (r *memoryBuildRepo) Create(_ context.Context, record types.BuildRecord) (*types.BuildRecord, bool, error) {
@@ -105,6 +107,42 @@ func (r *memoryBuildRepo) Transition(ctx context.Context, appID, id string, deci
 	next.UpdatedAt = time.Now()
 	r.builds[id] = *next
 	return next, nil
+}
+
+func (r *memoryBuildRepo) CreateShare(_ context.Context, id, buildID, hash string, expires time.Time) (types.BuildShare, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	share := types.BuildShare{ID: id, CreatedAt: time.Now(), ExpiresAt: expires}
+	r.shares[hash] = share
+	return share, nil
+}
+
+func (r *memoryBuildRepo) ListShares(context.Context, string) ([]types.BuildShare, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var shares []types.BuildShare
+	for _, share := range r.shares {
+		shares = append(shares, share)
+	}
+	return shares, nil
+}
+
+func (r *memoryBuildRepo) RevokeShare(context.Context, string, string) error { return nil }
+
+func (r *memoryBuildRepo) ResolveShare(_ context.Context, hash string) (*types.BuildRecord, time.Time, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.err != nil {
+		return nil, time.Time{}, r.err
+	}
+	share, ok := r.shares[hash]
+	if !ok {
+		return nil, time.Time{}, &store.ErrResourceNotFound{Resource: "share", Identifier: "link"}
+	}
+	for _, record := range r.builds {
+		return &record, share.ExpiresAt, nil
+	}
+	return nil, time.Time{}, &store.ErrResourceNotFound{Resource: "share", Identifier: "link"}
 }
 
 type buildFixture struct {
@@ -718,4 +756,40 @@ func TestBuildConcurrentRegistrationsAgree(t *testing.T) {
 	current, err := f.service.Get(ctx, testBuildApp, testBuildID)
 	require.NoError(t, err)
 	require.Equal(t, types.BuildStatusUploading, current.Status)
+}
+
+func TestBuildSharesRequireReadyAPK(t *testing.T) {
+	f := newBuildFixture(t)
+	ctx := context.Background()
+	content := []byte("apk")
+	registration, err := f.service.RegisterArtifact(ctx, testBuildApp, testBuildIdentifier, testBuildID, f.registerInput(content))
+	require.NoError(t, err)
+	_, _, err = f.service.CreateShare(ctx, testBuildApp, testBuildID, 24)
+	require.True(t, validation.IsValidationError(err))
+	require.NoError(t, f.service.UploadLocal(ctx, testBuildApp, testBuildIdentifier, testBuildID, registration.Upload.Headers[bucket.LocalUploadTokenHeader], bytes.NewReader(content)))
+	_, err = f.service.Complete(ctx, testBuildApp, testBuildIdentifier, testBuildID)
+	require.NoError(t, err)
+	_, _, err = f.service.CreateShare(ctx, testBuildApp, testBuildID, 0)
+	require.True(t, validation.IsValidationError(err))
+	_, _, err = f.service.CreateShare(ctx, testBuildApp, testBuildID, 721)
+	require.True(t, validation.IsValidationError(err))
+	share, token, err := f.service.CreateShare(ctx, testBuildApp, testBuildID, 48)
+	require.NoError(t, err)
+	require.Len(t, token, 64)
+	require.Equal(t, f.now.Add(48*time.Hour), share.ExpiresAt)
+	require.NotContains(t, f.repo.shares, token, "only the hash is stored")
+	require.Contains(t, f.repo.shares, shareHash(token))
+
+	resolved, expiry, err := f.service.ResolveShare(ctx, token)
+	require.NoError(t, err)
+	require.Equal(t, testBuildID, resolved.ID)
+	require.Equal(t, share.ExpiresAt, expiry)
+	var missing *store.ErrResourceNotFound
+	_, _, err = f.service.ResolveShare(ctx, "short")
+	require.ErrorAs(t, err, &missing)
+	_, _, err = f.service.ResolveShare(ctx, strings.Repeat("0", 64))
+	require.ErrorAs(t, err, &missing)
+	f.repo.err = errors.New("database down")
+	_, _, err = f.service.ResolveShare(ctx, token)
+	require.False(t, errors.As(err, &missing), "outages are not reported as missing links")
 }

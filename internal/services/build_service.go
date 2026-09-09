@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -33,6 +34,10 @@ type BuildRepository interface {
 	Get(context.Context, string, string) (*types.BuildRecord, error)
 	List(context.Context, string, int32, int32) ([]types.BuildRecord, int64, error)
 	Transition(context.Context, string, string, func(types.BuildRecord) (*types.BuildRecord, error)) (*types.BuildRecord, error)
+	CreateShare(context.Context, string, string, string, time.Time) (types.BuildShare, error)
+	ListShares(context.Context, string) ([]types.BuildShare, error)
+	RevokeShare(context.Context, string, string) error
+	ResolveShare(context.Context, string) (*types.BuildRecord, time.Time, error)
 }
 type BuildService struct {
 	repo        BuildRepository
@@ -454,4 +459,57 @@ func (s *BuildService) UploadLocal(ctx context.Context, appID, identifierID, id,
 		return ErrBuildIntegrity
 	}
 	return nil
+}
+
+func shareHash(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
+}
+
+func (s *BuildService) CreateShare(ctx context.Context, appID, id string, hours int) (types.BuildShare, string, error) {
+	b, err := s.Get(ctx, appID, id)
+	if err != nil {
+		return types.BuildShare{}, "", err
+	}
+	if b.Status != types.BuildStatusReady || b.ArtifactType != "apk" {
+		return types.BuildShare{}, "", validation.Errorf("build", "only ready APK builds can be shared")
+	}
+	if hours < 1 || hours > 720 {
+		return types.BuildShare{}, "", validation.Errorf("expiresInHours", "must be between 1 and 720")
+	}
+	secret := make([]byte, 32)
+	if _, err = rand.Read(secret); err != nil {
+		return types.BuildShare{}, "", err
+	}
+	token := hex.EncodeToString(secret)
+	share, err := s.repo.CreateShare(ctx, uuid.NewString(), id, shareHash(token), s.now().Add(time.Duration(hours)*time.Hour))
+	return share, token, err
+}
+
+func (s *BuildService) ListShares(ctx context.Context, appID, id string) ([]types.BuildShare, error) {
+	if _, err := s.Get(ctx, appID, id); err != nil {
+		return nil, err
+	}
+	return s.repo.ListShares(ctx, id)
+}
+
+func (s *BuildService) RevokeShare(ctx context.Context, appID, id, shareID string) error {
+	if _, err := s.Get(ctx, appID, id); err != nil {
+		return err
+	}
+	if _, err := uuid.Parse(shareID); err != nil {
+		return validation.Errorf("shareId", "invalid UUID")
+	}
+	return s.repo.RevokeShare(ctx, id, shareID)
+}
+
+// ResolveShare returns ErrResourceNotFound for unknown, expired or revoked links.
+func (s *BuildService) ResolveShare(ctx context.Context, token string) (*types.BuildRecord, time.Time, error) {
+	if s.repo == nil {
+		return nil, time.Time{}, store.ErrNotSupportedInStatelessMode
+	}
+	if !buildHash.MatchString(token) {
+		return nil, time.Time{}, &store.ErrResourceNotFound{Resource: "share", Identifier: "link"}
+	}
+	return s.repo.ResolveShare(ctx, shareHash(token))
 }
