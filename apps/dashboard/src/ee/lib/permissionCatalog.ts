@@ -132,6 +132,21 @@ export const PERMISSION_GROUPS: PermissionGroup[] = [
     ],
   },
   {
+    label: 'Builds',
+    permissions: [
+      {
+        value: 'build:read',
+        label: 'View builds',
+        description: 'List the builds of the app and view their metadata.',
+      },
+      {
+        value: 'build:download',
+        label: 'Download builds',
+        description: 'Download the signed APK or AAB of a ready build.',
+      },
+    ],
+  },
+  {
     label: 'Environments',
     permissions: [
       {
@@ -143,7 +158,8 @@ export const PERMISSION_GROUPS: PermissionGroup[] = [
       {
         value: 'env:read',
         label: 'Reveal environment values',
-        description: 'Read the plaintext value of any environment variable. Listing key names is open to every viewer.',
+        description:
+          'Read the plaintext value of any environment variable. Listing key names is open to every viewer.',
       },
     ],
   },
