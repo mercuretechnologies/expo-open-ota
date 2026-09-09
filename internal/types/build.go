@@ -82,3 +82,13 @@ type BuildShare struct {
 	ExpiresAt time.Time  `json:"expiresAt"`
 	RevokedAt *time.Time `json:"revokedAt,omitempty"`
 }
+
+const MaxBuildLogBytes = 10 << 20
+const MaxBuildLogChunkBytes = 32 << 10
+
+type BuildLogChunk struct {
+	Offset    int32     `json:"offset"`
+	Content   string    `json:"content"`
+	Format    string    `json:"format"`
+	CreatedAt time.Time `json:"createdAt"`
+}

@@ -33,6 +33,7 @@ type memoryBuildRepo struct {
 	mu     sync.Mutex
 	builds map[string]types.BuildRecord
 	shares map[string]types.BuildShare
+	logs   []types.BuildLogChunk
 	err    error
 }
 
@@ -128,6 +129,41 @@ func (r *memoryBuildRepo) ListShares(context.Context, string) ([]types.BuildShar
 }
 
 func (r *memoryBuildRepo) RevokeShare(context.Context, string, string) error { return nil }
+
+func (r *memoryBuildRepo) AppendLogs(_ context.Context, _, _ string, offset int32, content, format string) error {
+	r.logs = append(r.logs, types.BuildLogChunk{Offset: offset, Content: content, Format: format})
+	return nil
+}
+
+func (r *memoryBuildRepo) ListLogs(context.Context, string, string, int32) ([]types.BuildLogChunk, error) {
+	return r.logs, nil
+}
+
+func TestBuildLogsValidateScopeAndSize(t *testing.T) {
+	f := newBuildFixture(t)
+	ctx := WithCliAuth(context.Background(), CliCredential{AppID: testBuildApp, KeyID: 7})
+	_, err := f.service.Start(ctx, testBuildApp, testBuildIdentifier, testBuildID, f.startInput())
+	require.NoError(t, err)
+	require.NoError(t, f.service.AppendLogs(ctx, testBuildApp, testBuildIdentifier, testBuildID, 0, "hello\n", "text"))
+	require.Len(t, f.repo.logs, 1)
+	require.Error(t, f.service.AppendLogs(ctx, otherBuildID, testBuildIdentifier, testBuildID, 6, "wrong app", "text"))
+	require.Error(t, f.service.AppendLogs(ctx, testBuildApp, otherBuildID, testBuildID, 6, "wrong identifier", "text"))
+	for _, content := range []string{"", "invalid\x00", "invalid\xff", strings.Repeat("x", types.MaxBuildLogChunkBytes+1)} {
+		require.Error(t, f.service.AppendLogs(ctx, testBuildApp, testBuildIdentifier, testBuildID, 6, content, "text"))
+	}
+	for _, offset := range []int32{-1, types.MaxBuildLogBytes, 2147483647} {
+		require.Error(t, f.service.AppendLogs(ctx, testBuildApp, testBuildIdentifier, testBuildID, offset, "too far", "text"))
+	}
+	require.Len(t, f.repo.logs, 1)
+	_, err = f.service.ListLogs(ctx, otherBuildID, testBuildID, 0)
+	require.Error(t, err)
+	_, err = f.service.ListLogs(ctx, testBuildApp, testBuildID, -1)
+	require.Error(t, err)
+	// Final output can arrive after the artifact or the failure has been reported.
+	_, err = f.service.Fail(ctx, testBuildApp, testBuildIdentifier, testBuildID, FailBuildInput{FinishedAt: f.now})
+	require.NoError(t, err)
+	require.NoError(t, f.service.AppendLogs(ctx, testBuildApp, testBuildIdentifier, testBuildID, 6, "failed\n", "text"))
+}
 
 func (r *memoryBuildRepo) ResolveShare(_ context.Context, hash string) (*types.BuildRecord, time.Time, error) {
 	r.mu.Lock()

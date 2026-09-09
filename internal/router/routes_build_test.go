@@ -422,6 +422,7 @@ func TestBuildRegistryRoutesRequireBuildCreate(t *testing.T) {
 	})
 	registry := handlers.NewBuildRegistryHandler(services.NewBuildService(nil, nil, nil))
 	endpoints := []struct{ method, suffix, body string }{
+		{http.MethodPost, "/artifacts/" + buildID + "/logs", `{"offset":0,"content":"compile\n"}`},
 		{http.MethodPut, "/artifacts/" + buildID + "/start", `{"artifactType":"apk","metadata":{"profile":"p","cliVersion":"1","startedAt":"2026-09-08T10:00:00Z"}}`},
 		{http.MethodPut, "/artifacts/" + buildID, `{"artifactType":"apk","size":1,"sha256":"` + strings.Repeat("a", 64) + `","metadata":{"profile":"p","cliVersion":"1","buildNumber":"1","fingerprint":"` + strings.Repeat("a", 40) + `","startedAt":"2026-09-08T10:00:00Z","finishedAt":"2026-09-08T10:01:00Z"}}`},
 		{http.MethodPost, "/artifacts/" + buildID + "/failed", `{"finishedAt":"2026-09-08T10:00:00Z"}`},
