@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"net/netip"
 	"strconv"
+	"strings"
 	"testing"
 	"xprem/config"
 	"xprem/ee/apikeyrestrictions"
@@ -393,4 +394,91 @@ func TestBuildResolveTargetedLookup(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Every build registry mutation runs behind the same guard as the build
+// inputs; the local upload and share links are public and protect themselves.
+func TestBuildRegistryRoutesRequireBuildCreate(t *testing.T) {
+	previous := licensing.Current()
+	licensing.Activate(licensing.License{PlanCode: licensing.PlanEnterprise})
+	t.Cleanup(func() {
+		if previous == nil {
+			licensing.Deactivate()
+		} else {
+			licensing.Activate(*previous)
+		}
+	})
+	registry := handlers.NewBuildRegistryHandler(services.NewBuildService(nil, nil, nil))
+	endpoints := []struct{ method, suffix, body string }{
+		{http.MethodPut, "/artifacts/" + buildID + "/start", `{"artifactType":"apk","metadata":{"profile":"p","cliVersion":"1","startedAt":"2026-09-08T10:00:00Z"}}`},
+		{http.MethodPut, "/artifacts/" + buildID, `{"artifactType":"apk","size":1,"sha256":"` + strings.Repeat("a", 64) + `","metadata":{"profile":"p","cliVersion":"1","buildNumber":"1","fingerprint":"` + strings.Repeat("a", 40) + `","startedAt":"2026-09-08T10:00:00Z","finishedAt":"2026-09-08T10:01:00Z"}}`},
+		{http.MethodPost, "/artifacts/" + buildID + "/failed", `{"finishedAt":"2026-09-08T10:00:00Z"}`},
+		{http.MethodPost, "/artifacts/" + buildID + "/complete", ""},
+	}
+	granted := apikeyrestrictions.ApiKeyAccess{ApiKeyID: 42, BuildRules: []apikeyrestrictions.BuildRule{{AppIdentifierID: buildID, Actions: []apikeyrestrictions.BuildAction{apikeyrestrictions.BuildActionCreate}}}}
+	elsewhere := apikeyrestrictions.ApiKeyAccess{ApiKeyID: 42, BuildRules: []apikeyrestrictions.BuildRule{{AppIdentifierID: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", Actions: []apikeyrestrictions.BuildAction{apikeyrestrictions.BuildActionCreate}}}}
+	for _, tc := range []struct {
+		name   string
+		auth   services.CliAuthRepository
+		access apikeyrestrictions.ApiKeyAccess
+		id     string
+		status int
+	}{
+		{"allowed", acceptingCliRepo{}, granted, buildID, http.StatusBadRequest},
+		{"denied", acceptingCliRepo{}, elsewhere, buildID, http.StatusForbidden},
+		{"unauthenticated", failingBuildAuth{}, granted, buildID, http.StatusUnauthorized},
+		{"unregistered token", buildAuthKeyID{keyID: 0}, granted, buildID, http.StatusUnauthorized},
+		{"foreign identifier", acceptingCliRepo{}, granted, "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", http.StatusNotFound},
+	} {
+		for _, endpoint := range endpoints {
+			t.Run(tc.name+" "+endpoint.method+" "+endpoint.suffix, func(t *testing.T) {
+				access := &buildAccessRepo{access: tc.access}
+				container := &AppContainer{AppRepo: buildAppRepo{}, CliAuthService: services.NewCliAuthService(tc.auth), ApiKeyAccessService: apikeyrestrictions.NewApiKeyAccessService(access), AppIdentifierRepo: &buildIdentifierRepo{platform: types.PlatformAndroid}, BuildHandler: handlers.NewBuildHandler(nil, nil, nil), BuildRegistryHandler: registry}
+				router := mux.NewRouter()
+				registerBuildRoutes(router, container)
+				req := httptest.NewRequest(endpoint.method, "/app-1/build/"+tc.id+endpoint.suffix, strings.NewReader(endpoint.body))
+				req.Header.Set("Authorization", "Bearer eoo_key")
+				req.RemoteAddr = "192.0.2.1:4000"
+				w := httptest.NewRecorder()
+				router.ServeHTTP(w, req)
+				require.Equal(t, tc.status, w.Code, w.Body.String())
+				require.Equal(t, tc.status == http.StatusBadRequest || tc.status == http.StatusForbidden, access.app != "", "the policy is consulted only for an authenticated, resolvable target")
+				if tc.status == http.StatusBadRequest {
+					require.Contains(t, w.Body.String(), "stateless mode", "the guard let the request through to the registry handler")
+				} else {
+					require.NotContains(t, w.Body.String(), "stateless mode", "the registry handler must not run")
+				}
+			})
+		}
+	}
+}
+
+func TestBuildRegistryRouteMethodsAndPublicPaths(t *testing.T) {
+	registry := handlers.NewBuildRegistryHandler(services.NewBuildService(nil, nil, nil))
+	access := &buildAccessRepo{}
+	container := &AppContainer{AppRepo: buildAppRepo{}, CliAuthService: services.NewCliAuthService(acceptingCliRepo{}), ApiKeyAccessService: apikeyrestrictions.NewApiKeyAccessService(access), AppIdentifierRepo: &buildIdentifierRepo{platform: types.PlatformAndroid}, BuildHandler: handlers.NewBuildHandler(nil, nil, nil), BuildRegistryHandler: registry}
+	router := mux.NewRouter()
+	registerBuildRoutes(router, container)
+	for _, tc := range []struct {
+		method, target string
+		status         int
+	}{
+		{http.MethodGet, "/app-1/build/" + buildID + "/artifacts/" + buildID + "/start", http.StatusNotFound},
+		{http.MethodPost, "/app-1/build/" + buildID + "/artifacts/" + buildID + "/start", http.StatusNotFound},
+		{http.MethodPut, "/app-1/build/" + buildID + "/artifacts/" + buildID + "/failed", http.StatusNotFound},
+		{http.MethodGet, "/app-1/build/" + buildID + "/artifacts/" + buildID, http.StatusNotFound},
+		{http.MethodPut, "/build-uploads/forged-grant", http.StatusUnauthorized},
+		{http.MethodPost, "/build-uploads/forged-grant", http.StatusMethodNotAllowed},
+	} {
+		t.Run(tc.method+" "+tc.target, func(t *testing.T) {
+			req := httptest.NewRequest(tc.method, tc.target, strings.NewReader("{}"))
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+			require.Equal(t, tc.status, w.Code, w.Body.String())
+			if tc.status == http.StatusUnauthorized {
+				require.Contains(t, w.Body.String(), "upload authorization", "the public upload path answers itself, not the CLI guard")
+			}
+		})
+	}
+	require.Empty(t, access.app, "public paths and wrong methods never consult the build policy")
 }

@@ -38,6 +38,7 @@ import (
 type AppContainer struct {
 	AppIdentifierRepo           services.AppIdentifierRepository
 	BuildHandler                *handlers.BuildHandler
+	BuildRegistryHandler        *handlers.BuildRegistryHandler
 	AuthHandler                 *dashhandlers.AuthHandler
 	BlobService                 *services.BlobService
 	DashboardAuthService        *services.DashboardAuthService
@@ -110,6 +111,7 @@ func InitDependencies(ctx context.Context) (*AppContainer, func()) {
 	var bundlePatchRepo services.BundlePatchRepository
 	// nil in stateless mode: store identities and signing credentials only
 	// exist on the control plane.
+	var buildRepo services.BuildRepository
 	var appIdentifierRepo services.AppIdentifierRepository
 	var credentialsRepo services.CredentialsRepository
 	var environmentRepo services.EnvironmentRepository
@@ -144,6 +146,7 @@ func InitDependencies(ctx context.Context) (*AppContainer, func()) {
 	dbUrl := config.GetDBURL()
 
 	resolvedBucket := bucket.GetBucket()
+	buildStorage := bucket.NewBuildArtifactStorage(resolvedBucket)
 
 	if dbUrl != "" {
 		if !database.IsValidDBURL(dbUrl) {
@@ -187,6 +190,7 @@ func InitDependencies(ctx context.Context) (*AppContainer, func()) {
 		rolloutRepo = store.NewPostgresRolloutStore(dbEngine)
 		bundlePatchRepo = store.NewPostgresBundlePatchStore(dbEngine)
 		appIdentifierRepo = store.NewPostgresAppIdentifierStore(dbEngine)
+		buildRepo = store.NewPostgresBuildStore(dbEngine)
 		credentialsRepo = store.NewPostgresCredentialsStore(dbEngine)
 		environmentRepo = store.NewPostgresEnvironmentStore(dbEngine)
 
@@ -317,6 +321,7 @@ func InitDependencies(ctx context.Context) (*AppContainer, func()) {
 	bsDiffService.SetOnAuditEvent(auditService.Record)
 	rolloutService := services.NewRolloutService(rolloutRepo, channelRepo, updateRepo, deploymentService)
 	rolloutService.SetOnAuditEvent(auditService.Record)
+	buildService := services.NewBuildService(buildRepo, appIdentifierRepo, buildStorage)
 	appIdentifierService := services.NewAppIdentifierService(appIdentifierRepo)
 	appIdentifierService.SetOnAuditEvent(auditService.Record)
 	credentialsService := services.NewCredentialsService(credentialsRepo, appIdentifierRepo)
@@ -386,6 +391,7 @@ func InitDependencies(ctx context.Context) (*AppContainer, func()) {
 		CredentialsHandler:          dashhandlers.NewCredentialsHandler(credentialsService),
 		AppIdentifierRepo:           appIdentifierRepo,
 		BuildHandler:                handlers.NewBuildHandler(environmentService, credentialsService, appIdentifierService),
+		BuildRegistryHandler:        handlers.NewBuildRegistryHandler(buildService),
 		EnvironmentsHandler:         dashhandlers.NewEnvironmentsHandler(environmentService),
 		ExpoProtocolHandler:         handlers.NewExpoProtocolHandler(expoProtocolService),
 		LicenseHandler:              licensing.NewLicenseHandler(licenseService),
