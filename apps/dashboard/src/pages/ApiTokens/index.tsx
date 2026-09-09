@@ -188,7 +188,7 @@ export const ApiTokens = () => {
             <p className="mt-0.5 text-xs text-muted-foreground">
               Copy it now, it will not be shown again.
               {licenseQuery.data?.valid &&
-                ' New tokens have full Build and Submit access for this app, and no Updates access. Use Edit in the Access column to configure permissions.'}
+                ' New tokens have full Build and Submit access for this app, and no Updates access. Use the Edit access action to configure permissions.'}
             </p>
             <div className="mt-3 flex items-center gap-2">
               <code className="flex-1 select-all break-all rounded-lg border bg-background p-2.5 font-mono text-xs">
