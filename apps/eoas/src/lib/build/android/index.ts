@@ -1,4 +1,5 @@
 import { AndroidConfig } from '@expo/config-plugins';
+import { BuildPhase } from '@expo/eas-build-job';
 import fg from 'fast-glob';
 import fs from 'fs-extra';
 import path from 'path';
@@ -21,13 +22,13 @@ import {
   selectProfile,
   spawnEnvironment,
 } from '../prepare';
+import { BuildCommand, runBuildCommand } from '../run';
 import { allocateBuildNumber, fetchCredentials } from '../server';
-import { StageCommand, StageRunner, createStageRunner } from '../stage';
 import {
   copyProject,
   copyTemplate,
   evaluateExpoConfig,
-  expoStage,
+  expoCommand,
   validateBundle,
   withTemporaryDirectory,
   writeAppJson,
@@ -50,18 +51,24 @@ interface AndroidBuild extends BuildInputs {
 const MAX_VERSION_CODE = 2100000000;
 
 export async function buildAndroid(project: string, options: AndroidBuildOptions): Promise<string> {
-  return await withBuildLog(project, options.profile, 'Android build', async buildLog => {
-    const build = await prepareBuild(project, options, buildLog);
-    const secrets = secretsToRedact(build.variables, [
-      build.credentials.keystore,
-      build.credentials.keystorePassword,
-      build.credentials.keyPassword,
-    ]);
-    const stages = createStageRunner(buildLog, secrets, options.verbose || Log.isDebug);
-    return await withTemporaryDirectory(buildLog, stages, temporary =>
-      buildInWorkspace(build, temporary, stages, buildLog)
-    );
-  });
+  return await withBuildLog(
+    project,
+    options.profile,
+    'Android build',
+    async buildLog => {
+      const build = await prepareBuild(project, options, buildLog);
+      const secrets = secretsToRedact(build.variables, [
+        build.credentials.keystore,
+        build.credentials.keystorePassword,
+        build.credentials.keyPassword,
+      ]);
+      buildLog.setSecrets(secrets);
+      return await withTemporaryDirectory(buildLog, temporary =>
+        buildInWorkspace(build, temporary, buildLog, secrets)
+      );
+    },
+    options.verbose || Log.isDebug
+  );
 }
 
 async function prepareBuild(
@@ -69,17 +76,30 @@ async function prepareBuild(
   options: AndroidBuildOptions,
   buildLog: BuildLog
 ): Promise<AndroidBuild> {
-  const profile = await selectProfile(project, options);
-  const local = await readEnvFile(project, options.envFile);
-  buildLog.info('Locating local Android tools');
-  const toolEnv = await resolveAndroidTools(
-    project,
-    options,
-    { ...process.env, ...local },
-    buildLog.info
+  const profile = await buildLog.runBuildPhase(
+    BuildPhase.CUSTOM,
+    () => selectProfile(project, options),
+    'Read xprem.json'
   );
-  buildLog.info(`Android SDK: ${toolEnv.ANDROID_HOME}`);
-  buildLog.info(`JAVA_HOME: ${toolEnv.JAVA_HOME}`);
+  const local = await readEnvFile(project, options.envFile);
+  buildLog.setSecrets(secretsToRedact(local, []));
+  const toolEnv = await buildLog.runBuildPhase(
+    BuildPhase.BUILDER_INFO,
+    async phaseLog => {
+      const tools = await resolveAndroidTools(
+        project,
+        options,
+        { ...process.env, ...local },
+        message => {
+          phaseLog.info(message);
+        }
+      );
+      phaseLog.info(`Android SDK: ${tools.ANDROID_HOME}`);
+      phaseLog.info(`JAVA_HOME: ${tools.JAVA_HOME}`);
+      return tools;
+    },
+    'Check local Android tools'
+  );
   const packageRunner = splitPackageRunner(resolvePackageRunner(options.packageRunner, project));
   const nodeEnv = nodeEnvFor(profile.android.mode);
   const endpoint = await resolveBuildEndpoint(
@@ -89,13 +109,21 @@ async function prepareBuild(
     profile.android.applicationId,
     configEnvironment(local, toolEnv, nodeEnv)
   );
-  const variables = await fetchBuildEnvironment(endpoint, profile, local, buildLog);
-  const credentials = await fetchCredentials<AndroidCredentials>(endpoint, 'android', [
-    'keystore',
-    'keystorePassword',
-    'keyAlias',
-    'keyPassword',
-  ]);
+  const variables = await buildLog.runBuildPhase(BuildPhase.SET_UP_BUILD_ENVIRONMENT, phaseLog =>
+    fetchBuildEnvironment(endpoint, profile, local, phaseLog)
+  );
+  buildLog.setSecrets(secretsToRedact(variables, []));
+  const credentials = await buildLog.runBuildPhase(
+    BuildPhase.PREPARE_CREDENTIALS,
+    () =>
+      fetchCredentials<AndroidCredentials>(endpoint, 'android', [
+        'keystore',
+        'keystorePassword',
+        'keyAlias',
+        'keyPassword',
+      ]),
+    'Fetch Android signing credentials'
+  );
   const output = await resolveOutputPath(project, options, profile.android.artifact, buildLog);
   return {
     project,
@@ -115,61 +143,100 @@ async function prepareBuild(
 async function buildInWorkspace(
   build: AndroidBuild,
   temporary: string,
-  stages: StageRunner,
-  buildLog: BuildLog
+  buildLog: BuildLog,
+  secrets: string[]
 ): Promise<string> {
   const { applicationId, developmentClient, mode } = build.profile.android;
-  const working = await copyProject(build.project, temporary);
-  const keystore = await writeKeystore(build.credentials, temporary);
-  if (
-    developmentClient &&
-    !(await fs.pathExists(path.join(working, 'node_modules/expo-dev-client')))
-  ) {
-    throw new Error('This profile requires expo-dev-client to be installed.');
-  }
-  const expo = await evaluateExpoConfig(build, working);
-  await writeAppJson(working, expo);
-  await validateBundle(build, 'android', mode, working, temporary, stages, buildLog);
-  const versionCode = await allocateVersionCode(build.endpoint);
-  await writeAppJson(working, {
+  const working = await buildLog.runBuildPhase(BuildPhase.PREPARE_PROJECT, async () => {
+    const working = await copyProject(build.project, temporary);
+    if (
+      developmentClient &&
+      !(await fs.pathExists(path.join(working, 'node_modules/expo-dev-client')))
+    ) {
+      throw new Error('This profile requires expo-dev-client to be installed.');
+    }
+    return working;
+  });
+  const expo = await buildLog.runBuildPhase(BuildPhase.READ_APP_CONFIG, async () => {
+    const config = await evaluateExpoConfig(build, working);
+    await writeAppJson(working, config);
+    return config;
+  });
+  await buildLog.runBuildPhase(
+    BuildPhase.EAGER_BUNDLE,
+    async phaseLog => {
+      await validateBundle(build, 'android', mode, working, temporary, phaseLog, secrets);
+    },
+    'Validate Android bundle'
+  );
+  const versionCode = await buildLog.runBuildPhase(
+    BuildPhase.CUSTOM,
+    () => allocateVersionCode(build.endpoint),
+    'Allocate build number'
+  );
+  const effectiveExpo = {
     ...expo,
     android: { ...expo.android, package: applicationId, versionCode },
+  };
+  await writeAppJson(working, effectiveExpo);
+  await buildLog.runBuildPhase(BuildPhase.PREBUILD, async phaseLog => {
+    if (await fs.pathExists(path.join(working, 'android'))) {
+      phaseLog.markSkipped();
+      phaseLog.info(
+        'Using maintained Android project. Native settings are retained; package, versionCode, signing and the expo-updates configuration are overridden in the temporary copy.'
+      );
+      // Same as EAS for bare projects: the manifest keeps whatever environment
+      // the last prebuild saw, so channel, URL and runtime are re-synced here.
+      await runBuildCommand(
+        {
+          title: 'Syncing expo-updates configuration',
+          command: process.execPath,
+          args: [
+            resolveExpoUpdatesCli(working),
+            'configuration:syncnative',
+            '--platform',
+            'android',
+            '--workflow',
+            'generic',
+          ],
+          cwd: working,
+          env: build.env,
+        },
+        phaseLog,
+        secrets
+      );
+    } else {
+      await runBuildCommand(
+        expoCommand(build, working, 'Generating Android project', [
+          'prebuild',
+          '--platform',
+          'android',
+          '--no-install',
+        ]),
+        phaseLog,
+        secrets
+      );
+    }
   });
-  if (await fs.pathExists(path.join(working, 'android'))) {
-    buildLog.info(
-      'Using maintained Android project. Native settings are retained; package, versionCode, signing and the expo-updates configuration are overridden in the temporary copy.'
-    );
-    // Same as EAS for bare projects: the manifest keeps whatever environment
-    // the last prebuild saw, so channel, URL and runtime are re-synced here.
-    await stages.run({
-      title: 'Syncing expo-updates configuration',
-      command: process.execPath,
-      args: [
-        resolveExpoUpdatesCli(working),
-        'configuration:syncnative',
-        '--platform',
-        'android',
-        '--workflow',
-        'generic',
-      ],
-      cwd: working,
-      env: build.env,
-    });
-  } else {
-    await stages.run(
-      expoStage(build, working, 'Generating Android project', [
-        'prebuild',
-        '--platform',
-        'android',
-        '--no-install',
-      ])
-    );
-  }
-  await configureAndroidSdk(working, build.toolEnv.ANDROID_HOME);
-  const signing = await configureSigning(build, working, temporary, keystore, versionCode);
-  await prepareGradlew(working);
-  await stages.run(gradleStage(build, working, signing));
-  return await collectArtifact(build, working, versionCode, buildLog);
+  const signing = await buildLog.runBuildPhase(
+    BuildPhase.PREPARE_CREDENTIALS,
+    async () => {
+      const keystore = await writeKeystore(build.credentials, temporary);
+      await configureAndroidSdk(working, build.toolEnv.ANDROID_HOME);
+      const signingFile = await configureSigning(build, working, temporary, keystore, versionCode);
+      await prepareGradlew(working);
+      return signingFile;
+    },
+    'Configure Android signing'
+  );
+  await buildLog.runBuildPhase(
+    BuildPhase.RUN_GRADLEW,
+    phaseLog => runBuildCommand(gradleCommand(build, working, signing), phaseLog, secrets),
+    `Building signed ${build.profile.android.artifact.toUpperCase()}`
+  );
+  return await buildLog.runBuildPhase(BuildPhase.PREPARE_ARTIFACTS, phaseLog =>
+    collectArtifact(build, working, versionCode, phaseLog)
+  );
 }
 
 // The server validated the keystore, alias and passwords when they were stored.
@@ -231,7 +298,7 @@ async function prepareGradlew(working: string): Promise<void> {
   await fs.chmod(gradlew, 0o755);
 }
 
-function gradleStage(build: AndroidBuild, working: string, signing: string): StageCommand {
+function gradleCommand(build: AndroidBuild, working: string, signing: string): BuildCommand {
   const { artifact, mode } = build.profile.android;
   const task = `${artifact === 'aab' ? 'bundle' : 'assemble'}${
     mode === 'release' ? 'Release' : 'Debug'

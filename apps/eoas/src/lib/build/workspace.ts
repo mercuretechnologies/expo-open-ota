@@ -7,8 +7,8 @@ import path from 'path';
 import { checkEnvironment } from './environment';
 import { BuildLog } from './log';
 import { BuildInputs, configEnvironment } from './prepare';
+import { BuildCommand, runBuildCommand } from './run';
 import { BuildPlatform } from './server';
-import { StageCommand, StageRunner } from './stage';
 import { getPrivateExpoConfigAsync } from '../expoConfig';
 import GitClient from '../vcs/clients/git';
 
@@ -18,12 +18,11 @@ const TEMPLATES = path.resolve(__dirname, '../../../templates');
 // when the user interrupts the process.
 export async function withTemporaryDirectory<T>(
   buildLog: BuildLog,
-  stages: StageRunner,
   work: (temporary: string) => Promise<T>
 ): Promise<T> {
   const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'eoas-build-'));
   const interrupt = (): void => {
-    stages.abort();
+    buildLog.abort();
     buildLog.write('Build interrupted.');
     void buildLog.close().finally(() => fs.remove(temporary).finally(() => process.exit(130)));
   };
@@ -101,12 +100,12 @@ export async function writeAppJson(working: string, expo: ExpoConfig): Promise<v
   await fs.writeJson(path.join(working, 'app.json'), { expo: config }, { mode: 0o600 });
 }
 
-export function expoStage(
+export function expoCommand(
   build: BuildInputs,
   working: string,
   title: string,
   args: string[]
-): StageCommand {
+): BuildCommand {
   const [command, prefix] = build.packageRunner;
   return { title, command, args: [...prefix, 'expo', ...args], cwd: working, env: build.env };
 }
@@ -119,8 +118,8 @@ export async function validateBundle(
   mode: 'debug' | 'release',
   working: string,
   temporary: string,
-  stages: StageRunner,
-  buildLog: BuildLog
+  buildLog: BuildLog,
+  secrets: string[]
 ): Promise<void> {
   let report: string | undefined;
   if (build.options.ignoreEnvCheck) {
@@ -135,7 +134,11 @@ export async function validateBundle(
     args.push('--dev');
   }
   try {
-    await stages.run(expoStage(build, working, `Validating ${platform} bundle`, args));
+    await runBuildCommand(
+      expoCommand(build, working, `Validating ${platform} bundle`, args),
+      buildLog,
+      secrets
+    );
   } catch (error) {
     // The transformer writes the environment failure to the report; Metro's
     // own output only says that a transform failed.
