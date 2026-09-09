@@ -35,12 +35,14 @@ describe('Android orchestration', () => {
   let sdk: string;
   const events: string[] = [];
   let temporaryProject: string | undefined;
+  let syncArgs: string[] | undefined;
   let failExport = false;
   beforeEach(async () => {
     vi.clearAllMocks();
     events.length = 0;
     failExport = false;
     temporaryProject = undefined;
+    syncArgs = undefined;
     project = await fs.mkdtemp(path.join(os.tmpdir(), 'eoas-test-project-'));
     sdk = path.join(project, 'sdk');
     vi.mocked(resolveAndroidTools).mockResolvedValue({
@@ -126,6 +128,10 @@ describe('Android orchestration', () => {
               'expo-router is incompatible with react-navigation. store-secret file-secret-value',
           });
         }
+      }
+      if (args?.includes('configuration:syncnative')) {
+        events.push('sync-updates');
+        syncArgs = [...(args ?? [])];
       }
       if (args?.includes('prebuild')) {
         events.push('prebuild');
@@ -217,6 +223,26 @@ describe('Android orchestration', () => {
     const log = await fs.readFile(path.join(project, 'build-artifacts/logs', logs[0]), 'utf8');
     expect(log).toContain('Building signed AAB');
     expect(log).toContain('versionCode 42');
+  });
+  it('syncs the expo-updates configuration into a maintained Android project instead of prebuilding', async () => {
+    await fs.outputFile(path.join(project, 'android/app/build.gradle'), 'android {}');
+    await fs.outputFile(
+      path.join(project, 'android/app/src/main/AndroidManifest.xml'),
+      '<manifest />'
+    );
+    await fs.outputFile(path.join(project, 'android/gradlew'), '#!/bin/sh\nexit 0\n');
+    await buildAndroid(project, {
+      profile: 'production',
+      envFile: 'override.env',
+      serverUrl: 'https://example.com',
+      appId: 'app',
+    });
+    expect(events).not.toContain('prebuild');
+    expect(events.indexOf('sync-updates')).toBeGreaterThan(events.indexOf('allocate'));
+    expect(events.indexOf('sync-updates')).toBeLessThan(events.indexOf('gradle'));
+    expect(syncArgs).toEqual(
+      expect.arrayContaining(['expo-updates', '--platform', 'android', '--workflow', 'generic'])
+    );
   });
   it('does not fetch an environment when the profile selects neither channel nor environment', async () => {
     const file = path.join(project, 'xprem.json');
