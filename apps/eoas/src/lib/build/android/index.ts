@@ -3,6 +3,7 @@ import fg from 'fast-glob';
 import fs from 'fs-extra';
 import path from 'path';
 
+import { logGradleProfile } from './gradleProfile';
 import { AndroidToolsOptions, configureAndroidSdk, resolveAndroidTools } from './tools';
 import Log from '../../log';
 import { resolvePackageRunner, splitPackageRunner } from '../../packageRunner';
@@ -272,6 +273,9 @@ async function buildInWorkspace(
       phaseLog => runBuildCommand(gradleCommand(build, working, signing), phaseLog, secrets),
       `Building signed ${build.profile.android.artifact.toUpperCase()}`
     );
+    await buildLog.runBuildPhase(BuildPhase.GRADLE_BUILD_PROFILE, phaseLog =>
+      logGradleProfile(path.join(working, 'android'), phaseLog)
+    );
     output = await buildLog.runBuildPhase(BuildPhase.PREPARE_ARTIFACTS, async phaseLog => {
       const artifact = await collectArtifact(build, working, versionCode, phaseLog);
       await finishBuildRecord(record, artifact);
@@ -368,7 +372,7 @@ function gradleCommand(build: AndroidBuild, working: string, signing: string): B
   return {
     title: `Building signed ${artifact.toUpperCase()}`,
     command: path.join(working, 'android/gradlew'),
-    args: [`:app:${task}`, '--no-daemon', '--console=plain'],
+    args: [`:app:${task}`, '--no-daemon', '--console=plain', '--profile'],
     cwd: path.join(working, 'android'),
     env: { ...build.env, EOAS_SIGNING_FILE: signing, LC_ALL: 'C.UTF-8' },
   };

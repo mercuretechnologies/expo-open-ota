@@ -41,6 +41,7 @@
     "chalk": "4.1.2",
     "eslint": "^8.57.1",
     "fast-glob": "3.3.2",
+    "fast-xml-parser": "5.11.1",
     "fetch-retry": "^6.0.0",
     "figures": "3.2.0",
     "file-type": "^20.0.0",
