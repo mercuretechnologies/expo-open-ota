@@ -18,6 +18,7 @@ import {
   fetchEnvironment,
   resolveIdentifier,
 } from '../../server';
+import { createLogUploader } from '../../upload';
 import { buildAndroid } from '../index';
 import { resolveAndroidTools } from '../tools';
 
@@ -28,6 +29,7 @@ vi.mock('../../artifacts', () => ({
   uploadBuildArtifact: vi.fn(),
 }));
 vi.mock('../../fingerprint', () => ({ fingerprintAndroidBuild: vi.fn() }));
+vi.mock('../../upload', () => ({ createLogUploader: vi.fn() }));
 
 vi.mock('@expo/spawn-async', () => ({ default: vi.fn() }));
 vi.mock('../../server', async importOriginal => ({
@@ -279,6 +281,7 @@ describe('Android orchestration', () => {
     const log = await fs.readFile(path.join(project, 'build-artifacts/logs', logs[0]), 'utf8');
     expect(log).toContain('[RUN_GRADLEW]');
     expect(log).toContain('versionCode 42');
+    expect(createLogUploader).not.toHaveBeenCalled();
   });
   it('syncs the expo-updates configuration into a maintained Android project instead of prebuilding', async () => {
     await fs.outputFile(path.join(project, 'android/app/build.gradle'), 'android {}');
@@ -320,6 +323,43 @@ describe('Android orchestration', () => {
     ).rejects.toThrow('`expo-updates` package was not found');
     expect(events).not.toContain('sync-updates');
   });
+  it.each([false, true])(
+    'streams only with --stream and flushes final output (failure: %s)',
+    async failure => {
+      const sink = { write: vi.fn(), close: vi.fn().mockResolvedValue(undefined) };
+      vi.mocked(createLogUploader).mockReturnValue(sink);
+      if (failure) {
+        vi.mocked(fingerprintAndroidBuild).mockRejectedValueOnce(new Error('fingerprint failed'));
+      }
+      const build = buildAndroid(project, {
+        profile: 'production',
+        envFile: 'override.env',
+        serverUrl: 'https://example.com',
+        appId: 'app',
+        stream: true,
+      });
+      if (failure) {
+        await expect(build).rejects.toThrow('fingerprint failed');
+      } else {
+        await build;
+      }
+      expect(createLogUploader).toHaveBeenCalledWith(
+        expect.stringContaining('/build/'),
+        'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        expect.arrayContaining([
+          'store-secret',
+          'key-secret',
+          'remote-secret',
+          'file-secret-value',
+        ]),
+        expect.any(Function)
+      );
+      expect(sink.write.mock.calls.map(([event]) => event.msg).join('\n')).toContain(
+        failure ? 'fingerprint failed' : 'versionCode 42'
+      );
+      expect(sink.close).toHaveBeenCalledOnce();
+    }
+  );
   it('does not fetch an environment when the profile selects neither channel nor environment', async () => {
     const file = path.join(project, 'xprem.json');
     const config = await fs.readJson(file);

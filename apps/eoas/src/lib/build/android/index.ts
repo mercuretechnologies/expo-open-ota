@@ -31,6 +31,7 @@ import {
 } from '../prepare';
 import { BuildCommand, runBuildCommand } from '../run';
 import { allocateBuildNumber, fetchCredentials } from '../server';
+import { createLogUploader } from '../upload';
 import {
   copyProject,
   copyTemplate,
@@ -158,6 +159,10 @@ async function buildInWorkspace(
   const startedAt = new Date().toISOString();
   const { applicationId, developmentClient, mode } = build.profile.android;
   const record = await startBuildRecord(build, build.profile.android.artifact, mode, startedAt);
+  if (build.options.stream) {
+    buildLog.streamTo(createLogUploader(build.endpoint, record.id, secrets, buildLog.warn));
+    buildLog.info('Streaming build logs to xprem.');
+  }
   buildLog.info(`Build ID: ${record.id}`);
   let output: string;
   try {

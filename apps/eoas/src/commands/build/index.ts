@@ -32,6 +32,10 @@ export default class Build extends Command {
       description: 'Print every tool output line with its build phase (full logs are always saved)',
       default: false,
     }),
+    stream: Flags.boolean({
+      description: 'Stream build logs to xprem for live viewing in the dashboard',
+      default: false,
+    }),
   };
   static override examples = [
     '<%= config.bin %> build --profile production --channel production --envFile .env.build',
@@ -49,6 +53,7 @@ export default class Build extends Command {
         output: flags.output,
         packageRunner: flags.packageRunner,
         verbose: flags.verbose,
+        stream: flags.stream,
         javaHome: flags.javaHome,
         androidSdk: flags.androidSdk,
       });
