@@ -5,7 +5,7 @@
       "android": {
         "applicationId": "com.xprem.sample",
         "mode": "release",
-        "artifact": "aab"
+        "artifact": "apk"
       },
       "channel": "production"
     }

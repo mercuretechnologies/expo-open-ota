@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
-import { ActivityIndicator, SafeAreaView, StyleSheet } from 'react-native'
+import { ActivityIndicator, StyleSheet } from 'react-native'
+import { SafeAreaView } from 'react-native-safe-area-context'
 import { useObserve } from 'expo-observe'
 
 import { ThemedText } from '@/components/ThemedText'

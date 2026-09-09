@@ -1,5 +1,6 @@
 import { useEffect } from 'react'
-import { Button, SafeAreaView, StyleSheet } from 'react-native'
+import { Button, StyleSheet } from 'react-native'
+import { SafeAreaView } from 'react-native-safe-area-context'
 import { useObserve } from 'expo-observe'
 
 import { ThemedText } from '@/components/ThemedText'
