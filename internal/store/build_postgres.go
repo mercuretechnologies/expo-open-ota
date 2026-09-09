@@ -40,15 +40,18 @@ func buildRecord(row pgdb.Build) (*types.BuildRecord, error) {
 // Timing lives in its own columns, so the JSON document only keeps the rest.
 func buildMetadataJSON(metadata types.BuildMetadata) ([]byte, error) {
 	metadata.StartedAt, metadata.FinishedAt, metadata.DurationMs = time.Time{}, time.Time{}, 0
+	// StartedAt, FinishedAt & DurationMS  has omitEmpty attributes, so setting them to the previous value = removing them from the json
+	// btw metadata is not a pointer so it's a copy
 	return json.Marshal(metadata)
 }
 
 func buildTiming(metadata types.BuildMetadata) (pgtype.Timestamptz, *int64) {
-	if metadata.FinishedAt.IsZero() {
-		return pgtype.Timestamptz{}, nil
+	finishedAt := pgtype.Timestamptz{Time: metadata.FinishedAt, Valid: !metadata.FinishedAt.IsZero()}
+	if !finishedAt.Valid && metadata.DurationMs == 0 {
+		return finishedAt, nil
 	}
 	duration := metadata.DurationMs
-	return pgtype.Timestamptz{Time: metadata.FinishedAt, Valid: true}, &duration
+	return finishedAt, &duration
 }
 
 func buildNotFound(err error) error {
@@ -65,7 +68,7 @@ func (s *PostgresBuildStore) Create(ctx context.Context, record types.BuildRecor
 		return nil, false, err
 	}
 	finishedAt, duration := buildTiming(record.Metadata)
-	row, err := s.engine.Queries.InsertBuild(ctx, pgdb.InsertBuildParams{ID: ToPgUUID(record.ID), AppID: ToPgUUID(record.AppID), AppIdentifierID: ToPgUUID(record.AppIdentifierID), Platform: record.Platform, ApplicationID: record.ApplicationID, Status: record.Status, ArtifactType: record.ArtifactType, Size: record.Size, Sha256: record.SHA256, ArtifactKey: record.ArtifactKey, Metadata: metadata, ActorType: record.ActorType, ActorID: record.ActorID, ActorDisplay: record.ActorDisplay, StartedAt: pgtype.Timestamptz{Time: record.Metadata.StartedAt, Valid: true}, FinishedAt: finishedAt, DurationMs: duration})
+	row, err := s.engine.Queries.InsertBuild(ctx, pgdb.InsertBuildParams{ID: ToPgUUID(record.ID), AppID: ToPgUUID(record.AppID), AppIdentifierID: ToPgUUID(record.AppIdentifierID), Platform: record.Platform, ApplicationID: record.ApplicationID, Status: record.Status, ArtifactType: record.ArtifactType, Size: record.Size, Sha256: record.SHA256, ArtifactKey: record.ArtifactKey, Metadata: metadata, ActorType: record.ActorType, ActorID: record.ActorID, ActorDisplay: record.ActorDisplay, StartedAt: pgtype.Timestamptz{Time: record.Metadata.StartedAt, Valid: !record.Metadata.StartedAt.IsZero()}, FinishedAt: finishedAt, DurationMs: duration})
 	if errors.Is(err, pgx.ErrNoRows) {
 		existing, err := s.Get(ctx, record.AppID, record.ID)
 		return existing, false, err

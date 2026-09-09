@@ -123,26 +123,26 @@ type Branch struct {
 }
 
 type Build struct {
-	ID              pgtype.UUID        `json:"id"`
-	AppID           pgtype.UUID        `json:"app_id"`
-	AppIdentifierID pgtype.UUID        `json:"app_identifier_id"`
-	Platform        types.Platform     `json:"platform"`
-	ApplicationID   string             `json:"application_id"`
-	Status          types.BuildStatus  `json:"status"`
-	ArtifactType    string             `json:"artifact_type"`
-	Size            int64              `json:"size"`
-	Sha256          string             `json:"sha256"`
-	ArtifactKey     string             `json:"artifact_key"`
-	Metadata        []byte             `json:"metadata"`
-	ActorType       string             `json:"actor_type"`
-	ActorID         string             `json:"actor_id"`
-	ActorDisplay    string             `json:"actor_display"`
-	StartedAt       pgtype.Timestamptz `json:"started_at"`
-	FinishedAt      pgtype.Timestamptz `json:"finished_at"`
-	DurationMs      *int64             `json:"duration_ms"`
-	CreatedAt       pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
-	ReadyAt         pgtype.Timestamptz `json:"ready_at"`
+	ID              pgtype.UUID             `json:"id"`
+	AppID           pgtype.UUID             `json:"app_id"`
+	AppIdentifierID pgtype.UUID             `json:"app_identifier_id"`
+	Platform        types.Platform          `json:"platform"`
+	ApplicationID   string                  `json:"application_id"`
+	Status          types.BuildStatus       `json:"status"`
+	ArtifactType    types.BuildArtifactType `json:"artifact_type"`
+	Size            int64                   `json:"size"`
+	Sha256          string                  `json:"sha256"`
+	ArtifactKey     string                  `json:"artifact_key"`
+	Metadata        []byte                  `json:"metadata"`
+	ActorType       string                  `json:"actor_type"`
+	ActorID         string                  `json:"actor_id"`
+	ActorDisplay    string                  `json:"actor_display"`
+	StartedAt       pgtype.Timestamptz      `json:"started_at"`
+	FinishedAt      pgtype.Timestamptz      `json:"finished_at"`
+	DurationMs      *int64                  `json:"duration_ms"`
+	CreatedAt       pgtype.Timestamptz      `json:"created_at"`
+	UpdatedAt       pgtype.Timestamptz      `json:"updated_at"`
+	ReadyAt         pgtype.Timestamptz      `json:"ready_at"`
 }
 
 type BundlePatch struct {

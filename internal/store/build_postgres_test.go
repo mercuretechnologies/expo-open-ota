@@ -55,7 +55,7 @@ func setupBuildStore(t *testing.T) *buildStoreFixture {
 
 func (f *buildStoreFixture) record(id string, status types.BuildStatus) types.BuildRecord {
 	return types.BuildRecord{
-		ID: id, AppID: f.app, AppIdentifierID: f.identifier, Platform: types.PlatformAndroid, ApplicationID: "com.example.builds", Status: status, ArtifactType: "apk",
+		ID: id, AppID: f.app, AppIdentifierID: f.identifier, Platform: types.PlatformAndroid, ApplicationID: "com.example.builds", Status: status, ArtifactType: types.BuildArtifactAPK,
 		ArtifactKey: "builds/android/" + f.identifier + "/" + id + ".apk", ActorType: "api_key", ActorID: "7", ActorDisplay: "ci",
 		Metadata: types.BuildMetadata{Profile: "production", Mode: "release", Channel: "stable", CLIVersion: "1.0.0", GitCommit: "abc", GitDirty: true, StartedAt: time.Date(2026, 9, 9, 10, 0, 0, 0, time.UTC)},
 	}

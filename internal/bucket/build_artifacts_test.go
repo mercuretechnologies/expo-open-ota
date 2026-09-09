@@ -19,7 +19,7 @@ const (
 )
 
 func testArtifact() BuildArtifact {
-	return BuildArtifact{Platform: types.PlatformAndroid, IdentifierID: testIdentifierID, BuildID: testBuildID, Format: "apk"}
+	return BuildArtifact{IdentifierID: testIdentifierID, BuildID: testBuildID, Type: types.BuildArtifactAPK}
 }
 
 func TestBuildObjectKeysAreIsolatedAndValidated(t *testing.T) {
@@ -30,13 +30,17 @@ func TestBuildObjectKeysAreIsolatedAndValidated(t *testing.T) {
 	staging, err := ref.Key(true)
 	require.NoError(t, err)
 	require.Equal(t, "builds/android/"+testIdentifierID+"/.uploads/"+testBuildID+".apk", staging)
+	ios := ref
+	ios.Type = types.BuildArtifactIPA
+	key, err = ios.Key(false)
+	require.NoError(t, err)
+	require.Equal(t, "builds/ios/"+testIdentifierID+"/"+testBuildID+".ipa", key)
 
 	for name, bad := range map[string]BuildArtifact{
-		"traversal identifier": {Platform: types.PlatformAndroid, IdentifierID: "../escape", BuildID: testBuildID, Format: "apk"},
-		"uppercase uuid":       {Platform: types.PlatformAndroid, IdentifierID: strings.ToUpper(testIdentifierID), BuildID: testBuildID, Format: "apk"},
-		"ios":                  {Platform: types.PlatformIOS, IdentifierID: testIdentifierID, BuildID: testBuildID, Format: "apk"},
-		"format":               {Platform: types.PlatformAndroid, IdentifierID: testIdentifierID, BuildID: testBuildID, Format: "apk/../x"},
-		"empty build":          {Platform: types.PlatformAndroid, IdentifierID: testIdentifierID, Format: "aab"},
+		"traversal identifier": {IdentifierID: "../escape", BuildID: testBuildID, Type: types.BuildArtifactAPK},
+		"uppercase uuid":       {IdentifierID: strings.ToUpper(testIdentifierID), BuildID: testBuildID, Type: types.BuildArtifactAPK},
+		"unknown type":         {IdentifierID: testIdentifierID, BuildID: testBuildID, Type: "apk/../x"},
+		"empty build":          {IdentifierID: testIdentifierID, Type: types.BuildArtifactAAB},
 	} {
 		_, err := bad.Key(false)
 		require.Error(t, err, name)

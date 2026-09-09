@@ -40,10 +40,9 @@ const (
 var ErrBuildNamespaceConflict = errors.New("the builds/ storage prefix holds legacy OTA data; move that app's data out of builds/ before uploading build artifacts")
 
 type BuildArtifact struct {
-	Platform     types.Platform
 	IdentifierID string
 	BuildID      string
-	Format       string
+	Type         types.BuildArtifactType
 }
 
 func canonicalUUID(value string) bool {
@@ -51,20 +50,21 @@ func canonicalUUID(value string) bool {
 	return err == nil && parsed.String() == value
 }
 
-// Key is builds/{platform}/{identifierId}/{buildId}.{format}, with an
+// Key is builds/{platform}/{identifierId}/{buildId}.{type}, with an
 // .uploads/ segment before the file name for the staging copy.
 func (r BuildArtifact) Key(staging bool) (string, error) {
-	if r.Platform != types.PlatformAndroid || (r.Format != "apk" && r.Format != "aab") {
-		return "", fmt.Errorf("unsupported build artifact")
+	platform, err := r.Type.Platform()
+	if err != nil {
+		return "", err
 	}
 	if !canonicalUUID(r.IdentifierID) || !canonicalUUID(r.BuildID) {
 		return "", fmt.Errorf("invalid build artifact identifier")
 	}
-	folder := BuildsPrefix + "/" + string(r.Platform) + "/" + r.IdentifierID + "/"
+	folder := BuildsPrefix + "/" + string(platform) + "/" + r.IdentifierID + "/"
 	if staging {
 		folder += buildStagingDir + "/"
 	}
-	return folder + r.BuildID + "." + r.Format, nil
+	return folder + r.BuildID + "." + string(r.Type), nil
 }
 
 type BuildArtifactStorage struct {
@@ -252,19 +252,27 @@ func (s *BuildArtifactStorage) CheckNamespace(ctx context.Context) error {
 		return fmt.Errorf("probe build storage: %w", err)
 	}
 	for _, name := range platforms {
-		if name != string(types.PlatformAndroid) {
+		if _, err := types.ParsePlatform(name); err != nil {
 			return fmt.Errorf("%w: found %s/%s/", ErrBuildNamespaceConflict, BuildsPrefix, name)
 		}
+		if err := s.checkPlatformNamespace(ctx, BuildsPrefix+"/"+name+"/"); err != nil {
+			return err
+		}
 	}
-	identifiers, err := s.listChildPrefixes(ctx, BuildsPrefix+"/"+string(types.PlatformAndroid)+"/")
+	s.namespaceOK.Store(true)
+	return nil
+}
+
+func (s *BuildArtifactStorage) checkPlatformNamespace(ctx context.Context, platformFolder string) error {
+	identifiers, err := s.listChildPrefixes(ctx, platformFolder)
 	if err != nil {
 		return fmt.Errorf("probe build storage: %w", err)
 	}
 	for _, name := range identifiers {
 		if !canonicalUUID(name) {
-			return fmt.Errorf("%w: found %s/%s/%s/", ErrBuildNamespaceConflict, BuildsPrefix, types.PlatformAndroid, name)
+			return fmt.Errorf("%w: found %s%s/", ErrBuildNamespaceConflict, platformFolder, name)
 		}
-		folder := BuildsPrefix + "/" + string(types.PlatformAndroid) + "/" + name + "/"
+		folder := platformFolder + name + "/"
 		children, err := s.listChildPrefixes(ctx, folder)
 		if err != nil {
 			return fmt.Errorf("probe build storage: %w", err)
@@ -275,7 +283,6 @@ func (s *BuildArtifactStorage) CheckNamespace(ctx context.Context) error {
 			}
 		}
 	}
-	s.namespaceOK.Store(true)
 	return nil
 }
 

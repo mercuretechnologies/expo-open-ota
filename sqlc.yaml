@@ -33,6 +33,10 @@ sql:
             go_type:
               import: "xprem/internal/types"
               type: "Platform"
+          - column: "builds.artifact_type"
+            go_type:
+              import: "xprem/internal/types"
+              type: "BuildArtifactType"
           - column: "updates.platform"
             go_type:
               import: "xprem/internal/types"
