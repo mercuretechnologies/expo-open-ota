@@ -224,7 +224,7 @@ func (h *HealthHistory) deliverOutboxBatch(ctx context.Context) (int, error) {
 			row.OccurredAt.Time.UTC(),
 			row.Branch,
 			row.RuntimeVersion,
-			row.Platform,
+			string(row.Platform),
 			row.OsName,
 			row.OsVersion,
 			row.DeviceModel,
