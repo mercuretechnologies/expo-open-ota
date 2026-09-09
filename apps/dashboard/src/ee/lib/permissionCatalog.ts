@@ -144,6 +144,12 @@ export const PERMISSION_GROUPS: PermissionGroup[] = [
         label: 'Download builds',
         description: 'Download the signed APK or AAB of a ready build.',
       },
+      {
+        value: 'build:share',
+        label: 'Share builds',
+        description:
+          'Create and revoke install links for an APK. Anyone holding a link can install the build until it expires or is revoked.',
+      },
     ],
   },
   {

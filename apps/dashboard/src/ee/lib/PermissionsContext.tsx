@@ -28,6 +28,7 @@ export type Permission =
   | 'credentials:manage'
   | 'build:read'
   | 'build:download'
+  | 'build:share'
   | 'env:read'
   | 'env:manage'
   | 'identity:manage'

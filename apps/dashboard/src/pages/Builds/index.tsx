@@ -71,7 +71,7 @@ export const Builds = () => {
             )}
           </span>
         }
-        description="Local builds of your app. Open one to view its metadata or download it."
+        description="Local builds of your app. Open one to download it or to share an install link."
       />
 
       <BuildsTable builds={builds} loading={buildsQuery.isLoading} />

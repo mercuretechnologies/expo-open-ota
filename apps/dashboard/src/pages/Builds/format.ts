@@ -1,4 +1,4 @@
-import { BuildRecord, BuildStatus } from '@/lib/api';
+import { BuildRecord, BuildShareRecord, BuildStatus } from '@/lib/api';
 
 export const formatBytes = (bytes: number) => {
   if (!Number.isFinite(bytes) || bytes < 0) return '—';
@@ -37,3 +37,18 @@ export const buildVersionLabel = (build: BuildRecord) => {
 
 export const buildFileName = (build: BuildRecord) =>
   `${build.applicationId}-${build.metadata.buildNumber}.${build.artifactType}`;
+
+// Install links exist for APKs only: an AAB is a store bundle, not something a
+// phone can install.
+export const canShareBuild = (build: BuildRecord) =>
+  build.status === 'ready' && build.artifactType === 'apk';
+
+export type ShareState = 'active' | 'expired' | 'revoked';
+
+export const shareState = (share: BuildShareRecord, now = Date.now()): ShareState => {
+  if (share.revokedAt) return 'revoked';
+  return new Date(share.expiresAt).getTime() <= now ? 'expired' : 'active';
+};
+
+export const DEFAULT_SHARE_HOURS = 24;
+export const MAX_SHARE_HOURS = 720;

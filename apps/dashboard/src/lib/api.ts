@@ -271,6 +271,20 @@ export type BuildsPage = {
   count: number;
 };
 
+// An install link on a build. The bearer URL is returned once, on creation,
+// and never comes back down: a listed share is only known by its expiry.
+export type BuildShareRecord = {
+  id: string;
+  createdAt: string;
+  expiresAt: string;
+  revokedAt?: string;
+};
+
+export type CreateBuildShareResponse = {
+  share: BuildShareRecord;
+  url: string;
+};
+
 export type BranchRecord = {
   branchName: string;
   branchId: string;
@@ -1701,6 +1715,33 @@ export class ApiClient {
       `${this.appScope()}/builds/${encodeURIComponent(buildId)}/download`,
       { method: 'GET' },
       'blob'
+    );
+  }
+
+  public async getBuildShares(buildId: string) {
+    return this.request<{ shares: BuildShareRecord[] }>(
+      `${this.appScope()}/builds/${encodeURIComponent(buildId)}/shares`,
+      { method: 'GET' }
+    );
+  }
+
+  // The only call that returns the install URL; there is no way to read it
+  // back later.
+  public async createBuildShare(buildId: string, expiresInHours: number) {
+    return this.request<CreateBuildShareResponse>(
+      `${this.appScope()}/builds/${encodeURIComponent(buildId)}/shares`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ expiresInHours }),
+      }
+    );
+  }
+
+  public async revokeBuildShare(buildId: string, shareId: string) {
+    return this.request<void>(
+      `${this.appScope()}/builds/${encodeURIComponent(buildId)}/shares/${encodeURIComponent(shareId)}`,
+      { method: 'DELETE' }
     );
   }
 
