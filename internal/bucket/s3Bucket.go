@@ -744,3 +744,107 @@ func (b *S3Bucket) RemoveMigrationFromHistory(migrationId string) error {
 
 	return nil
 }
+
+func (b *S3Bucket) buildArtifactKey(ref BuildArtifact, staging bool) (string, error) {
+	key, err := ref.Key(staging)
+	if err != nil {
+		return "", err
+	}
+	return b.prefixedKey(key), nil
+}
+
+func (b *S3Bucket) GetBuildArtifact(ctx context.Context, ref BuildArtifact, staging bool) (*types.BucketFile, error) {
+	key, err := b.buildArtifactKey(ref, staging)
+	if err != nil {
+		return nil, err
+	}
+	return b.getObject(ctx, key)
+}
+
+func (b *S3Bucket) PutBuildArtifact(ctx context.Context, ref BuildArtifact, staging bool, body io.Reader) error {
+	key, err := b.buildArtifactKey(ref, staging)
+	if err != nil {
+		return err
+	}
+	return b.putObject(ctx, key, body)
+}
+
+func (b *S3Bucket) DeleteBuildArtifact(ctx context.Context, ref BuildArtifact, staging bool) error {
+	key, err := b.buildArtifactKey(ref, staging)
+	if err != nil {
+		return err
+	}
+	return b.deleteObject(ctx, key)
+}
+
+// deleteObject is a no-op when the key does not exist.
+func (b *S3Bucket) deleteObject(ctx context.Context, key string) error {
+	if b.BucketName == "" {
+		return errors.New("BucketName not set")
+	}
+	s3Client, err := aws.GetS3Client()
+	if err != nil {
+		return err
+	}
+	_, err = s3Client.DeleteObject(ctx, &s3.DeleteObjectInput{
+		Bucket: awssdk.String(b.BucketName),
+		Key:    awssdk.String(key),
+	})
+	if err != nil {
+		return fmt.Errorf("DeleteObject error: %w", err)
+	}
+	return nil
+}
+
+func (b *S3Bucket) RequestBuildArtifactUploadURL(ctx context.Context, ref BuildArtifact) (string, error) {
+	key, err := b.buildArtifactKey(ref, true)
+	if err != nil {
+		return "", err
+	}
+	if b.BucketName == "" {
+		return "", errors.New("BucketName not set")
+	}
+	s3Client, err := aws.GetS3Client()
+	if err != nil {
+		return "", fmt.Errorf("error getting S3 client: %w", err)
+	}
+	presignResult, err := s3.NewPresignClient(s3Client).PresignPutObject(ctx, &s3.PutObjectInput{
+		Bucket: awssdk.String(b.BucketName),
+		Key:    awssdk.String(key),
+	}, func(opt *s3.PresignOptions) {
+		opt.Expires = buildUploadExpiry
+	})
+	if err != nil {
+		return "", fmt.Errorf("error presigning URL: %w", err)
+	}
+	return presignResult.URL, nil
+}
+
+// ListBuildPrefixes returns the immediate child directories of a
+// prefix-relative folder, at most buildProbeMaxPrefix of them.
+func (b *S3Bucket) ListBuildPrefixes(ctx context.Context, folder string) ([]string, error) {
+	if b.BucketName == "" {
+		return nil, errors.New("BucketName not set")
+	}
+	s3Client, err := aws.GetS3Client()
+	if err != nil {
+		return nil, err
+	}
+	full := b.prefixedKey(folder)
+	paginator := s3.NewListObjectsV2Paginator(s3Client, &s3.ListObjectsV2Input{
+		Bucket:    awssdk.String(b.BucketName),
+		Prefix:    awssdk.String(full),
+		Delimiter: awssdk.String("/"),
+	})
+	var names []string
+	for paginator.HasMorePages() && len(names) < buildProbeMaxPrefix {
+		page, err := paginator.NextPage(ctx)
+		if err != nil {
+			return nil, err
+		}
+		for _, common := range page.CommonPrefixes {
+			names = append(names, strings.TrimSuffix(strings.TrimPrefix(*common.Prefix, full), "/"))
+		}
+	}
+	return names, nil
+}

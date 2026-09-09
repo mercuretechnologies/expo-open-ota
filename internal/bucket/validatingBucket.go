@@ -6,6 +6,7 @@ import (
 	"github.com/google/uuid"
 	"io"
 	"slices"
+	"sync/atomic"
 	"xprem/internal/types"
 )
 
@@ -16,7 +17,8 @@ import (
 // GetBucket(); concrete backends still assume inputs are clean but this layer
 // guarantees that assumption even if a handler forgets to sanitize.
 type validatingBucket struct {
-	Inner Bucket
+	Inner            Bucket
+	buildNamespaceOK atomic.Bool
 }
 
 func validateBranch(branch string) error {
@@ -264,4 +266,51 @@ func (v *validatingBucket) RequestBlobUploadURL(appId, hash, branch string) (str
 		return "", err
 	}
 	return v.Inner.RequestBlobUploadURL(appId, hash, branch)
+}
+
+// The build artifact methods delegate as-is: BuildArtifact.Key validates the
+// ref inside every backend.
+func (v *validatingBucket) GetBuildArtifact(ctx context.Context, ref BuildArtifact, staging bool) (*types.BucketFile, error) {
+	return v.Inner.GetBuildArtifact(ctx, ref, staging)
+}
+
+func (v *validatingBucket) PutBuildArtifact(ctx context.Context, ref BuildArtifact, staging bool, body io.Reader) error {
+	if _, err := ref.Key(staging); err != nil {
+		return err
+	}
+	if err := v.checkBuildNamespace(ctx); err != nil {
+		return err
+	}
+	return v.Inner.PutBuildArtifact(ctx, ref, staging, body)
+}
+
+func (v *validatingBucket) DeleteBuildArtifact(ctx context.Context, ref BuildArtifact, staging bool) error {
+	return v.Inner.DeleteBuildArtifact(ctx, ref, staging)
+}
+
+func (v *validatingBucket) RequestBuildArtifactUploadURL(ctx context.Context, ref BuildArtifact) (string, error) {
+	if _, err := ref.Key(true); err != nil {
+		return "", err
+	}
+	if err := v.checkBuildNamespace(ctx); err != nil {
+		return "", err
+	}
+	return v.Inner.RequestBuildArtifactUploadURL(ctx, ref)
+}
+
+func (v *validatingBucket) ListBuildPrefixes(ctx context.Context, folder string) ([]string, error) {
+	return v.Inner.ListBuildPrefixes(ctx, folder)
+}
+
+// checkBuildNamespace runs before the first build write; a passing probe is
+// remembered for the life of this instance.
+func (v *validatingBucket) checkBuildNamespace(ctx context.Context) error {
+	if v.buildNamespaceOK.Load() {
+		return nil
+	}
+	if err := checkBuildNamespace(ctx, v.Inner); err != nil {
+		return err
+	}
+	v.buildNamespaceOK.Store(true)
+	return nil
 }

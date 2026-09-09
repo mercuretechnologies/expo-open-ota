@@ -220,6 +220,11 @@ type Bucket interface {
 	GetBSDiff(ctx context.Context, appId, branch, targetUpdateUUID, sourceUpdateUUID string) (*types.BucketFile, error)
 	PutBSDiff(ctx context.Context, appId, branch, targetUpdateUUID, sourceUpdateUUID string, body io.Reader) error
 	DeleteBSDiffs(ctx context.Context, appId, branch string) error
+	GetBuildArtifact(ctx context.Context, ref BuildArtifact, staging bool) (*types.BucketFile, error)
+	PutBuildArtifact(ctx context.Context, ref BuildArtifact, staging bool, body io.Reader) error
+	DeleteBuildArtifact(ctx context.Context, ref BuildArtifact, staging bool) error
+	RequestBuildArtifactUploadURL(ctx context.Context, ref BuildArtifact) (string, error)
+	ListBuildPrefixes(ctx context.Context, folder string) ([]string, error)
 }
 
 type BucketType string
@@ -325,8 +330,8 @@ type UploadFile struct {
 	InUpdateFolder bool
 }
 
-// uploadHeaders are the headers the uploader must send verbatim on its PUT.
-func uploadHeaders(bucket Bucket) map[string]string {
+// UploadHeaders are the headers the uploader must send verbatim on its PUT.
+func UploadHeaders(bucket Bucket) map[string]string {
 	if _, ok := UnwrapBucket(bucket).(*AzureBucket); ok {
 		return map[string]string{"x-ms-blob-type": "BlockBlob"}
 	}
@@ -338,7 +343,7 @@ func uploadHeaders(bucket Bucket) map[string]string {
 // folder for the rest.
 func RequestUploadUrlsForFileUpdates(appId, branch, runtimeVersion, updateId string, files []UploadFile) ([]FileUploadRequest, error) {
 	resolvedBucket := GetBucket()
-	headers := uploadHeaders(resolvedBucket)
+	headers := UploadHeaders(resolvedBucket)
 
 	// Several files may name the same blob; presign it once.
 	toSign := make([]UploadFile, 0, len(files))

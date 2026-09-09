@@ -590,3 +590,88 @@ func (b *GCSBucket) RemoveMigrationFromHistory(migrationId string) error {
 	}
 	return w.Close()
 }
+
+func (b *GCSBucket) buildArtifactKey(ref BuildArtifact, staging bool) (string, error) {
+	key, err := ref.Key(staging)
+	if err != nil {
+		return "", err
+	}
+	return b.prefixedKey(key), nil
+}
+
+func (b *GCSBucket) GetBuildArtifact(ctx context.Context, ref BuildArtifact, staging bool) (*types.BucketFile, error) {
+	key, err := b.buildArtifactKey(ref, staging)
+	if err != nil {
+		return nil, err
+	}
+	return b.getObject(ctx, key)
+}
+
+func (b *GCSBucket) PutBuildArtifact(ctx context.Context, ref BuildArtifact, staging bool, body io.Reader) error {
+	key, err := b.buildArtifactKey(ref, staging)
+	if err != nil {
+		return err
+	}
+	return b.putObject(ctx, key, body)
+}
+
+func (b *GCSBucket) DeleteBuildArtifact(ctx context.Context, ref BuildArtifact, staging bool) error {
+	key, err := b.buildArtifactKey(ref, staging)
+	if err != nil {
+		return err
+	}
+	return b.deleteObject(ctx, key)
+}
+
+// deleteObject is a no-op when the key does not exist.
+func (b *GCSBucket) deleteObject(ctx context.Context, key string) error {
+	bh, err := b.bucketHandle(ctx)
+	if err != nil {
+		return err
+	}
+	err = bh.Object(key).Delete(ctx)
+	if errors.Is(err, storage.ErrObjectNotExist) {
+		return nil
+	}
+	return err
+}
+
+func (b *GCSBucket) RequestBuildArtifactUploadURL(_ context.Context, ref BuildArtifact) (string, error) {
+	key, err := b.buildArtifactKey(ref, true)
+	if err != nil {
+		return "", err
+	}
+	if b.BucketName == "" {
+		return "", errors.New("BucketName not set")
+	}
+	url, err := gcp.SignedURL(b.BucketName, key, "PUT", "", buildUploadExpiry)
+	if err != nil {
+		return "", fmt.Errorf("error generating signed URL: %w", err)
+	}
+	return url, nil
+}
+
+// ListBuildPrefixes returns the immediate child directories of a
+// prefix-relative folder, at most buildProbeMaxPrefix of them.
+func (b *GCSBucket) ListBuildPrefixes(ctx context.Context, folder string) ([]string, error) {
+	bh, err := b.bucketHandle(ctx)
+	if err != nil {
+		return nil, err
+	}
+	full := b.prefixedKey(folder)
+	it := bh.Objects(ctx, &storage.Query{Prefix: full, Delimiter: "/"})
+	var names []string
+	for len(names) < buildProbeMaxPrefix {
+		attrs, err := it.Next()
+		if err == iterator.Done {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+		if attrs.Prefix != "" {
+			names = append(names, strings.TrimSuffix(strings.TrimPrefix(attrs.Prefix, full), "/"))
+		}
+	}
+	return names, nil
+}

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"xprem/config"
+	"xprem/internal/bucket"
 	"xprem/internal/crypto"
 	"xprem/internal/rollout"
 	"xprem/internal/store"
@@ -1331,4 +1332,24 @@ func TestResolveAssetUpdateTiers(t *testing.T) {
 		require.NotNil(t, servedUpdate)
 		assert.Equal(t, "100", servedUpdate.UpdateId)
 	})
+}
+
+func (fakeRolloutBucket) GetBuildArtifact(context.Context, bucket.BuildArtifact, bool) (*types.BucketFile, error) {
+	return nil, nil
+}
+
+func (fakeRolloutBucket) PutBuildArtifact(context.Context, bucket.BuildArtifact, bool, io.Reader) error {
+	return nil
+}
+
+func (fakeRolloutBucket) DeleteBuildArtifact(context.Context, bucket.BuildArtifact, bool) error {
+	return nil
+}
+
+func (fakeRolloutBucket) RequestBuildArtifactUploadURL(context.Context, bucket.BuildArtifact) (string, error) {
+	return "", nil
+}
+
+func (fakeRolloutBucket) ListBuildPrefixes(context.Context, string) ([]string, error) {
+	return nil, nil
 }

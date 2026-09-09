@@ -367,3 +367,24 @@ func TestValidatingBucketRejectsTheReservedBranchName(t *testing.T) {
 	_, err = b.RequestUploadUrlForFileUpdate("app-1", casDir, "1.0", "100", "metadata.json")
 	assert.ErrorContains(t, err, "reserved")
 }
+
+func (s *stubBucket) GetBuildArtifact(context.Context, BuildArtifact, bool) (*types.BucketFile, error) {
+	s.mark()
+	return nil, nil
+}
+func (s *stubBucket) PutBuildArtifact(context.Context, BuildArtifact, bool, io.Reader) error {
+	s.mark()
+	return nil
+}
+func (s *stubBucket) DeleteBuildArtifact(context.Context, BuildArtifact, bool) error {
+	s.mark()
+	return nil
+}
+func (s *stubBucket) RequestBuildArtifactUploadURL(context.Context, BuildArtifact) (string, error) {
+	s.mark()
+	return "", nil
+}
+func (s *stubBucket) ListBuildPrefixes(context.Context, string) ([]string, error) {
+	s.mark()
+	return nil, nil
+}

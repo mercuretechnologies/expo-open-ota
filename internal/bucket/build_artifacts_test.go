@@ -2,7 +2,6 @@ package bucket
 
 import (
 	"context"
-	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -20,6 +19,10 @@ const (
 
 func testArtifact() BuildArtifact {
 	return BuildArtifact{IdentifierID: testIdentifierID, BuildID: testBuildID, Type: types.BuildArtifactAPK}
+}
+
+func testBuildBucket(base, keyPrefix string) *validatingBucket {
+	return &validatingBucket{Inner: &LocalBucket{BasePath: base, KeyPrefix: keyPrefix}}
 }
 
 func TestBuildObjectKeysAreIsolatedAndValidated(t *testing.T) {
@@ -48,12 +51,12 @@ func TestBuildObjectKeysAreIsolatedAndValidated(t *testing.T) {
 }
 
 func TestLocalBuildStagingCannotOverwritePublishedArtifact(t *testing.T) {
-	storage := NewBuildArtifactStorage(&LocalBucket{BasePath: t.TempDir(), KeyPrefix: "tenant/"})
+	b := testBuildBucket(t.TempDir(), "tenant/")
 	ref := testArtifact()
 	ctx := context.Background()
-	require.NoError(t, storage.Put(ctx, ref, false, strings.NewReader("verified")))
-	require.NoError(t, storage.Put(ctx, ref, true, strings.NewReader("late upload")))
-	file, err := storage.Get(ctx, ref, false)
+	require.NoError(t, b.PutBuildArtifact(ctx, ref, false, strings.NewReader("verified")))
+	require.NoError(t, b.PutBuildArtifact(ctx, ref, true, strings.NewReader("late upload")))
+	file, err := b.GetBuildArtifact(ctx, ref, false)
 	require.NoError(t, err)
 	defer file.Reader.Close()
 	contents, err := io.ReadAll(file.Reader)
@@ -63,9 +66,8 @@ func TestLocalBuildStagingCannotOverwritePublishedArtifact(t *testing.T) {
 
 func TestLocalBuildStorageHonoursKeyPrefixAndLeavesNoTempFiles(t *testing.T) {
 	base := t.TempDir()
-	storage := NewBuildArtifactStorage(&validatingBucket{Inner: &LocalBucket{BasePath: base, KeyPrefix: "tenant/"}})
-	ref := testArtifact()
-	require.NoError(t, storage.Put(context.Background(), ref, true, strings.NewReader("bytes")))
+	b := testBuildBucket(base, "tenant/")
+	require.NoError(t, b.PutBuildArtifact(context.Background(), testArtifact(), true, strings.NewReader("bytes")))
 	dir := filepath.Join(base, "tenant", "builds", "android", testIdentifierID, ".uploads")
 	entries, err := os.ReadDir(dir)
 	require.NoError(t, err)
@@ -74,30 +76,29 @@ func TestLocalBuildStorageHonoursKeyPrefixAndLeavesNoTempFiles(t *testing.T) {
 }
 
 func TestLocalBuildGetReturnsNilWhenAbsent(t *testing.T) {
-	storage := NewBuildArtifactStorage(&LocalBucket{BasePath: t.TempDir()})
-	file, err := storage.Get(context.Background(), testArtifact(), false)
+	file, err := testBuildBucket(t.TempDir(), "").GetBuildArtifact(context.Background(), testArtifact(), false)
 	require.NoError(t, err)
 	require.Nil(t, file)
 }
 
 func TestLocalBuildDeleteIsIdempotentAndPrunesEmptyDirectories(t *testing.T) {
 	base := t.TempDir()
-	storage := NewBuildArtifactStorage(&LocalBucket{BasePath: base})
+	b := testBuildBucket(base, "")
 	ref := testArtifact()
 	ctx := context.Background()
-	require.NoError(t, storage.Put(ctx, ref, true, strings.NewReader("staged")))
-	require.NoError(t, storage.Put(ctx, ref, false, strings.NewReader("final")))
+	require.NoError(t, b.PutBuildArtifact(ctx, ref, true, strings.NewReader("staged")))
+	require.NoError(t, b.PutBuildArtifact(ctx, ref, false, strings.NewReader("final")))
 
-	require.NoError(t, storage.Delete(ctx, ref, true))
-	require.NoError(t, storage.Delete(ctx, ref, true))
+	require.NoError(t, b.DeleteBuildArtifact(ctx, ref, true))
+	require.NoError(t, b.DeleteBuildArtifact(ctx, ref, true))
 	_, err := os.Stat(filepath.Join(base, "builds", "android", testIdentifierID, ".uploads"))
 	require.True(t, os.IsNotExist(err), "empty .uploads directory should be pruned")
-	file, err := storage.Get(ctx, ref, false)
+	file, err := b.GetBuildArtifact(ctx, ref, false)
 	require.NoError(t, err)
 	require.NotNil(t, file, "final artifact survives a staging delete")
 	file.Reader.Close()
 
-	require.NoError(t, storage.Delete(ctx, ref, false))
+	require.NoError(t, b.DeleteBuildArtifact(ctx, ref, false))
 	_, err = os.Stat(filepath.Join(base, "builds", "android", testIdentifierID))
 	require.True(t, os.IsNotExist(err), "empty identifier directory should be pruned")
 	_, err = os.Stat(filepath.Join(base, "builds"))
@@ -105,16 +106,15 @@ func TestLocalBuildDeleteIsIdempotentAndPrunesEmptyDirectories(t *testing.T) {
 }
 
 func TestLocalBuildDeleteKeepsSiblings(t *testing.T) {
-	base := t.TempDir()
-	storage := NewBuildArtifactStorage(&LocalBucket{BasePath: base})
+	b := testBuildBucket(t.TempDir(), "")
 	ref := testArtifact()
 	other := ref
 	other.BuildID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
 	ctx := context.Background()
-	require.NoError(t, storage.Put(ctx, ref, false, strings.NewReader("one")))
-	require.NoError(t, storage.Put(ctx, other, false, strings.NewReader("two")))
-	require.NoError(t, storage.Delete(ctx, ref, false))
-	file, err := storage.Get(ctx, other, false)
+	require.NoError(t, b.PutBuildArtifact(ctx, ref, false, strings.NewReader("one")))
+	require.NoError(t, b.PutBuildArtifact(ctx, other, false, strings.NewReader("two")))
+	require.NoError(t, b.DeleteBuildArtifact(ctx, ref, false))
+	file, err := b.GetBuildArtifact(ctx, other, false)
 	require.NoError(t, err)
 	require.NotNil(t, file)
 	file.Reader.Close()
@@ -138,11 +138,11 @@ func TestBuildWritesRefuseLegacyOTATreeUnderBuildsPrefix(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			base := t.TempDir()
 			writeLegacyUpdate(t, base, segments...)
-			storage := NewBuildArtifactStorage(&LocalBucket{BasePath: base})
+			b := testBuildBucket(base, "")
 			ctx := context.Background()
-			err := storage.Put(ctx, testArtifact(), true, strings.NewReader("bytes"))
+			err := b.PutBuildArtifact(ctx, testArtifact(), true, strings.NewReader("bytes"))
 			require.ErrorIs(t, err, ErrBuildNamespaceConflict)
-			_, _, err = storage.PresignUpload(ctx, testArtifact())
+			_, err = b.RequestBuildArtifactUploadURL(ctx, testArtifact())
 			require.ErrorIs(t, err, ErrBuildNamespaceConflict)
 			_, err = os.Stat(filepath.Join(base, "builds", "android", testIdentifierID))
 			if len(segments) < 3 || segments[2] != testIdentifierID {
@@ -151,10 +151,10 @@ func TestBuildWritesRefuseLegacyOTATreeUnderBuildsPrefix(t *testing.T) {
 			_, err = os.Stat(filepath.Join(base, "builds", "android", testIdentifierID, ".uploads"))
 			require.True(t, os.IsNotExist(err))
 
-			file, err := storage.Get(ctx, testArtifact(), false)
+			file, err := b.GetBuildArtifact(ctx, testArtifact(), false)
 			require.NoError(t, err)
 			require.Nil(t, file)
-			require.NoError(t, storage.Delete(ctx, testArtifact(), false), "reads and exact deletes still work")
+			require.NoError(t, b.DeleteBuildArtifact(ctx, testArtifact(), false), "reads and exact deletes still work")
 			_, err = os.Stat(filepath.Join(append([]string{base}, segments...)...))
 			require.NoError(t, err, "the legacy tree is preserved")
 		})
@@ -163,12 +163,12 @@ func TestBuildWritesRefuseLegacyOTATreeUnderBuildsPrefix(t *testing.T) {
 
 func TestBuildNamespaceProbeIsRememberedOncePassed(t *testing.T) {
 	base := t.TempDir()
-	storage := NewBuildArtifactStorage(&LocalBucket{BasePath: base})
+	b := testBuildBucket(base, "")
 	ctx := context.Background()
-	require.NoError(t, storage.CheckNamespace(ctx))
+	require.NoError(t, b.checkBuildNamespace(ctx))
 	writeLegacyUpdate(t, base, "builds", "main", "1.0.0", "1674170951")
-	require.NoError(t, storage.CheckNamespace(ctx))
-	require.ErrorIs(t, NewBuildArtifactStorage(&LocalBucket{BasePath: base}).CheckNamespace(ctx), ErrBuildNamespaceConflict)
+	require.NoError(t, b.checkBuildNamespace(ctx))
+	require.ErrorIs(t, testBuildBucket(base, "").checkBuildNamespace(ctx), ErrBuildNamespaceConflict)
 }
 
 func TestBuildTreeCoexistsWithOTATreesAndMigration(t *testing.T) {
@@ -177,13 +177,13 @@ func TestBuildTreeCoexistsWithOTATreesAndMigration(t *testing.T) {
 	writeLegacyUpdate(t, base, appId, "main", "1.0.0", "1674170951")
 	writeLegacyUpdate(t, base, "staging", "1.0.0", "1674170952")
 	local := &LocalBucket{BasePath: base}
-	storage := NewBuildArtifactStorage(local)
+	b := &validatingBucket{Inner: local}
 	ref := testArtifact()
 	ctx := context.Background()
-	require.NoError(t, storage.Put(ctx, ref, true, strings.NewReader("staged")))
-	require.NoError(t, storage.Put(ctx, ref, false, strings.NewReader("final")))
+	require.NoError(t, b.PutBuildArtifact(ctx, ref, true, strings.NewReader("staged")))
+	require.NoError(t, b.PutBuildArtifact(ctx, ref, false, strings.NewReader("final")))
 
-	branches, err := (&validatingBucket{Inner: local}).GetBranches(appId)
+	branches, err := b.GetBranches(appId)
 	require.NoError(t, err)
 	require.Equal(t, []string{"main"}, branches)
 	require.False(t, local.looksLikeV1Branch(BuildsPrefix))
@@ -193,15 +193,15 @@ func TestBuildTreeCoexistsWithOTATreesAndMigration(t *testing.T) {
 	require.NoError(t, err, "the v1 branch is re-pathed")
 	_, err = os.Stat(filepath.Join(base, appId, BuildsPrefix))
 	require.True(t, os.IsNotExist(err), "the builds tree is not mistaken for a v1 branch")
-	file, err := storage.Get(ctx, ref, false)
+	file, err := b.GetBuildArtifact(ctx, ref, false)
 	require.NoError(t, err)
 	require.NotNil(t, file)
 	file.Reader.Close()
-	require.NoError(t, storage.CheckNamespace(ctx))
-	require.NoError(t, (&validatingBucket{Inner: local}).DeleteUpdateFolder(appId, "main", "1.0.0", "1674170951"))
+	require.NoError(t, checkBuildNamespace(ctx, local))
+	require.NoError(t, b.DeleteUpdateFolder(appId, "main", "1.0.0", "1674170951"))
 	_, err = os.Stat(filepath.Join(base, appId, "main", "1.0.0", "1674170951"))
 	require.True(t, os.IsNotExist(err))
-	file, err = storage.Get(ctx, ref, false)
+	file, err = b.GetBuildArtifact(ctx, ref, false)
 	require.NoError(t, err)
 	require.NotNil(t, file, "deleting an OTA update preserves the build artifact")
 	file.Reader.Close()
@@ -217,14 +217,3 @@ func TestBuildKeysNeverConfirmAV1Triple(t *testing.T) {
 		require.False(t, inConfirmedTriple(key, map[string]bool{}))
 	}
 }
-
-func TestBuildStorageRejectsUnknownBackend(t *testing.T) {
-	storage := &BuildArtifactStorage{bucket: unknownBucket{}}
-	_, err := storage.Get(context.Background(), testArtifact(), false)
-	require.Error(t, err)
-	err = storage.Put(context.Background(), testArtifact(), false, strings.NewReader(""))
-	require.Error(t, err)
-	require.False(t, errors.Is(err, ErrBuildNamespaceConflict))
-}
-
-type unknownBucket struct{ Bucket }
