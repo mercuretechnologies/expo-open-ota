@@ -652,7 +652,7 @@ func (b *GCSBucket) RequestBuildArtifactUploadURL(_ context.Context, ref BuildAr
 }
 
 // ListBuildPrefixes returns the immediate child directories of a
-// prefix-relative folder, at most buildProbeMaxPrefix of them.
+// prefix-relative folder.
 func (b *GCSBucket) ListBuildPrefixes(ctx context.Context, folder string) ([]string, error) {
 	bh, err := b.bucketHandle(ctx)
 	if err != nil {
@@ -661,7 +661,7 @@ func (b *GCSBucket) ListBuildPrefixes(ctx context.Context, folder string) ([]str
 	full := b.prefixedKey(folder)
 	it := bh.Objects(ctx, &storage.Query{Prefix: full, Delimiter: "/"})
 	var names []string
-	for len(names) < buildProbeMaxPrefix {
+	for {
 		attrs, err := it.Next()
 		if err == iterator.Done {
 			break

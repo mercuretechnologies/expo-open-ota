@@ -208,15 +208,15 @@ func validateBSDiffKey(appId, branch, targetUpdateUUID, sourceUpdateUUID string)
 	if err := validateBranch(branch); err != nil {
 		return err
 	}
-	if err := validateUpdateUUID("targetUpdateUUID", targetUpdateUUID); err != nil {
+	if err := validateUUID("targetUpdateUUID", targetUpdateUUID); err != nil {
 		return err
 	}
-	return validateUpdateUUID("sourceUpdateUUID", sourceUpdateUUID)
+	return validateUUID("sourceUpdateUUID", sourceUpdateUUID)
 }
 
-// validateUpdateUUID accepts only the canonical lowercase spelling, so one
+// validateUUID accepts only the canonical lowercase spelling, so one
 // update cannot own two patch keys.
-func validateUpdateUUID(name, value string) error {
+func validateUUID(name, value string) error {
 	parsed, err := uuid.Parse(value)
 	if err != nil || parsed.String() != value {
 		return fmt.Errorf("invalid %s: must be a canonical lowercase UUID", name)
@@ -275,9 +275,6 @@ func (v *validatingBucket) GetBuildArtifact(ctx context.Context, ref BuildArtifa
 }
 
 func (v *validatingBucket) PutBuildArtifact(ctx context.Context, ref BuildArtifact, staging bool, body io.Reader) error {
-	if _, err := ref.Key(staging); err != nil {
-		return err
-	}
 	if err := v.checkBuildNamespace(ctx); err != nil {
 		return err
 	}
@@ -289,9 +286,6 @@ func (v *validatingBucket) DeleteBuildArtifact(ctx context.Context, ref BuildArt
 }
 
 func (v *validatingBucket) RequestBuildArtifactUploadURL(ctx context.Context, ref BuildArtifact) (string, error) {
-	if _, err := ref.Key(true); err != nil {
-		return "", err
-	}
 	if err := v.checkBuildNamespace(ctx); err != nil {
 		return "", err
 	}

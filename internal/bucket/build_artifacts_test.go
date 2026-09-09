@@ -130,10 +130,8 @@ func writeLegacyUpdate(t *testing.T, root string, segments ...string) {
 
 func TestBuildWritesRefuseLegacyOTATreeUnderBuildsPrefix(t *testing.T) {
 	for name, segments := range map[string][]string{
-		"app named builds with a branch":   {"builds", "main", "1.0.0", "1674170951"},
-		"app named builds, android branch": {"builds", "android", "1.0.0", "1674170951"},
-		"cas of an app named builds":       {"builds", "cas"},
-		"UUID runtime version":             {"builds", "android", testIdentifierID, "1674170951"},
+		"v1 branch named builds": {"builds", "1.0.0", "1674170951"},
+		"cas of a v1 app":        {"builds", "cas"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			base := t.TempDir()
@@ -144,12 +142,8 @@ func TestBuildWritesRefuseLegacyOTATreeUnderBuildsPrefix(t *testing.T) {
 			require.ErrorIs(t, err, ErrBuildNamespaceConflict)
 			_, err = b.RequestBuildArtifactUploadURL(ctx, testArtifact())
 			require.ErrorIs(t, err, ErrBuildNamespaceConflict)
-			_, err = os.Stat(filepath.Join(base, "builds", "android", testIdentifierID))
-			if len(segments) < 3 || segments[2] != testIdentifierID {
-				require.True(t, os.IsNotExist(err), "nothing is written into the conflicting tree")
-			}
-			_, err = os.Stat(filepath.Join(base, "builds", "android", testIdentifierID, ".uploads"))
-			require.True(t, os.IsNotExist(err))
+			_, err = os.Stat(filepath.Join(base, "builds", "android"))
+			require.True(t, os.IsNotExist(err), "nothing is written into the conflicting tree")
 
 			file, err := b.GetBuildArtifact(ctx, testArtifact(), false)
 			require.NoError(t, err)
@@ -166,7 +160,7 @@ func TestBuildNamespaceProbeIsRememberedOncePassed(t *testing.T) {
 	b := testBuildBucket(base, "")
 	ctx := context.Background()
 	require.NoError(t, b.checkBuildNamespace(ctx))
-	writeLegacyUpdate(t, base, "builds", "main", "1.0.0", "1674170951")
+	writeLegacyUpdate(t, base, "builds", "1.0.0", "1674170951")
 	require.NoError(t, b.checkBuildNamespace(ctx))
 	require.ErrorIs(t, testBuildBucket(base, "").checkBuildNamespace(ctx), ErrBuildNamespaceConflict)
 }

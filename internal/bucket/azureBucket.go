@@ -673,7 +673,7 @@ func (b *AzureBucket) RequestBuildArtifactUploadURL(_ context.Context, ref Build
 }
 
 // ListBuildPrefixes returns the immediate child directories of a
-// prefix-relative folder, at most buildProbeMaxPrefix of them.
+// prefix-relative folder.
 func (b *AzureBucket) ListBuildPrefixes(ctx context.Context, folder string) ([]string, error) {
 	cc, err := b.containerClient()
 	if err != nil {
@@ -682,7 +682,7 @@ func (b *AzureBucket) ListBuildPrefixes(ctx context.Context, folder string) ([]s
 	full := b.prefixedKey(folder)
 	pager := cc.NewListBlobsHierarchyPager("/", &container.ListBlobsHierarchyOptions{Prefix: &full})
 	var names []string
-	for pager.More() && len(names) < buildProbeMaxPrefix {
+	for pager.More() {
 		page, err := pager.NextPage(ctx)
 		if err != nil {
 			return nil, err

@@ -882,9 +882,8 @@ func pruneEmptyBuildDirs(root, dir string) {
 
 // RequestBuildArtifactUploadURL returns an empty URL: local uploads go
 // through the server.
-func (b *LocalBucket) RequestBuildArtifactUploadURL(_ context.Context, ref BuildArtifact) (string, error) {
-	_, err := ref.Key(true)
-	return "", err
+func (b *LocalBucket) RequestBuildArtifactUploadURL(context.Context, BuildArtifact) (string, error) {
+	return "", nil
 }
 
 func (b *LocalBucket) ListBuildPrefixes(_ context.Context, folder string) ([]string, error) {

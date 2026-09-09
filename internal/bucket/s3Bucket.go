@@ -821,7 +821,7 @@ func (b *S3Bucket) RequestBuildArtifactUploadURL(ctx context.Context, ref BuildA
 }
 
 // ListBuildPrefixes returns the immediate child directories of a
-// prefix-relative folder, at most buildProbeMaxPrefix of them.
+// prefix-relative folder.
 func (b *S3Bucket) ListBuildPrefixes(ctx context.Context, folder string) ([]string, error) {
 	if b.BucketName == "" {
 		return nil, errors.New("BucketName not set")
@@ -837,7 +837,7 @@ func (b *S3Bucket) ListBuildPrefixes(ctx context.Context, folder string) ([]stri
 		Delimiter: awssdk.String("/"),
 	})
 	var names []string
-	for paginator.HasMorePages() && len(names) < buildProbeMaxPrefix {
+	for paginator.HasMorePages() {
 		page, err := paginator.NextPage(ctx)
 		if err != nil {
 			return nil, err
