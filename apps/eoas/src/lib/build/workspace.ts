@@ -182,3 +182,18 @@ export async function installMetroCheck(
   );
   return report;
 }
+
+export async function restoreMetroConfig(project: string): Promise<void> {
+  const settingsPath = path.join(project, '.eoas-metro-check.json');
+  if (!(await fs.pathExists(settingsPath))) {
+    return;
+  }
+  const settings = await fs.readJson(settingsPath);
+  await fs.remove(path.join(project, 'metro.config.cjs'));
+  await fs.remove(path.join(project, 'eoas-metro-transformer.cjs'));
+  if (settings.original) {
+    const originalName = path.basename(settings.original).replace(/^eoas-original-/, '');
+    await fs.move(settings.original, path.join(project, originalName));
+  }
+  await fs.remove(settingsPath);
+}

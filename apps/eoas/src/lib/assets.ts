@@ -250,12 +250,12 @@ function insecureUploadUrlsAllowed(): boolean {
   return value === '1' || value?.toLowerCase() === 'true';
 }
 
-function assertSafeUploadUrl(requestUploadUrl: string): void {
+export function assertSafeUploadUrl(requestUploadUrl: string): void {
   let url: URL;
   try {
     url = new URL(requestUploadUrl);
   } catch {
-    throw new Error(`The server returned an unusable upload URL: ${requestUploadUrl}`);
+    throw new Error('The server returned an unusable upload URL.');
   }
   if (url.protocol === 'https:') {
     return;

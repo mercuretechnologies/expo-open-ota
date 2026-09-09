@@ -7,7 +7,14 @@ import { AndroidToolsOptions, configureAndroidSdk, resolveAndroidTools } from '.
 import Log from '../../log';
 import { resolvePackageRunner, splitPackageRunner } from '../../packageRunner';
 import { resolveExpoUpdatesCli } from '../../runtimeVersion';
+import {
+  failBuildRecord,
+  finishBuildRecord,
+  startBuildRecord,
+  uploadBuildArtifact,
+} from '../artifacts';
 import { secretsToRedact } from '../errors';
+import { fingerprintAndroidBuild } from '../fingerprint';
 import { BuildLog, PhaseLogger, withBuildLog } from '../log';
 import { BuildPhase } from '../phases';
 import {
@@ -29,6 +36,8 @@ import {
   copyTemplate,
   evaluateExpoConfig,
   expoCommand,
+  installMetroCheck,
+  restoreMetroConfig,
   validateBundle,
   withTemporaryDirectory,
   writeAppJson,
@@ -146,96 +155,145 @@ async function buildInWorkspace(
   buildLog: BuildLog,
   secrets: string[]
 ): Promise<string> {
+  const startedAt = new Date().toISOString();
   const { applicationId, developmentClient, mode } = build.profile.android;
-  const working = await buildLog.runBuildPhase(BuildPhase.PREPARE_PROJECT, async () => {
-    const working = await copyProject(build.project, temporary);
-    if (
-      developmentClient &&
-      !(await fs.pathExists(path.join(working, 'node_modules/expo-dev-client')))
-    ) {
-      throw new Error('This profile requires expo-dev-client to be installed.');
+  const record = await startBuildRecord(build, build.profile.android.artifact, mode, startedAt);
+  buildLog.info(`Build ID: ${record.id}`);
+  let output: string;
+  try {
+    const working = await buildLog.runBuildPhase(BuildPhase.PREPARE_PROJECT, async () => {
+      const working = await copyProject(build.project, temporary);
+      if (
+        developmentClient &&
+        !(await fs.pathExists(path.join(working, 'node_modules/expo-dev-client')))
+      ) {
+        throw new Error('This profile requires expo-dev-client to be installed.');
+      }
+      return working;
+    });
+    const expo = await buildLog.runBuildPhase(BuildPhase.READ_APP_CONFIG, async () => {
+      const config = await evaluateExpoConfig(build, working);
+      await writeAppJson(working, config);
+      return config;
+    });
+    await buildLog.runBuildPhase(
+      BuildPhase.EAGER_BUNDLE,
+      async phaseLog => {
+        await validateBundle(build, 'android', mode, working, temporary, phaseLog, secrets);
+        await restoreMetroConfig(working);
+      },
+      'Validate Android bundle'
+    );
+    const versionCode = await buildLog.runBuildPhase(
+      BuildPhase.CUSTOM,
+      () => allocateVersionCode(build.endpoint),
+      'Allocate build number'
+    );
+    const effectiveExpo = {
+      ...expo,
+      android: { ...expo.android, package: applicationId, versionCode },
+    };
+    await writeAppJson(working, effectiveExpo);
+    Object.assign(record.metadata, {
+      version: expo.version,
+      buildNumber: String(versionCode),
+      ...(await buildLog.runBuildPhase(
+        BuildPhase.CALCULATE_EXPO_UPDATES_RUNTIME_VERSION,
+        phaseLog =>
+          fingerprintAndroidBuild(build, working, temporary, effectiveExpo, phaseLog, secrets),
+        'Calculate Expo fingerprint and runtime'
+      )),
+    });
+    if (!build.options.ignoreEnvCheck) {
+      await installMetroCheck(working, temporary, Object.keys(build.variables));
     }
-    return working;
-  });
-  const expo = await buildLog.runBuildPhase(BuildPhase.READ_APP_CONFIG, async () => {
-    const config = await evaluateExpoConfig(build, working);
-    await writeAppJson(working, config);
-    return config;
-  });
-  await buildLog.runBuildPhase(
-    BuildPhase.EAGER_BUNDLE,
-    async phaseLog => {
-      await validateBundle(build, 'android', mode, working, temporary, phaseLog, secrets);
-    },
-    'Validate Android bundle'
-  );
-  const versionCode = await buildLog.runBuildPhase(
-    BuildPhase.CUSTOM,
-    () => allocateVersionCode(build.endpoint),
-    'Allocate build number'
-  );
-  const effectiveExpo = {
-    ...expo,
-    android: { ...expo.android, package: applicationId, versionCode },
-  };
-  await writeAppJson(working, effectiveExpo);
-  await buildLog.runBuildPhase(BuildPhase.PREBUILD, async phaseLog => {
-    if (await fs.pathExists(path.join(working, 'android'))) {
-      phaseLog.info(
-        'Using maintained Android project. Native settings are retained; package, versionCode, signing and the expo-updates configuration are overridden in the temporary copy.'
-      );
-      // Same as EAS for bare projects: the manifest keeps whatever environment
-      // the last prebuild saw, so channel, URL and runtime are re-synced here.
-      await runBuildCommand(
-        {
-          title: 'Syncing expo-updates configuration',
-          command: process.execPath,
-          args: [
-            resolveExpoUpdatesCli(working),
-            'configuration:syncnative',
+    await buildLog.runBuildPhase(BuildPhase.PREBUILD, async phaseLog => {
+      if (await fs.pathExists(path.join(working, 'android'))) {
+        phaseLog.info(
+          'Using maintained Android project. Native settings are retained; package, versionCode, signing and the expo-updates configuration are overridden in the temporary copy.'
+        );
+        // Same as EAS for bare projects: the manifest keeps whatever environment
+        // the last prebuild saw, so channel, URL and runtime are re-synced here.
+        await runBuildCommand(
+          {
+            title: 'Syncing expo-updates configuration',
+            command: process.execPath,
+            args: [
+              resolveExpoUpdatesCli(working),
+              'configuration:syncnative',
+              '--platform',
+              'android',
+              '--workflow',
+              'generic',
+            ],
+            cwd: working,
+            env: build.env,
+          },
+          phaseLog,
+          secrets
+        );
+      } else {
+        await runBuildCommand(
+          expoCommand(build, working, 'Generating Android project', [
+            'prebuild',
             '--platform',
             'android',
-            '--workflow',
-            'generic',
-          ],
-          cwd: working,
-          env: build.env,
-        },
-        phaseLog,
-        secrets
+            '--no-install',
+          ]),
+          phaseLog,
+          secrets
+        );
+      }
+    });
+    const signing = await buildLog.runBuildPhase(
+      BuildPhase.PREPARE_CREDENTIALS,
+      async () => {
+        const keystore = await writeKeystore(build.credentials, temporary);
+        await configureAndroidSdk(working, build.toolEnv.ANDROID_HOME);
+        const signingFile = await configureSigning(
+          build,
+          working,
+          temporary,
+          keystore,
+          versionCode
+        );
+        await prepareGradlew(working);
+        return signingFile;
+      },
+      'Configure Android signing'
+    );
+    await buildLog.runBuildPhase(
+      BuildPhase.RUN_GRADLEW,
+      phaseLog => runBuildCommand(gradleCommand(build, working, signing), phaseLog, secrets),
+      `Building signed ${build.profile.android.artifact.toUpperCase()}`
+    );
+    output = await buildLog.runBuildPhase(BuildPhase.PREPARE_ARTIFACTS, async phaseLog => {
+      const artifact = await collectArtifact(build, working, versionCode, phaseLog);
+      await finishBuildRecord(record, artifact);
+      return artifact;
+    });
+  } catch (error) {
+    await failBuildRecord(record, build.output).catch(() => {
+      buildLog.warn(
+        'Could not report the failed build to the server. Local build metadata is retained.'
       );
-    } else {
-      await runBuildCommand(
-        expoCommand(build, working, 'Generating Android project', [
-          'prebuild',
-          '--platform',
-          'android',
-          '--no-install',
-        ]),
-        phaseLog,
-        secrets
-      );
-    }
-  });
-  const signing = await buildLog.runBuildPhase(
-    BuildPhase.PREPARE_CREDENTIALS,
-    async () => {
-      const keystore = await writeKeystore(build.credentials, temporary);
-      await configureAndroidSdk(working, build.toolEnv.ANDROID_HOME);
-      const signingFile = await configureSigning(build, working, temporary, keystore, versionCode);
-      await prepareGradlew(working);
-      return signingFile;
-    },
-    'Configure Android signing'
-  );
-  await buildLog.runBuildPhase(
-    BuildPhase.RUN_GRADLEW,
-    phaseLog => runBuildCommand(gradleCommand(build, working, signing), phaseLog, secrets),
-    `Building signed ${build.profile.android.artifact.toUpperCase()}`
-  );
-  return await buildLog.runBuildPhase(BuildPhase.PREPARE_ARTIFACTS, phaseLog =>
-    collectArtifact(build, working, versionCode, phaseLog)
-  );
+    });
+    throw error;
+  }
+  try {
+    await uploadBuildArtifact(output, buildLog);
+  } catch (error) {
+    await failBuildRecord(record, build.output).catch(() => {
+      buildLog.warn('Could not report the failed upload to the server.');
+    });
+    const message = error instanceof Error ? error.message : 'Artifact upload failed.';
+    throw new Error(
+      `${message}\n\nLocal artifact: ${output}\nRetry without rebuilding: eoas build:upload ${JSON.stringify(
+        output
+      )}`
+    );
+  }
+  return output;
 }
 
 // The server validated the keystore, alias and passwords when they were stored.
