@@ -849,14 +849,14 @@ WHERE b.id = bp.branch_id
 `
 
 type FinishBundlePatchParams struct {
-	Status           string      `json:"status"`
-	Reason           *string     `json:"reason"`
-	PatchSize        *int64      `json:"patch_size"`
-	FullDownloadSize *int64      `json:"full_download_size"`
-	AppID            pgtype.UUID `json:"app_id"`
-	BranchName       string      `json:"branch_name"`
-	TargetUpdateID   int64       `json:"target_update_id"`
-	SourceUpdateID   int64       `json:"source_update_id"`
+	Status           types.BundlePatchStatus `json:"status"`
+	Reason           *string                 `json:"reason"`
+	PatchSize        *int64                  `json:"patch_size"`
+	FullDownloadSize *int64                  `json:"full_download_size"`
+	AppID            pgtype.UUID             `json:"app_id"`
+	BranchName       string                  `json:"branch_name"`
+	TargetUpdateID   int64                   `json:"target_update_id"`
+	SourceUpdateID   int64                   `json:"source_update_id"`
 }
 
 func (q *Queries) FinishBundlePatch(ctx context.Context, arg FinishBundlePatchParams) (int64, error) {
@@ -897,7 +897,7 @@ type GetActiveRolloutUpdatesParams struct {
 
 type GetActiveRolloutUpdatesRow struct {
 	ID                int64              `json:"id"`
-	Platform          string             `json:"platform"`
+	Platform          types.Platform     `json:"platform"`
 	RolloutPercentage *int32             `json:"rollout_percentage"`
 	ControlUpdateID   *int64             `json:"control_update_id"`
 	CreatedAt         pgtype.Timestamptz `json:"created_at"`
@@ -1254,10 +1254,10 @@ type GetAppIdentifierByIDParams struct {
 }
 
 type GetAppIdentifierByIDRow struct {
-	ID          pgtype.UUID `json:"id"`
-	Platform    string      `json:"platform"`
-	Identifier  string      `json:"identifier"`
-	BuildNumber string      `json:"build_number"`
+	ID          pgtype.UUID    `json:"id"`
+	Platform    types.Platform `json:"platform"`
+	Identifier  string         `json:"identifier"`
+	BuildNumber string         `json:"build_number"`
 }
 
 func (q *Queries) GetAppIdentifierByID(ctx context.Context, arg GetAppIdentifierByIDParams) (GetAppIdentifierByIDRow, error) {
@@ -1279,16 +1279,16 @@ WHERE app_id = $1 AND platform = $2 AND identifier = $3
 `
 
 type GetAppIdentifierByPlatformAndIdentifierParams struct {
-	AppID      pgtype.UUID `json:"app_id"`
-	Platform   string      `json:"platform"`
-	Identifier string      `json:"identifier"`
+	AppID      pgtype.UUID    `json:"app_id"`
+	Platform   types.Platform `json:"platform"`
+	Identifier string         `json:"identifier"`
 }
 
 type GetAppIdentifierByPlatformAndIdentifierRow struct {
-	ID          pgtype.UUID `json:"id"`
-	Platform    string      `json:"platform"`
-	Identifier  string      `json:"identifier"`
-	BuildNumber string      `json:"build_number"`
+	ID          pgtype.UUID    `json:"id"`
+	Platform    types.Platform `json:"platform"`
+	Identifier  string         `json:"identifier"`
+	BuildNumber string         `json:"build_number"`
 }
 
 func (q *Queries) GetAppIdentifierByPlatformAndIdentifier(ctx context.Context, arg GetAppIdentifierByPlatformAndIdentifierParams) (GetAppIdentifierByPlatformAndIdentifierRow, error) {
@@ -1314,7 +1314,7 @@ ORDER BY ai.platform ASC, ai.identifier ASC
 
 type GetAppIdentifiersByAppIDRow struct {
 	ID                    pgtype.UUID        `json:"id"`
-	Platform              string             `json:"platform"`
+	Platform              types.Platform     `json:"platform"`
 	Identifier            string             `json:"identifier"`
 	BuildNumber           string             `json:"build_number"`
 	CreatedAt             pgtype.Timestamptz `json:"created_at"`
@@ -1583,19 +1583,19 @@ type GetBundlePatchesByTargetParams struct {
 }
 
 type GetBundlePatchesByTargetRow struct {
-	TargetUpdateID   int64              `json:"target_update_id"`
-	TargetUpdateUuid pgtype.UUID        `json:"target_update_uuid"`
-	SourceUpdateID   int64              `json:"source_update_id"`
-	SourceUpdateUuid pgtype.UUID        `json:"source_update_uuid"`
-	SourceCommitHash string             `json:"source_commit_hash"`
-	SourceMessage    *string            `json:"source_message"`
-	SourceCreatedAt  pgtype.Timestamptz `json:"source_created_at"`
-	Status           string             `json:"status"`
-	Reason           *string            `json:"reason"`
-	PatchSize        *int64             `json:"patch_size"`
-	FullDownloadSize *int64             `json:"full_download_size"`
-	Attempts         int32              `json:"attempts"`
-	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
+	TargetUpdateID   int64                   `json:"target_update_id"`
+	TargetUpdateUuid pgtype.UUID             `json:"target_update_uuid"`
+	SourceUpdateID   int64                   `json:"source_update_id"`
+	SourceUpdateUuid pgtype.UUID             `json:"source_update_uuid"`
+	SourceCommitHash string                  `json:"source_commit_hash"`
+	SourceMessage    *string                 `json:"source_message"`
+	SourceCreatedAt  pgtype.Timestamptz      `json:"source_created_at"`
+	Status           types.BundlePatchStatus `json:"status"`
+	Reason           *string                 `json:"reason"`
+	PatchSize        *int64                  `json:"patch_size"`
+	FullDownloadSize *int64                  `json:"full_download_size"`
+	Attempts         int32                   `json:"attempts"`
+	UpdatedAt        pgtype.Timestamptz      `json:"updated_at"`
 }
 
 func (q *Queries) GetBundlePatchesByTarget(ctx context.Context, arg GetBundlePatchesByTargetParams) ([]GetBundlePatchesByTargetRow, error) {
@@ -2078,10 +2078,10 @@ LIMIT 1
 `
 
 type GetLatestUpdateParams struct {
-	AppID    pgtype.UUID `json:"app_id"`
-	Name     string      `json:"name"`
-	Version  string      `json:"version"`
-	Platform string      `json:"platform"`
+	AppID    pgtype.UUID    `json:"app_id"`
+	Name     string         `json:"name"`
+	Version  string         `json:"version"`
+	Platform types.Platform `json:"platform"`
 }
 
 type GetLatestUpdateRow struct {
@@ -2092,7 +2092,7 @@ type GetLatestUpdateRow struct {
 	UpdateType       int32              `json:"update_type"`
 	CommitHash       string             `json:"commit_hash"`
 	Message          *string            `json:"message"`
-	Platform         string             `json:"platform"`
+	Platform         types.Platform     `json:"platform"`
 	CreatedAt        pgtype.Timestamptz `json:"created_at"`
 }
 
@@ -2149,10 +2149,10 @@ LIMIT 1
 `
 
 type GetLatestUpdateWithRolloutParams struct {
-	AppID    pgtype.UUID `json:"app_id"`
-	Name     string      `json:"name"`
-	Version  string      `json:"version"`
-	Platform string      `json:"platform"`
+	AppID    pgtype.UUID    `json:"app_id"`
+	Name     string         `json:"name"`
+	Version  string         `json:"version"`
+	Platform types.Platform `json:"platform"`
 }
 
 type GetLatestUpdateWithRolloutRow struct {
@@ -2163,7 +2163,7 @@ type GetLatestUpdateWithRolloutRow struct {
 	UpdateType        int32              `json:"update_type"`
 	CommitHash        string             `json:"commit_hash"`
 	Message           *string            `json:"message"`
-	Platform          string             `json:"platform"`
+	Platform          types.Platform     `json:"platform"`
 	CreatedAt         pgtype.Timestamptz `json:"created_at"`
 	RolloutPercentage *int32             `json:"rollout_percentage"`
 	ControlUpdateID   *int64             `json:"control_update_id"`
@@ -2276,7 +2276,7 @@ type GetPublishGroupsPageRow struct {
 	NewestID     int64              `json:"newest_id"`
 	ID           int64              `json:"id"`
 	CreatedAt    pgtype.Timestamptz `json:"created_at"`
-	Platform     string             `json:"platform"`
+	Platform     types.Platform     `json:"platform"`
 	CommitHash   string             `json:"commit_hash"`
 	Message      *string            `json:"message"`
 }
@@ -2609,7 +2609,7 @@ type GetUpdateByBranchNameAndRuntimeRow struct {
 	UpdateType        int32              `json:"update_type"`
 	CommitHash        string             `json:"commit_hash"`
 	Message           *string            `json:"message"`
-	Platform          string             `json:"platform"`
+	Platform          types.Platform     `json:"platform"`
 	CreatedAt         pgtype.Timestamptz `json:"created_at"`
 	RolloutPercentage *int32             `json:"rollout_percentage"`
 	ControlUpdateID   *int64             `json:"control_update_id"`
@@ -2672,7 +2672,7 @@ type GetUpdateByUUIDRow struct {
 	UpdateType        int32              `json:"update_type"`
 	CommitHash        string             `json:"commit_hash"`
 	Message           *string            `json:"message"`
-	Platform          string             `json:"platform"`
+	Platform          types.Platform     `json:"platform"`
 	CreatedAt         pgtype.Timestamptz `json:"created_at"`
 	RolloutPercentage *int32             `json:"rollout_percentage"`
 	ControlUpdateID   *int64             `json:"control_update_id"`
@@ -2773,7 +2773,7 @@ type GetUpdateFeedRow struct {
 	UpdateType        int32              `json:"update_type"`
 	CreatedAt         pgtype.Timestamptz `json:"created_at"`
 	CommitHash        string             `json:"commit_hash"`
-	Platform          string             `json:"platform"`
+	Platform          types.Platform     `json:"platform"`
 	Message           *string            `json:"message"`
 	RolloutPercentage *int32             `json:"rollout_percentage"`
 	ControlUpdateID   *int64             `json:"control_update_id"`
@@ -2848,11 +2848,11 @@ type GetUpdateMetadataParams struct {
 }
 
 type GetUpdateMetadataRow struct {
-	ID         int64       `json:"id"`
-	UpdateUuid pgtype.UUID `json:"update_uuid"`
-	Platform   string      `json:"platform"`
-	CommitHash string      `json:"commit_hash"`
-	Message    *string     `json:"message"`
+	ID         int64          `json:"id"`
+	UpdateUuid pgtype.UUID    `json:"update_uuid"`
+	Platform   types.Platform `json:"platform"`
+	CommitHash string         `json:"commit_hash"`
+	Message    *string        `json:"message"`
 }
 
 func (q *Queries) GetUpdateMetadata(ctx context.Context, arg GetUpdateMetadataParams) (GetUpdateMetadataRow, error) {
@@ -2944,7 +2944,7 @@ type GetUpdatesByByBranchNameAndRuntimeVersionRow struct {
 	UpdateType        int32              `json:"update_type"`
 	CreatedAt         pgtype.Timestamptz `json:"created_at"`
 	CommitHash        string             `json:"commit_hash"`
-	Platform          string             `json:"platform"`
+	Platform          types.Platform     `json:"platform"`
 	Message           *string            `json:"message"`
 	CheckedAt         pgtype.Timestamptz `json:"checked_at"`
 	RolloutPercentage *int32             `json:"rollout_percentage"`
@@ -3005,9 +3005,9 @@ type GetUpdatesByPublishGroupParams struct {
 }
 
 type GetUpdatesByPublishGroupRow struct {
-	ID         int64  `json:"id"`
-	Platform   string `json:"platform"`
-	CommitHash string `json:"commit_hash"`
+	ID         int64          `json:"id"`
+	Platform   types.Platform `json:"platform"`
+	CommitHash string         `json:"commit_hash"`
 }
 
 // The members of one publish group on a branch and runtime version, for the
@@ -3105,7 +3105,7 @@ type GetUpdatesPageByBranchNameAndRuntimeVersionRow struct {
 	UpdateType        int32              `json:"update_type"`
 	CreatedAt         pgtype.Timestamptz `json:"created_at"`
 	CommitHash        string             `json:"commit_hash"`
-	Platform          string             `json:"platform"`
+	Platform          types.Platform     `json:"platform"`
 	Message           *string            `json:"message"`
 	CheckedAt         pgtype.Timestamptz `json:"checked_at"`
 	RolloutPercentage *int32             `json:"rollout_percentage"`
@@ -3367,7 +3367,7 @@ type ImportUpdateParams struct {
 	Name         string                    `json:"name"`
 	Version      string                    `json:"version"`
 	UpdateType   int32                     `json:"update_type"`
-	Platform     string                    `json:"platform"`
+	Platform     types.Platform            `json:"platform"`
 	CommitHash   string                    `json:"commit_hash"`
 	Message      *string                   `json:"message"`
 	CheckedAt    pgtype.Timestamptz        `json:"checked_at"`
@@ -3530,10 +3530,10 @@ RETURNING id
 `
 
 type InsertAppIdentifierParams struct {
-	ID         pgtype.UUID `json:"id"`
-	AppID      pgtype.UUID `json:"app_id"`
-	Platform   string      `json:"platform"`
-	Identifier string      `json:"identifier"`
+	ID         pgtype.UUID    `json:"id"`
+	AppID      pgtype.UUID    `json:"app_id"`
+	Platform   types.Platform `json:"platform"`
+	Identifier string         `json:"identifier"`
 }
 
 func (q *Queries) InsertAppIdentifier(ctx context.Context, arg InsertAppIdentifierParams) (pgtype.UUID, error) {
@@ -3931,20 +3931,20 @@ RETURNING
 `
 
 type InsertUpdateParams struct {
-	ID           int64       `json:"id"`
-	Name         string      `json:"name"`
-	AppID        pgtype.UUID `json:"app_id"`
-	Version      string      `json:"version"`
-	UpdateType   int32       `json:"update_type"`
-	Platform     string      `json:"platform"`
-	CommitHash   string      `json:"commit_hash"`
-	Message      *string     `json:"message"`
-	PublishGroup pgtype.UUID `json:"publish_group"`
+	ID           int64          `json:"id"`
+	Name         string         `json:"name"`
+	AppID        pgtype.UUID    `json:"app_id"`
+	Version      string         `json:"version"`
+	UpdateType   int32          `json:"update_type"`
+	Platform     types.Platform `json:"platform"`
+	CommitHash   string         `json:"commit_hash"`
+	Message      *string        `json:"message"`
+	PublishGroup pgtype.UUID    `json:"publish_group"`
 }
 
 type InsertUpdateRow struct {
 	ID             int64              `json:"id"`
-	Platform       string             `json:"platform"`
+	Platform       types.Platform     `json:"platform"`
 	CommitHash     string             `json:"commit_hash"`
 	Message        *string            `json:"message"`
 	CreatedAt      pgtype.Timestamptz `json:"created_at"`
@@ -4040,21 +4040,21 @@ RETURNING
 `
 
 type InsertUpdateWithRolloutParams struct {
-	ID                int64       `json:"id"`
-	Name              string      `json:"name"`
-	AppID             pgtype.UUID `json:"app_id"`
-	Version           string      `json:"version"`
-	UpdateType        int32       `json:"update_type"`
-	Platform          string      `json:"platform"`
-	CommitHash        string      `json:"commit_hash"`
-	Message           *string     `json:"message"`
-	RolloutPercentage *int32      `json:"rollout_percentage"`
-	PublishGroup      pgtype.UUID `json:"publish_group"`
+	ID                int64          `json:"id"`
+	Name              string         `json:"name"`
+	AppID             pgtype.UUID    `json:"app_id"`
+	Version           string         `json:"version"`
+	UpdateType        int32          `json:"update_type"`
+	Platform          types.Platform `json:"platform"`
+	CommitHash        string         `json:"commit_hash"`
+	Message           *string        `json:"message"`
+	RolloutPercentage *int32         `json:"rollout_percentage"`
+	PublishGroup      pgtype.UUID    `json:"publish_group"`
 }
 
 type InsertUpdateWithRolloutRow struct {
 	ID                int64              `json:"id"`
-	Platform          string             `json:"platform"`
+	Platform          types.Platform     `json:"platform"`
 	CommitHash        string             `json:"commit_hash"`
 	Message           *string            `json:"message"`
 	CreatedAt         pgtype.Timestamptz `json:"created_at"`
@@ -4492,7 +4492,7 @@ type ListDeviceHealthOutboxRow struct {
 	OccurredAt       pgtype.Timestamptz `json:"occurred_at"`
 	Branch           string             `json:"branch"`
 	RuntimeVersion   string             `json:"runtime_version"`
-	Platform         string             `json:"platform"`
+	Platform         types.Platform     `json:"platform"`
 	OsName           string             `json:"os_name"`
 	OsVersion        string             `json:"os_version"`
 	DeviceModel      string             `json:"device_model"`
@@ -5275,10 +5275,10 @@ type LockAppIdentifierByIDParams struct {
 }
 
 type LockAppIdentifierByIDRow struct {
-	ID          pgtype.UUID `json:"id"`
-	Platform    string      `json:"platform"`
-	Identifier  string      `json:"identifier"`
-	BuildNumber string      `json:"build_number"`
+	ID          pgtype.UUID    `json:"id"`
+	Platform    types.Platform `json:"platform"`
+	Identifier  string         `json:"identifier"`
+	BuildNumber string         `json:"build_number"`
 }
 
 // Lock before DELETE so a concurrent credential insert settles before the
@@ -5629,7 +5629,7 @@ type MigrateLegacyUpdateParams struct {
 	Name       string             `json:"name"`
 	Version    string             `json:"version"`
 	UpdateType int32              `json:"update_type"`
-	Platform   string             `json:"platform"`
+	Platform   types.Platform     `json:"platform"`
 	CommitHash string             `json:"commit_hash"`
 	Message    *string            `json:"message"`
 	CheckedAt  pgtype.Timestamptz `json:"checked_at"`

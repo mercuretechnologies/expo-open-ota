@@ -9,6 +9,7 @@ import (
 	"context"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	"xprem/internal/types"
 )
 
 const countBuilds = `-- name: CountBuilds :one
@@ -69,9 +70,9 @@ type InsertBuildParams struct {
 	ID              pgtype.UUID        `json:"id"`
 	AppID           pgtype.UUID        `json:"app_id"`
 	AppIdentifierID pgtype.UUID        `json:"app_identifier_id"`
-	Platform        string             `json:"platform"`
+	Platform        types.Platform     `json:"platform"`
 	ApplicationID   string             `json:"application_id"`
-	Status          string             `json:"status"`
+	Status          types.BuildStatus  `json:"status"`
 	ArtifactType    string             `json:"artifact_type"`
 	Size            int64              `json:"size"`
 	Sha256          string             `json:"sha256"`
@@ -228,7 +229,7 @@ WHERE app_id=$1 AND id=$2 RETURNING id, app_id, app_identifier_id, platform, app
 type UpdateBuildParams struct {
 	AppID      pgtype.UUID        `json:"app_id"`
 	ID         pgtype.UUID        `json:"id"`
-	Status     string             `json:"status"`
+	Status     types.BuildStatus  `json:"status"`
 	Size       int64              `json:"size"`
 	Sha256     string             `json:"sha256"`
 	Metadata   []byte             `json:"metadata"`

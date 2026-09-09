@@ -2,11 +2,14 @@ package types
 
 import "time"
 
+// BuildStatus is where a build stands in its upload lifecycle.
+type BuildStatus string
+
 const (
-	BuildStatusBuilding  = "building"
-	BuildStatusUploading = "uploading"
-	BuildStatusReady     = "ready"
-	BuildStatusFailed    = "failed"
+	BuildStatusBuilding  BuildStatus = "building"
+	BuildStatusUploading BuildStatus = "uploading"
+	BuildStatusReady     BuildStatus = "ready"
+	BuildStatusFailed    BuildStatus = "failed"
 )
 
 // BuildMetadata carries what the CLI knows about a build; the artifact and
@@ -36,7 +39,7 @@ type BuildRecord struct {
 	AppIdentifierID string        `json:"appIdentifierId"`
 	Platform        Platform      `json:"platform"`
 	ApplicationID   string        `json:"applicationId"`
-	Status          string        `json:"status"`
+	Status          BuildStatus   `json:"status"`
 	ArtifactType    string        `json:"artifactType"`
 	Size            int64         `json:"size,omitempty"`
 	SHA256          string        `json:"sha256,omitempty"`

@@ -49,7 +49,7 @@ func (s *PostgresAppIdentifierStore) InsertAppIdentifier(ctx context.Context, ap
 	_, err := s.engine.Queries.InsertAppIdentifier(ctx, pgdb.InsertAppIdentifierParams{
 		ID:         ToPgUUID(id),
 		AppID:      ToPgUUID(appId),
-		Platform:   string(platform),
+		Platform:   platform,
 		Identifier: identifier,
 	})
 	if err != nil {
@@ -70,7 +70,7 @@ func (s *PostgresAppIdentifierStore) GetAppIdentifiers(ctx context.Context, appI
 	for i, row := range rows {
 		identifiers[i] = AppIdentifierRow{
 			Id:                    row.ID.String(),
-			Platform:              types.Platform(row.Platform),
+			Platform:              row.Platform,
 			Identifier:            row.Identifier,
 			BuildNumber:           row.BuildNumber,
 			HasAndroidCredentials: row.HasAndroidCredentials,
@@ -93,7 +93,7 @@ func (s *PostgresAppIdentifierStore) GetAppIdentifierByID(ctx context.Context, a
 	}
 	return &AppIdentifierRef{
 		Id:          row.ID.String(),
-		Platform:    types.Platform(row.Platform),
+		Platform:    row.Platform,
 		Identifier:  row.Identifier,
 		BuildNumber: row.BuildNumber,
 	}, nil
@@ -102,7 +102,7 @@ func (s *PostgresAppIdentifierStore) GetAppIdentifierByID(ctx context.Context, a
 func (s *PostgresAppIdentifierStore) GetAppIdentifierByPlatformAndIdentifier(ctx context.Context, appId string, platform types.Platform, identifier string) (*AppIdentifierRef, error) {
 	row, err := s.engine.Queries.GetAppIdentifierByPlatformAndIdentifier(ctx, pgdb.GetAppIdentifierByPlatformAndIdentifierParams{
 		AppID:      ToPgUUID(appId),
-		Platform:   string(platform),
+		Platform:   platform,
 		Identifier: identifier,
 	})
 	if err != nil {
@@ -113,7 +113,7 @@ func (s *PostgresAppIdentifierStore) GetAppIdentifierByPlatformAndIdentifier(ctx
 	}
 	return &AppIdentifierRef{
 		Id:          row.ID.String(),
-		Platform:    types.Platform(row.Platform),
+		Platform:    row.Platform,
 		Identifier:  row.Identifier,
 		BuildNumber: row.BuildNumber,
 	}, nil
@@ -171,7 +171,7 @@ func (s *PostgresAppIdentifierStore) AllocateBuildNumber(ctx context.Context, ap
 		if err != nil {
 			return fmt.Errorf("failed to lock app identifier: %w", err)
 		}
-		platform := types.Platform(row.Platform)
+		platform := row.Platform
 		buildNumber, err := next(platform, row.BuildNumber)
 		if err != nil {
 			return err

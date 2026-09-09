@@ -130,7 +130,7 @@ type PublishGroupItem struct {
 	CreatedAt    string                   `json:"createdAt"`
 	CommitHash   string                   `json:"commitHash"`
 	Message      string                   `json:"message,omitempty"`
-	Platforms    []string                 `json:"platforms"`
+	Platforms    []Platform               `json:"platforms"`
 	Updates      []PublishGroupUpdateItem `json:"updates"`
 }
 

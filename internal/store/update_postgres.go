@@ -82,7 +82,7 @@ func (s *PostgresUpdateStore) GetLatestUpdate(ctx context.Context, appId string,
 		AppID:    pgAppID,
 		Name:     branchName,
 		Version:  runtimeVersion,
-		Platform: string(platform),
+		Platform: platform,
 	})
 	if err != nil {
 		if database.IsNoRows(err) {
@@ -186,7 +186,7 @@ func (s *PostgresUpdateStore) CreateUpdate(ctx context.Context, appId string, up
 		Name:         branchName,
 		Version:      runtimeVersion,
 		UpdateType:   int32(types.NormalUpdate),
-		Platform:     string(platform),
+		Platform:     platform,
 		CommitHash:   commitHash,
 		Message:      messagePtr,
 		PublishGroup: ToPgUUIDPtr(publishGroup),
@@ -233,7 +233,7 @@ func (s *PostgresUpdateStore) ImportUpdate(ctx context.Context, params ImportUpd
 		Name:         params.BranchName,
 		Version:      params.RuntimeVersion,
 		UpdateType:   int32(params.UpdateType),
-		Platform:     string(params.Platform),
+		Platform:     params.Platform,
 		CommitHash:   params.CommitHash,
 		Message:      messagePtr,
 		CheckedAt:    pgtype.Timestamptz{Time: params.CheckedAt, Valid: true},
@@ -330,7 +330,7 @@ func (s *PostgresUpdateStore) GetUpdatesByPublishGroup(ctx context.Context, appI
 	for _, row := range rows {
 		members = append(members, types.PublishGroupMember{
 			UpdateId:   strconv.FormatInt(row.ID, 10),
-			Platform:   types.Platform(row.Platform),
+			Platform:   row.Platform,
 			CommitHash: row.CommitHash,
 		})
 	}
@@ -372,7 +372,7 @@ func (s *PostgresUpdateStore) GetPublishGroupsPage(ctx context.Context, appId st
 					CreatedAt:    row.CreatedAt.Time.Format(time.RFC3339),
 					CommitHash:   row.CommitHash,
 					Message:      message,
-					Platforms:    make([]string, 0, 2),
+					Platforms:    make([]types.Platform, 0, 2),
 					Updates:      make([]types.PublishGroupUpdateItem, 0, 2),
 				},
 			})
@@ -388,7 +388,7 @@ func (s *PostgresUpdateStore) GetPublishGroupsPage(ctx context.Context, appId st
 		group.Updates = append(group.Updates, types.PublishGroupUpdateItem{
 			UpdateId:   strconv.FormatInt(row.ID, 10),
 			CreatedAt:  createdAt,
-			Platform:   types.Platform(row.Platform),
+			Platform:   row.Platform,
 			CommitHash: row.CommitHash,
 		})
 	}
@@ -464,7 +464,7 @@ func (s *PostgresUpdateStore) GetUpdatesByRunTimeVersionAndBranchName(ctx contex
 			CreatedAt:  createdAtStr,
 			CommitHash: row.CommitHash,
 			Message:    messageStr,
-			Platform:   types.Platform(row.Platform),
+			Platform:   row.Platform,
 		}
 		if row.RolloutPercentage != nil {
 			pct := int(*row.RolloutPercentage)
@@ -545,7 +545,7 @@ func (s *PostgresUpdateStore) GetUpdateFeed(ctx context.Context, appId string, q
 				UpdateId:   strconv.FormatInt(row.ID, 10),
 				CreatedAt:  row.CreatedAt.Time.Format(time.RFC3339),
 				CommitHash: row.CommitHash,
-				Platform:   types.Platform(row.Platform),
+				Platform:   row.Platform,
 			},
 			Branch:         row.BranchName,
 			RuntimeVersion: row.RuntimeVersion,
@@ -663,7 +663,7 @@ func (s *PostgresUpdateStore) GetLatestUpdateWithRollout(ctx context.Context, ap
 		AppID:    ToPgUUID(appId),
 		Name:     branchName,
 		Version:  runtimeVersion,
-		Platform: string(platform),
+		Platform: platform,
 	})
 	if err != nil {
 		if database.IsNoRows(err) {
@@ -756,7 +756,7 @@ func (s *PostgresUpdateStore) CreateUpdateWithRollout(ctx context.Context, appId
 		Name:              branchName,
 		Version:           runtimeVersion,
 		UpdateType:        int32(types.NormalUpdate),
-		Platform:          string(platform),
+		Platform:          platform,
 		CommitHash:        commitHash,
 		Message:           messagePtr,
 		RolloutPercentage: &pct,
@@ -786,7 +786,7 @@ func (s *PostgresUpdateStore) CreateRollback(ctx context.Context, appId string, 
 		Name:       branchName,
 		Version:    runtimeVersion,
 		UpdateType: int32(types.Rollback),
-		Platform:   string(platform),
+		Platform:   platform,
 		CommitHash: commitHash,
 		Message:    messageParam,
 	})

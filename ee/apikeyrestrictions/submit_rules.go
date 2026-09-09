@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"xprem/internal/services"
+	"xprem/internal/types"
 	"xprem/internal/validation"
 )
 
@@ -46,12 +47,12 @@ type SubmitRule struct {
 	Actions         []SubmitAction    `json:"actions"`
 }
 
-func (d SubmitDestination) platform() string {
+func (d SubmitDestination) platform() types.Platform {
 	switch d {
 	case SubmitDestinationInternal, SubmitDestinationAlpha, SubmitDestinationBeta, SubmitDestinationProduction:
-		return "android"
+		return types.PlatformAndroid
 	case SubmitDestinationTestFlight:
-		return "ios"
+		return types.PlatformIOS
 	default:
 		return ""
 	}

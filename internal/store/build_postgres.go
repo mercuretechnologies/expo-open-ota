@@ -20,7 +20,7 @@ func NewPostgresBuildStore(engine *database.Engine) *PostgresBuildStore {
 }
 
 func buildRecord(row pgdb.Build) (*types.BuildRecord, error) {
-	record := &types.BuildRecord{ID: row.ID.String(), AppID: row.AppID.String(), AppIdentifierID: row.AppIdentifierID.String(), Platform: types.Platform(row.Platform), ApplicationID: row.ApplicationID, Status: row.Status, ArtifactType: row.ArtifactType, Size: row.Size, SHA256: row.Sha256, ArtifactKey: row.ArtifactKey, ActorType: row.ActorType, ActorID: row.ActorID, ActorDisplay: row.ActorDisplay, CreatedAt: row.CreatedAt.Time, UpdatedAt: row.UpdatedAt.Time}
+	record := &types.BuildRecord{ID: row.ID.String(), AppID: row.AppID.String(), AppIdentifierID: row.AppIdentifierID.String(), Platform: row.Platform, ApplicationID: row.ApplicationID, Status: row.Status, ArtifactType: row.ArtifactType, Size: row.Size, SHA256: row.Sha256, ArtifactKey: row.ArtifactKey, ActorType: row.ActorType, ActorID: row.ActorID, ActorDisplay: row.ActorDisplay, CreatedAt: row.CreatedAt.Time, UpdatedAt: row.UpdatedAt.Time}
 	if row.ReadyAt.Valid {
 		record.ReadyAt = &row.ReadyAt.Time
 	}
@@ -65,7 +65,7 @@ func (s *PostgresBuildStore) Create(ctx context.Context, record types.BuildRecor
 		return nil, false, err
 	}
 	finishedAt, duration := buildTiming(record.Metadata)
-	row, err := s.engine.Queries.InsertBuild(ctx, pgdb.InsertBuildParams{ID: ToPgUUID(record.ID), AppID: ToPgUUID(record.AppID), AppIdentifierID: ToPgUUID(record.AppIdentifierID), Platform: string(record.Platform), ApplicationID: record.ApplicationID, Status: record.Status, ArtifactType: record.ArtifactType, Size: record.Size, Sha256: record.SHA256, ArtifactKey: record.ArtifactKey, Metadata: metadata, ActorType: record.ActorType, ActorID: record.ActorID, ActorDisplay: record.ActorDisplay, StartedAt: pgtype.Timestamptz{Time: record.Metadata.StartedAt, Valid: true}, FinishedAt: finishedAt, DurationMs: duration})
+	row, err := s.engine.Queries.InsertBuild(ctx, pgdb.InsertBuildParams{ID: ToPgUUID(record.ID), AppID: ToPgUUID(record.AppID), AppIdentifierID: ToPgUUID(record.AppIdentifierID), Platform: record.Platform, ApplicationID: record.ApplicationID, Status: record.Status, ArtifactType: record.ArtifactType, Size: record.Size, Sha256: record.SHA256, ArtifactKey: record.ArtifactKey, Metadata: metadata, ActorType: record.ActorType, ActorID: record.ActorID, ActorDisplay: record.ActorDisplay, StartedAt: pgtype.Timestamptz{Time: record.Metadata.StartedAt, Valid: true}, FinishedAt: finishedAt, DurationMs: duration})
 	if errors.Is(err, pgx.ErrNoRows) {
 		existing, err := s.Get(ctx, record.AppID, record.ID)
 		return existing, false, err

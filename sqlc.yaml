@@ -17,3 +17,23 @@ sql:
               import: "xprem/internal/types"
               type: "UpdateAssetMapping"
               pointer: true
+          - column: "builds.status"
+            go_type:
+              import: "xprem/internal/types"
+              type: "BuildStatus"
+          - column: "bundle_patches.status"
+            go_type:
+              import: "xprem/internal/types"
+              type: "BundlePatchStatus"
+          - column: "app_identifiers.platform"
+            go_type:
+              import: "xprem/internal/types"
+              type: "Platform"
+          - column: "builds.platform"
+            go_type:
+              import: "xprem/internal/types"
+              type: "Platform"
+          - column: "updates.platform"
+            go_type:
+              import: "xprem/internal/types"
+              type: "Platform"
