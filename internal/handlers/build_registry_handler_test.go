@@ -278,7 +278,7 @@ func registerBody(content []byte, startedAt time.Time) string {
 
 func TestBuildRegistryStartAndFail(t *testing.T) {
 	f := newRegistryFixture(t)
-	startedAt := time.Now().Add(-5 * time.Minute).UTC()
+	startedAt := time.Now().Add(-5 * time.Minute).UTC().Truncate(time.Microsecond)
 
 	w := f.do(http.MethodPut, registryPath+"/start", startBody(startedAt))
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
