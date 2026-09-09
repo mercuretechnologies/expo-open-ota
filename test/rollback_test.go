@@ -14,6 +14,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"xprem/internal/bucket"
 	"xprem/internal/types"
 )
 
@@ -145,6 +146,8 @@ func TestGoodRollbackWithoutCommitHash(t *testing.T) {
 func TestRollbackDoesNotPoisonLatestUpdateCache(t *testing.T) {
 	teardown := setup(t)
 	defer teardown()
+	// A previous test's prewarm may already have resolved the fixture bucket.
+	_ = bucket.GetBucket()
 	mockExpoForRequestUploadUrlTest("staging")
 	projectRoot, err := findProjectRoot()
 	require.NoError(t, err)
@@ -160,6 +163,7 @@ func TestRollbackDoesNotPoisonLatestUpdateCache(t *testing.T) {
 	// will use. Otherwise the singleton gets built at ./test/test-updates
 	// first and the rollback silently writes to a different tree.
 	os.Setenv("LOCAL_BUCKET_BASE_PATH", filepath.Join(projectRoot, "./updates"))
+	bucket.ResetBucketInstance()
 
 	// Plant a "previous update" for the cache to latch onto. Without this,
 	// a poisoned cache would simply have nothing to point at and the race
