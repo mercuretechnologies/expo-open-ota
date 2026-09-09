@@ -27,6 +27,7 @@ import {
 import { useAppPermission } from '@/ee/lib/PermissionsContext';
 import { PlatformLogo } from '@/pages/BuildCredentials/components/PlatformLogo';
 import { BuildStatusBadge } from './components/BuildStatusBadge';
+import { BuildLogsCard } from './components/BuildLogsCard';
 import { BuildSharesCard } from './components/BuildSharesCard';
 import { ShareBuildDialog } from './components/ShareBuildDialog';
 import {
@@ -376,6 +377,8 @@ export const BuildDetail = () => {
           </DetailSection>
         </div>
       </div>
+
+      <BuildLogsCard key={`${selectedAppId}:${build.id}`} build={build} />
 
       {shareable && (
         <ShareBuildDialog

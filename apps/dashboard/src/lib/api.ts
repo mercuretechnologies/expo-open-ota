@@ -1710,6 +1710,15 @@ export class ApiClient {
     });
   }
 
+  public async getBuildLogs(buildId: string, after = 0, signal?: AbortSignal) {
+    return this.request<{
+      chunks: { offset: number; content: string; format: 'text' | 'ndjson'; createdAt: string }[];
+      nextOffset: number;
+    }>(`${this.appScope()}/builds/${encodeURIComponent(buildId)}/logs?after=${after}`, {
+      method: 'GET', signal,
+    });
+  }
+
   public async downloadBuildArtifact(buildId: string) {
     return this.request<Blob>(
       `${this.appScope()}/builds/${encodeURIComponent(buildId)}/download`,
