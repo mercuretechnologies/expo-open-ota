@@ -112,6 +112,7 @@ func InitDependencies(ctx context.Context) (*AppContainer, func()) {
 	// nil in stateless mode: store identities and signing credentials only
 	// exist on the control plane.
 	var buildRepo services.BuildRepository
+	var buildCleanup *services.BuildCleanup
 	var appIdentifierRepo services.AppIdentifierRepository
 	var credentialsRepo services.CredentialsRepository
 	var environmentRepo services.EnvironmentRepository
@@ -190,6 +191,7 @@ func InitDependencies(ctx context.Context) (*AppContainer, func()) {
 		bundlePatchRepo = store.NewPostgresBundlePatchStore(dbEngine)
 		appIdentifierRepo = store.NewPostgresAppIdentifierStore(dbEngine)
 		buildRepo = store.NewPostgresBuildStore(dbEngine)
+		buildCleanup = services.NewBuildCleanup(dbEngine.DB, resolvedBucket)
 		credentialsRepo = store.NewPostgresCredentialsStore(dbEngine)
 		environmentRepo = store.NewPostgresEnvironmentStore(dbEngine)
 
@@ -321,6 +323,9 @@ func InitDependencies(ctx context.Context) (*AppContainer, func()) {
 	rolloutService := services.NewRolloutService(rolloutRepo, channelRepo, updateRepo, deploymentService)
 	rolloutService.SetOnAuditEvent(auditService.Record)
 	buildService := services.NewBuildService(buildRepo, appIdentifierRepo, resolvedBucket)
+	if buildCleanup != nil {
+		addCleanup(buildCleanup.Start(ctx))
+	}
 	appIdentifierService := services.NewAppIdentifierService(appIdentifierRepo)
 	appIdentifierService.SetOnAuditEvent(auditService.Record)
 	credentialsService := services.NewCredentialsService(credentialsRepo, appIdentifierRepo)
