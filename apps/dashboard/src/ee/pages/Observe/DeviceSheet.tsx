@@ -11,6 +11,7 @@ import { Button } from '@/components/ui/button';
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import { deviceName, osLabel } from './deviceNames';
 import { sinceLabel } from './format';
+import { updateLabel } from './logRecords';
 
 const seen = new Intl.DateTimeFormat(undefined, {
   month: 'short',
@@ -116,7 +117,7 @@ export const DeviceSheet = ({
             <Section title="At this event">
               <Row label="App version" value={shown.appVersion} />
               <Row label="Build number" value={shown.appBuildNumber} />
-              <Row label="Update" value={shown.updateId} />
+              <Row label="Update" value={updateLabel(shown.updateId)} />
               <Row label="Branch" value={shown.branch} />
               <Row label="Channel" value={shown.channel} />
               <Row label="Runtime" value={shown.runtimeVersion} />

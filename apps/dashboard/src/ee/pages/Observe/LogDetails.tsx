@@ -4,7 +4,7 @@
 
 import { ObserveLog } from '@/lib/api';
 import { deviceName } from './deviceNames';
-import { prettyPayload } from './logRecords';
+import { prettyPayload, updateLabel } from './logRecords';
 
 const Detail = ({ label, value }: { label: string; value: string }) => (
   <div className="min-w-0">
@@ -21,7 +21,7 @@ export const LogDetails = ({ log }: { log: ObserveLog }) => {
       <dl className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <Detail label="Device" value={log.easClientId} />
         <Detail label="Session" value={log.sessionId} />
-        <Detail label="Update" value={log.updateId} />
+        <Detail label="Update" value={updateLabel(log.updateId)} />
         <Detail label="Runtime" value={log.runtimeVersion} />
         <Detail label="Branch" value={log.branch} />
         <Detail label="Channel" value={log.channel} />
