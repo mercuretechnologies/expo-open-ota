@@ -746,8 +746,9 @@ export type CreateApiKeyResponse = {
   apiKey: string;
 };
 
-// Enterprise token permissions. Empty action/rule lists grant no access;
-// an empty IP allowlist permits any source address. MIT ignores these restrictions.
+// Enterprise token permissions. Empty Updates rules grant no access; empty Build
+// and Submit rules are unrestricted within the app. An empty IP allowlist permits
+// any source address. MIT ignores these restrictions.
 export type ApiKeyAccessRecord = {
   apiKeyId: string;
   updates: { rules: UpdateRuleRecord[] };
