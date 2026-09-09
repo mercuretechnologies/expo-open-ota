@@ -38,8 +38,8 @@ func TestMCPDecisionFunctions(t *testing.T) {
 	require.False(t, description.RolesEnforced)
 	require.Equal(t, "member", description.Role)
 	require.Len(t, description.Apps, 1)
-	require.Equal(t, []string{string(PermEnvRead), string(PermIdentityRead), string(PermObserveRead)}, description.Apps[0].Granted)
-	require.Len(t, description.Apps[0].Denied, len(AllPermissions)-3)
+	require.Equal(t, []string{string(PermBuildRead), string(PermEnvRead), string(PermIdentityRead), string(PermObserveRead)}, description.Apps[0].Granted)
+	require.Len(t, description.Apps[0].Denied, len(AllPermissions)-4)
 
 	adminDescription, err := service.MCPDescribePermissions(ctx, admin, []string{"app-1"})
 	require.NoError(t, err)

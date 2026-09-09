@@ -29,8 +29,11 @@ export default class Build extends Command {
       description: 'Local Android SDK directory (overrides ANDROID_HOME and sdk.dir)',
     }),
     verbose: Flags.boolean({
-      description:
-        'Print all build output instead of a compact preview (full logs are always saved)',
+      description: 'Print every tool output line with its build phase (full logs are always saved)',
+      default: false,
+    }),
+    stream: Flags.boolean({
+      description: 'Stream build logs to xprem for live viewing in the dashboard',
       default: false,
     }),
   };
@@ -50,6 +53,7 @@ export default class Build extends Command {
         output: flags.output,
         packageRunner: flags.packageRunner,
         verbose: flags.verbose,
+        stream: flags.stream,
         javaHome: flags.javaHome,
         androidSdk: flags.androidSdk,
       });

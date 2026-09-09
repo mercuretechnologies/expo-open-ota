@@ -18,6 +18,12 @@ export const exactTime = new Intl.DateTimeFormat(undefined, {
 export const shortID = (value: string) =>
   value.length > 12 ? `${value.slice(0, 8)}…` : value || '-';
 
+// The server's sentinel for a device running the bundle compiled into its binary.
+const EMBEDDED_UPDATE_ID = '00000000-0000-0000-0000-000000000000';
+
+export const updateLabel = (updateId: string, short = false) =>
+  updateId === EMBEDDED_UPDATE_ID ? 'Embedded bundle' : short ? shortID(updateId) : updateId;
+
 export const severityDot = (log: ObserveLog) => {
   if (log.isFatal) return 'bg-rose-500';
   if (log.severityNumber >= 17) return 'bg-red-400';

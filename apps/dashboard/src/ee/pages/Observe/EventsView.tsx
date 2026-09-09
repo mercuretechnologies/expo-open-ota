@@ -22,7 +22,7 @@ import { MultiSelect } from './MultiSelect';
 import { DeviceSheet } from './DeviceSheet';
 import { deviceName, osLabel } from './deviceNames';
 import { compactNumber, sinceLabel } from './format';
-import { exactTime, logMessage, severityDot, shortID } from './logRecords';
+import { exactTime, logMessage, severityDot, updateLabel } from './logRecords';
 import { LogDetails } from './LogDetails';
 import { useLogStream } from './useLogStream';
 import { useUpdateNames } from './useUpdateNames';
@@ -119,7 +119,7 @@ const EventRow = ({
         </button>
         <span className="hidden min-w-0 pr-4 md:block" title={log.updateId}>
           <span className="block truncate text-xs text-foreground">
-            {updateName || shortID(log.updateId)}
+            {updateName || updateLabel(log.updateId, true)}
           </span>
           {log.branch && <span className="mt-0.5 block truncate text-[11px]">{log.branch}</span>}
         </span>

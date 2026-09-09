@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
-import { SafeAreaView, ScrollView, StyleSheet, TouchableOpacity } from 'react-native'
+import { ScrollView, StyleSheet, TouchableOpacity } from 'react-native'
+import { SafeAreaView } from 'react-native-safe-area-context'
 import { Observe, useObserve } from 'expo-observe'
 
 import { ThemedText } from '@/components/ThemedText'

@@ -30,6 +30,8 @@ import { BuildCredentials } from './pages/BuildCredentials';
 import { AppIdentifierDetail } from './pages/BuildCredentials/AppIdentifierDetail';
 import { Environments } from './pages/Environments';
 import { EnvironmentDetail } from './pages/Environments/EnvironmentDetail';
+import { Builds } from './pages/Builds';
+import { BuildDetail } from './pages/Builds/BuildDetail';
 
 const Observe = lazy(() =>
   import('@/ee/pages/Observe').then(module => ({ default: module.Observe }))
@@ -162,6 +164,11 @@ export const App = () => {
                         <Route
                           path="/build-credentials/:identifierId"
                           element={withLayout(withApp(<AppIdentifierDetail />))}
+                        />
+                        <Route path="/builds" element={withLayout(withApp(<Builds />))} />
+                        <Route
+                          path="/builds/:buildId"
+                          element={withLayout(withApp(<BuildDetail />))}
                         />
                         <Route path="/environments" element={withLayout(withApp(<Environments />))} />
                         <Route

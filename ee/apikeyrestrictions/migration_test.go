@@ -31,11 +31,20 @@ func TestPermissionsMigrationRetryPreservesPolicies(t *testing.T) {
 	require.NoError(t, store.SetAccess(ctx, appID, policy))
 	// Reproduce a crash after the schema committed but before Goose recorded it.
 	const version = 20260906120000
+	var originalID int64
+	require.NoError(t, pool.QueryRow(ctx, "SELECT id FROM goose_db_version WHERE version_id=$1 ORDER BY id DESC LIMIT 1", int64(version)).Scan(&originalID))
 	_, err := pool.Exec(ctx, "DELETE FROM goose_db_version WHERE version_id=$1", int64(version))
 	require.NoError(t, err)
 	t.Cleanup(func() {
-		// Keep the shared test database usable even when this regression fails.
-		_, _ = pool.Exec(ctx, "INSERT INTO goose_db_version(version_id,is_applied) SELECT $1,true WHERE NOT EXISTS (SELECT 1 FROM goose_db_version WHERE version_id=$1)", int64(version))
+		// Goose orders applied migrations by row ID; restore the replayed row's position.
+		tx, err := pool.Begin(ctx)
+		require.NoError(t, err)
+		defer tx.Rollback(ctx)
+		_, err = tx.Exec(ctx, "DELETE FROM goose_db_version WHERE version_id=$1", int64(version))
+		require.NoError(t, err)
+		_, err = tx.Exec(ctx, "INSERT INTO goose_db_version(id,version_id,is_applied) VALUES ($1,$2,true)", originalID, int64(version))
+		require.NoError(t, err)
+		require.NoError(t, tx.Commit(ctx))
 	})
 	db, err := sql.Open("pgx", os.Getenv("TEST_DATABASE_URL"))
 	require.NoError(t, err)

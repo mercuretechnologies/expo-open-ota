@@ -22,6 +22,7 @@ export interface BuildOptions {
   output?: string;
   packageRunner?: string;
   verbose?: boolean;
+  stream?: boolean;
 }
 
 export type NodeEnv = 'development' | 'production';

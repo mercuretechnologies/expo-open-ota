@@ -122,6 +122,63 @@ type Branch struct {
 	Protected bool               `json:"protected"`
 }
 
+type Build struct {
+	ID              pgtype.UUID        `json:"id"`
+	AppID           pgtype.UUID        `json:"app_id"`
+	AppIdentifierID pgtype.UUID        `json:"app_identifier_id"`
+	Platform        string             `json:"platform"`
+	ApplicationID   string             `json:"application_id"`
+	Status          string             `json:"status"`
+	ArtifactType    string             `json:"artifact_type"`
+	Size            int64              `json:"size"`
+	Sha256          string             `json:"sha256"`
+	ArtifactKey     string             `json:"artifact_key"`
+	Metadata        []byte             `json:"metadata"`
+	ActorType       string             `json:"actor_type"`
+	ActorID         string             `json:"actor_id"`
+	ActorDisplay    string             `json:"actor_display"`
+	StartedAt       pgtype.Timestamptz `json:"started_at"`
+	FinishedAt      pgtype.Timestamptz `json:"finished_at"`
+	DurationMs      *int64             `json:"duration_ms"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
+	ReadyAt         pgtype.Timestamptz `json:"ready_at"`
+}
+
+type BuildArtifactCleanup struct {
+	ID              int64              `json:"id"`
+	BuildID         pgtype.UUID        `json:"build_id"`
+	Platform        string             `json:"platform"`
+	AppIdentifierID pgtype.UUID        `json:"app_identifier_id"`
+	ArtifactType    string             `json:"artifact_type"`
+	DueAt           pgtype.Timestamptz `json:"due_at"`
+	Attempts        int32              `json:"attempts"`
+	LastError       *string            `json:"last_error"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+}
+
+type BuildLogChunk struct {
+	BuildID    pgtype.UUID        `json:"build_id"`
+	ByteOffset int32              `json:"byte_offset"`
+	Content    string             `json:"content"`
+	CreatedAt  pgtype.Timestamptz `json:"created_at"`
+	Format     string             `json:"format"`
+}
+
+type BuildShare struct {
+	ID        pgtype.UUID        `json:"id"`
+	BuildID   pgtype.UUID        `json:"build_id"`
+	TokenHash string             `json:"token_hash"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	ExpiresAt pgtype.Timestamptz `json:"expires_at"`
+	RevokedAt pgtype.Timestamptz `json:"revoked_at"`
+}
+
+type BuildStagingSweep struct {
+	BuildID pgtype.UUID        `json:"build_id"`
+	SweptAt pgtype.Timestamptz `json:"swept_at"`
+}
+
 type BundlePatch struct {
 	BranchID         int64              `json:"branch_id"`
 	TargetUpdateID   int64              `json:"target_update_id"`

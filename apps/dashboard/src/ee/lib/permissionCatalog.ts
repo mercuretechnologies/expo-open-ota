@@ -132,6 +132,27 @@ export const PERMISSION_GROUPS: PermissionGroup[] = [
     ],
   },
   {
+    label: 'Builds',
+    permissions: [
+      {
+        value: 'build:read',
+        label: 'View builds',
+        description: 'List the builds of the app and open one: its metadata and its log.',
+      },
+      {
+        value: 'build:download',
+        label: 'Download builds',
+        description: 'Download the signed APK or AAB of a ready build.',
+      },
+      {
+        value: 'build:share',
+        label: 'Share builds',
+        description:
+          'Create and revoke install links for an APK. Anyone holding a link can install the build until it expires or is revoked.',
+      },
+    ],
+  },
+  {
     label: 'Environments',
     permissions: [
       {
@@ -143,7 +164,8 @@ export const PERMISSION_GROUPS: PermissionGroup[] = [
       {
         value: 'env:read',
         label: 'Reveal environment values',
-        description: 'Read the plaintext value of any environment variable. Listing key names is open to every viewer.',
+        description:
+          'Read the plaintext value of any environment variable. Listing key names is open to every viewer.',
       },
     ],
   },

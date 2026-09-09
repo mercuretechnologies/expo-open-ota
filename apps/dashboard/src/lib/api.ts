@@ -221,6 +221,70 @@ export type EnvironmentRecord = {
   vars: EnvVarRecord[];
 };
 
+// What the CLI recorded about a local build. Never carries environment
+// variable values, only the environment name the build used.
+export type BuildMetadata = {
+  profile: string;
+  mode?: 'debug' | 'release';
+  environment?: string;
+  channel?: string;
+  version?: string;
+  buildNumber: string;
+  runtimeVersion?: string;
+  fingerprint: string;
+  expoSdk?: string;
+  cliVersion: string;
+  gitCommit?: string;
+  gitMessage?: string;
+  gitDirty?: boolean;
+  startedAt: string;
+  finishedAt: string;
+  durationMs: number;
+};
+
+export type BuildStatus = 'building' | 'uploading' | 'ready' | 'failed';
+export type BuildArtifactType = 'apk' | 'aab';
+
+// One build the CLI uploaded to the registry. `readyAt` is set once the
+// artifact was fully stored; a build stays `uploading` until then.
+export type BuildRecord = {
+  id: string;
+  appId: string;
+  appIdentifierId: string;
+  platform: 'android';
+  applicationId: string;
+  status: BuildStatus;
+  artifactType: BuildArtifactType;
+  size: number;
+  sha256: string;
+  createdAt: string;
+  readyAt?: string;
+  actorType: string;
+  actorId: string;
+  actorDisplay: string;
+  metadata: BuildMetadata;
+};
+
+export type BuildsPage = {
+  builds: BuildRecord[];
+  // The total for the app, offset excluded.
+  count: number;
+};
+
+// An install link on a build. The bearer URL is returned once, on creation,
+// and never comes back down: a listed share is only known by its expiry.
+export type BuildShareRecord = {
+  id: string;
+  createdAt: string;
+  expiresAt: string;
+  revokedAt?: string;
+};
+
+export type CreateBuildShareResponse = {
+  share: BuildShareRecord;
+  url: string;
+};
+
 export type BranchRecord = {
   branchName: string;
   branchId: string;
@@ -746,8 +810,9 @@ export type CreateApiKeyResponse = {
   apiKey: string;
 };
 
-// Enterprise token permissions. Empty action/rule lists grant no access;
-// an empty IP allowlist permits any source address. MIT ignores these restrictions.
+// Enterprise token permissions. Empty Updates rules grant no access; empty Build
+// and Submit rules are unrestricted within the app. An empty IP allowlist permits
+// any source address. MIT ignores these restrictions.
 export type ApiKeyAccessRecord = {
   apiKeyId: string;
   updates: { rules: UpdateRuleRecord[] };
@@ -1628,6 +1693,63 @@ export class ApiClient {
   public async deleteGooglePlayServiceAccountKey(identifierId: string) {
     return this.request<void>(
       `${this.appScope()}/identifiers/${encodeURIComponent(identifierId)}/credentials/android/google-play-service-account`,
+      { method: 'DELETE' }
+    );
+  }
+
+  public async getBuilds(limit = 20, offset = 0) {
+    const query = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+    return this.request<BuildsPage>(`${this.appScope()}/builds?${query.toString()}`, {
+      method: 'GET',
+    });
+  }
+
+  public async getBuild(buildId: string) {
+    return this.request<BuildRecord>(`${this.appScope()}/builds/${encodeURIComponent(buildId)}`, {
+      method: 'GET',
+    });
+  }
+
+  public async getBuildLogs(buildId: string, after = 0, signal?: AbortSignal) {
+    return this.request<{
+      chunks: { offset: number; content: string; format: 'text' | 'ndjson'; createdAt: string }[];
+      nextOffset: number;
+    }>(`${this.appScope()}/builds/${encodeURIComponent(buildId)}/logs?after=${after}`, {
+      method: 'GET', signal,
+    });
+  }
+
+  public async downloadBuildArtifact(buildId: string) {
+    return this.request<Blob>(
+      `${this.appScope()}/builds/${encodeURIComponent(buildId)}/download`,
+      { method: 'GET' },
+      'blob'
+    );
+  }
+
+  public async getBuildShares(buildId: string) {
+    return this.request<{ shares: BuildShareRecord[] }>(
+      `${this.appScope()}/builds/${encodeURIComponent(buildId)}/shares`,
+      { method: 'GET' }
+    );
+  }
+
+  // The only call that returns the install URL; there is no way to read it
+  // back later.
+  public async createBuildShare(buildId: string, expiresInHours: number) {
+    return this.request<CreateBuildShareResponse>(
+      `${this.appScope()}/builds/${encodeURIComponent(buildId)}/shares`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ expiresInHours }),
+      }
+    );
+  }
+
+  public async revokeBuildShare(buildId: string, shareId: string) {
+    return this.request<void>(
+      `${this.appScope()}/builds/${encodeURIComponent(buildId)}/shares/${encodeURIComponent(shareId)}`,
       { method: 'DELETE' }
     );
   }

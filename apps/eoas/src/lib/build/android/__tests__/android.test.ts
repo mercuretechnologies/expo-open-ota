@@ -6,13 +6,30 @@ import { PassThrough } from 'stream';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  failBuildRecord,
+  finishBuildRecord,
+  startBuildRecord,
+  uploadBuildArtifact,
+} from '../../artifacts';
+import { fingerprintAndroidBuild } from '../../fingerprint';
+import {
   allocateBuildNumber,
   fetchCredentials,
   fetchEnvironment,
   resolveIdentifier,
 } from '../../server';
+import { createBuildLogStream } from '../../stream';
 import { buildAndroid } from '../index';
 import { resolveAndroidTools } from '../tools';
+
+vi.mock('../../artifacts', () => ({
+  startBuildRecord: vi.fn(),
+  failBuildRecord: vi.fn(),
+  finishBuildRecord: vi.fn(),
+  uploadBuildArtifact: vi.fn(),
+}));
+vi.mock('../../fingerprint', () => ({ fingerprintAndroidBuild: vi.fn() }));
+vi.mock('../../stream', () => ({ createBuildLogStream: vi.fn() }));
 
 vi.mock('@expo/spawn-async', () => ({ default: vi.fn() }));
 vi.mock('../../server', async importOriginal => ({
@@ -35,12 +52,51 @@ describe('Android orchestration', () => {
   let sdk: string;
   const events: string[] = [];
   let temporaryProject: string | undefined;
+  let syncArgs: string[] | undefined;
   let failExport = false;
+  let gradleProfileHtml: string | undefined;
   beforeEach(async () => {
     vi.clearAllMocks();
     events.length = 0;
+    vi.mocked(startBuildRecord).mockImplementation(async () => {
+      events.push('start');
+      return {
+        schemaVersion: 1,
+        id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        endpoint: 'https://example.com',
+        artifactType: 'aab',
+        metadata: {
+          profile: 'production',
+          cliVersion: 'test',
+          startedAt: new Date().toISOString(),
+        },
+      };
+    });
+    vi.mocked(fingerprintAndroidBuild).mockImplementation(
+      async (build, working, _temporary, expo) => {
+        events.push('fingerprint');
+        expect(build.env.OVERRIDE).toBe('file-secret-value');
+        expect(build.env.JAVA_HOME).toBe('/checked/jdk');
+        const frozen = await fs.readJson(path.join(working, 'app.json'));
+        expect(frozen.expo).toEqual(expo);
+        expect(expo.android).toEqual({ package: 'com.example.app', versionCode: 42 });
+        expect(await fs.pathExists(path.join(working, '.eoas-metro-check.json'))).toBe(false);
+        return { fingerprint: 'a'.repeat(40), expoSdk: '52.0.0' };
+      }
+    );
+    vi.mocked(uploadBuildArtifact).mockImplementation(async () => {
+      events.push('upload');
+      return 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    });
+    vi.mocked(finishBuildRecord).mockResolvedValue();
+    vi.mocked(failBuildRecord).mockResolvedValue();
     failExport = false;
+    gradleProfileHtml = `<h2>Task Execution</h2><table>
+      <tr><td>:app</td><td>2.000s</td><td>(total)</td></tr>
+      <tr><td class="indentPath">:app:bundleRelease</td><td>2.000s</td><td></td></tr>
+    </table>`;
     temporaryProject = undefined;
+    syncArgs = undefined;
     project = await fs.mkdtemp(path.join(os.tmpdir(), 'eoas-test-project-'));
     sdk = path.join(project, 'sdk');
     vi.mocked(resolveAndroidTools).mockResolvedValue({
@@ -127,6 +183,10 @@ describe('Android orchestration', () => {
           });
         }
       }
+      if (args?.includes('configuration:syncnative')) {
+        events.push('sync-updates');
+        syncArgs = [...(args ?? [])];
+      }
       if (args?.includes('prebuild')) {
         events.push('prebuild');
         const app = await fs.readJson(path.join(cwd, 'app.json'));
@@ -137,6 +197,7 @@ describe('Android orchestration', () => {
       if (command.endsWith('gradlew')) {
         events.push('gradle');
         expect(args).toContain(':app:bundleRelease');
+        expect(args).toContain('--profile');
         expect(options?.env?.JAVA_HOME).toBe('/checked/jdk');
         expect(await fs.readFile(path.join(cwd, 'gradlew'), 'utf8')).not.toContain('\r');
         expect((await fs.stat(path.join(cwd, 'gradlew'))).mode & 0o111).toBe(0o111);
@@ -149,6 +210,12 @@ describe('Android orchestration', () => {
           path.join(cwd, 'app/build/outputs/bundle/release/app-release.aab'),
           'artifact'
         );
+        if (gradleProfileHtml !== undefined) {
+          await fs.outputFile(
+            path.join(cwd, 'build/reports/profile/profile-2026-09-09-10-00-00.html'),
+            gradleProfileHtml
+          );
+        }
       }
       return { stdout: '', stderr: '' } as never;
     }) as unknown as typeof spawnAsync);
@@ -206,7 +273,15 @@ describe('Android orchestration', () => {
       appId: 'app',
     });
     expect(events[0]).toBe('environment channel=production');
-    expect(events.slice(1)).toEqual(['export', 'allocate', 'prebuild', 'gradle']);
+    expect(events.slice(1)).toEqual([
+      'start',
+      'export',
+      'allocate',
+      'fingerprint',
+      'prebuild',
+      'gradle',
+      'upload',
+    ]);
     expect(await fs.readFile(output, 'utf8')).toBe('artifact');
     expect(temporaryProject).toBeDefined();
     expect(await fs.pathExists(temporaryProject!)).toBe(false);
@@ -215,9 +290,99 @@ describe('Android orchestration', () => {
     const logs = await fs.readdir(path.join(project, 'build-artifacts/logs'));
     expect(logs).toHaveLength(1);
     const log = await fs.readFile(path.join(project, 'build-artifacts/logs', logs[0]), 'utf8');
-    expect(log).toContain('Building signed AAB');
+    expect(log).toContain('[RUN_GRADLEW]');
+    expect(log).toContain('[GRADLE_BUILD_PROFILE] Gradle Build — Task Execution Profile');
+    expect(log).toContain('1 task, total task time: 2.0s');
     expect(log).toContain('versionCode 42');
+    expect(createBuildLogStream).not.toHaveBeenCalled();
   });
+  it('syncs the expo-updates configuration into a maintained Android project instead of prebuilding', async () => {
+    await fs.outputFile(path.join(project, 'android/app/build.gradle'), 'android {}');
+    await fs.outputFile(
+      path.join(project, 'android/app/src/main/AndroidManifest.xml'),
+      '<manifest />'
+    );
+    await fs.outputFile(path.join(project, 'android/gradlew'), '#!/bin/sh\nexit 0\n');
+    await buildAndroid(project, {
+      profile: 'production',
+      envFile: 'override.env',
+      serverUrl: 'https://example.com',
+      appId: 'app',
+    });
+    expect(events).not.toContain('prebuild');
+    expect(events.indexOf('sync-updates')).toBeGreaterThan(events.indexOf('allocate'));
+    expect(events.indexOf('sync-updates')).toBeLessThan(events.indexOf('gradle'));
+    expect(syncArgs).toEqual(
+      expect.arrayContaining(['expo-updates', '--platform', 'android', '--workflow', 'generic'])
+    );
+  });
+  it.each([false, true])(
+    'streams only with --stream and flushes final output (failure: %s)',
+    async failure => {
+      const sink = { write: vi.fn(), close: vi.fn().mockResolvedValue(undefined) };
+      vi.mocked(createBuildLogStream).mockReturnValue(sink);
+      if (failure) {
+        vi.mocked(fingerprintAndroidBuild).mockRejectedValueOnce(new Error('fingerprint failed'));
+      }
+      const build = buildAndroid(project, {
+        profile: 'production',
+        envFile: 'override.env',
+        serverUrl: 'https://example.com',
+        appId: 'app',
+        stream: true,
+      });
+      if (failure) {
+        await expect(build).rejects.toThrow('fingerprint failed');
+      } else {
+        await build;
+      }
+      expect(createBuildLogStream).toHaveBeenCalledWith(
+        expect.stringContaining('/build/'),
+        'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        expect.arrayContaining([
+          'store-secret',
+          'key-secret',
+          'remote-secret',
+          'file-secret-value',
+        ]),
+        expect.any(Function)
+      );
+      expect(sink.write.mock.calls.map(([event]) => event.msg).join('\n')).toContain(
+        failure ? 'fingerprint failed' : 'versionCode 42'
+      );
+      if (!failure) {
+        const streamed = sink.write.mock.calls.map(([event]) => event);
+        const profile = streamed.filter(event => event.phase === 'GRADLE_BUILD_PROFILE');
+        expect(profile[0]).toMatchObject({
+          marker: 'START_PHASE',
+          buildStepDisplayName: 'Gradle build profile',
+        });
+        expect(profile.at(-1)).toMatchObject({ marker: 'END_PHASE', result: 'success' });
+        expect(profile.map(event => event.msg).join('\n')).toContain('└─ bundleRelease');
+        const phases = streamed
+          .filter(event => event.marker === 'START_PHASE')
+          .map(event => event.phase);
+        expect(
+          phases.slice(phases.indexOf('RUN_GRADLEW'), phases.indexOf('RUN_GRADLEW') + 3)
+        ).toEqual(['RUN_GRADLEW', 'GRADLE_BUILD_PROFILE', 'PREPARE_ARTIFACTS']);
+      }
+      expect(sink.close).toHaveBeenCalledOnce();
+    }
+  );
+  it.each([undefined, '<invalid/>'])(
+    'still uploads the artifact when Gradle profiling is unavailable (%s)',
+    async report => {
+      gradleProfileHtml = report;
+      await buildAndroid(project, {
+        profile: 'production',
+        envFile: 'override.env',
+        serverUrl: 'https://example.com',
+        appId: 'app',
+      });
+      expect(uploadBuildArtifact).toHaveBeenCalledOnce();
+      expect(failBuildRecord).not.toHaveBeenCalled();
+    }
+  );
   it('does not fetch an environment when the profile selects neither channel nor environment', async () => {
     const file = path.join(project, 'xprem.json');
     const config = await fs.readJson(file);
@@ -230,7 +395,15 @@ describe('Android orchestration', () => {
       appId: 'app',
     });
     expect(fetchEnvironment).not.toHaveBeenCalled();
-    expect(events).toEqual(['export', 'allocate', 'prebuild', 'gradle']);
+    expect(events).toEqual([
+      'start',
+      'export',
+      'allocate',
+      'fingerprint',
+      'prebuild',
+      'gradle',
+      'upload',
+    ]);
   });
   it('keeps repeated builds and pairs each artifact with its full log', async () => {
     const options = {
@@ -304,6 +477,7 @@ describe('Android orchestration', () => {
       >;
     });
     const terminal = vi.spyOn(process.stdout, 'write').mockReturnValue(true);
+    const terminalError = vi.spyOn(process.stderr, 'write').mockReturnValue(true);
     await buildAndroid(project, {
       profile: 'production',
       serverUrl: 'https://example.com',
@@ -313,7 +487,9 @@ describe('Android orchestration', () => {
     });
     const logs = await fs.readdir(path.join(project, 'build-artifacts/logs'));
     const log = await fs.readFile(path.join(project, 'build-artifacts/logs', logs[0]), 'utf8');
-    const displayed = terminal.mock.calls.map(([line]) => String(line)).join('');
+    const displayed = [...terminal.mock.calls, ...terminalError.mock.calls]
+      .map(([line]) => String(line))
+      .join('');
     for (const text of [log, displayed]) {
       expect(text).toContain('Compilation 0\n');
       expect(text).toContain('Compilation 99\n');
@@ -321,6 +497,35 @@ describe('Android orchestration', () => {
       expect(text).toContain('Last line without newline');
       expect(text).not.toContain('store-secret');
     }
+  });
+  it('reports a failed compilation for the existing ID', async () => {
+    vi.mocked(fingerprintAndroidBuild).mockRejectedValue(new Error('fingerprint failed'));
+    await expect(
+      buildAndroid(project, {
+        profile: 'production',
+        envFile: 'override.env',
+        serverUrl: 'https://example.com',
+        appId: 'app',
+      })
+    ).rejects.toThrow('fingerprint failed');
+    expect(failBuildRecord).toHaveBeenCalledOnce();
+    expect(uploadBuildArtifact).not.toHaveBeenCalled();
+    expect(allocateBuildNumber).toHaveBeenCalledOnce();
+  });
+  it('keeps the artifact and gives a resume command when upload fails', async () => {
+    vi.mocked(uploadBuildArtifact).mockRejectedValue(new Error('network unavailable'));
+    await expect(
+      buildAndroid(project, {
+        profile: 'production',
+        envFile: 'override.env',
+        serverUrl: 'https://example.com',
+        appId: 'app',
+      })
+    ).rejects.toThrow('eoas build:upload');
+    expect(failBuildRecord).toHaveBeenCalledOnce();
+    expect(finishBuildRecord).toHaveBeenCalledOnce();
+    const file = vi.mocked(finishBuildRecord).mock.calls[0][1];
+    expect(await fs.readFile(file, 'utf8')).toBe('artifact');
   });
   it('shows the tool failure without secrets and does not reserve a number', async () => {
     failExport = true;
@@ -333,6 +538,8 @@ describe('Android orchestration', () => {
       })
     ).rejects.toThrow('expo-router is incompatible with react-navigation. [REDACTED] [REDACTED]');
     expect(events).not.toContain('allocate');
+    expect(startBuildRecord).toHaveBeenCalledOnce();
+    expect(failBuildRecord).toHaveBeenCalledOnce();
     expect(temporaryProject).toBeDefined();
     expect(await fs.pathExists(temporaryProject!)).toBe(false);
     const logs = await fs.readdir(path.join(project, 'build-artifacts/logs'));
