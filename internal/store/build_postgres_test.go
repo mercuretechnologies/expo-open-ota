@@ -216,9 +216,21 @@ func TestBuildStoreConstraints(t *testing.T) {
 	require.Equal(t, "builds_artifact_declared", constraintName(err), "size and checksum come together")
 
 	uploading := withArtifact(f.record(uuid.NewString(), types.BuildStatusUploading))
-	uploading.Metadata.FinishedAt = time.Time{}
+	uploading.Metadata.FinishedAt, uploading.Metadata.DurationMs = time.Time{}, 0
 	_, _, err = f.builds.Create(ctx, uploading)
 	require.Equal(t, "builds_finished", constraintName(err), "an uploading artifact reports when compilation finished")
+
+	durationOnly := f.record(uuid.NewString(), types.BuildStatusBuilding)
+	durationOnly.Metadata.DurationMs = 1000
+	_, _, err = f.builds.Create(ctx, durationOnly)
+	require.Equal(t, "builds_duration", constraintName(err), "a duration needs a finish time")
+
+	noStart := f.record(uuid.NewString(), types.BuildStatusBuilding)
+	noStart.Metadata.StartedAt = time.Time{}
+	_, _, err = f.builds.Create(ctx, noStart)
+	var pgErr *pgconn.PgError
+	require.ErrorAs(t, err, &pgErr, "a build cannot start at the zero time")
+	require.Equal(t, "started_at", pgErr.ColumnName)
 
 	uploading = withArtifact(f.record(uuid.NewString(), types.BuildStatusUploading))
 	uploading.SHA256 = strings.ToUpper(uploading.SHA256)

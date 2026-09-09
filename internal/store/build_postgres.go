@@ -45,13 +45,13 @@ func buildMetadataJSON(metadata types.BuildMetadata) ([]byte, error) {
 	return json.Marshal(metadata)
 }
 
+// A duration without a finish time is passed through so builds_duration rejects it.
 func buildTiming(metadata types.BuildMetadata) (pgtype.Timestamptz, *int64) {
-	finishedAt := pgtype.Timestamptz{Time: metadata.FinishedAt, Valid: !metadata.FinishedAt.IsZero()}
-	if !finishedAt.Valid && metadata.DurationMs == 0 {
-		return finishedAt, nil
+	if metadata.FinishedAt.IsZero() && metadata.DurationMs == 0 {
+		return pgtype.Timestamptz{}, nil
 	}
 	duration := metadata.DurationMs
-	return finishedAt, &duration
+	return pgtype.Timestamptz{Time: metadata.FinishedAt, Valid: !metadata.FinishedAt.IsZero()}, &duration
 }
 
 func buildNotFound(err error) error {
