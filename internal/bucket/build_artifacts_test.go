@@ -181,3 +181,20 @@ func TestBuildKeysNeverConfirmAV1Triple(t *testing.T) {
 		require.False(t, inConfirmedTriple(key, map[string]bool{}))
 	}
 }
+
+func TestBuildArtifactValidate(t *testing.T) {
+	require.NoError(t, testArtifact().Validate())
+
+	for name, bad := range map[string]BuildArtifact{
+		"empty identifier":     {BuildID: testBuildID, Type: types.BuildArtifactAPK},
+		"traversal identifier": {IdentifierID: "../escape", BuildID: testBuildID, Type: types.BuildArtifactAPK},
+		"uppercase identifier": {IdentifierID: strings.ToUpper(testIdentifierID), BuildID: testBuildID, Type: types.BuildArtifactAPK},
+		"empty build":          {IdentifierID: testIdentifierID, Type: types.BuildArtifactAAB},
+		"traversal build":      {IdentifierID: testIdentifierID, BuildID: "../escape", Type: types.BuildArtifactIPA},
+		"uppercase build":      {IdentifierID: testIdentifierID, BuildID: strings.ToUpper(testBuildID), Type: types.BuildArtifactIPA},
+		"empty type":           {IdentifierID: testIdentifierID, BuildID: testBuildID},
+		"unknown type":         {IdentifierID: testIdentifierID, BuildID: testBuildID, Type: "apk/../x"},
+	} {
+		require.Error(t, bad.Validate(), name)
+	}
+}
