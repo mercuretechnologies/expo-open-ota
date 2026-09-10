@@ -6,6 +6,7 @@ import path from 'path';
 import { AndroidToolsOptions, configureAndroidSdk, resolveAndroidTools } from './tools';
 import Log from '../../log';
 import { resolvePackageRunner, splitPackageRunner } from '../../packageRunner';
+import { resolveExpoUpdatesCli } from '../../runtimeVersion';
 import { secretsToRedact } from '../errors';
 import { BuildLog, withBuildLog } from '../log';
 import {
@@ -140,13 +141,11 @@ async function buildInWorkspace(
     );
     // Same as EAS for bare projects: the manifest keeps whatever environment
     // the last prebuild saw, so channel, URL and runtime are re-synced here.
-    const [command, prefix] = build.packageRunner;
     await stages.run({
       title: 'Syncing expo-updates configuration',
-      command,
+      command: process.execPath,
       args: [
-        ...prefix,
-        'expo-updates',
+        resolveExpoUpdatesCli(working),
         'configuration:syncnative',
         '--platform',
         'android',
