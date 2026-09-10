@@ -96,6 +96,7 @@ async function checkJava(
   environment: NodeJS.ProcessEnv,
   report: (message: string) => void
 ): Promise<string> {
+  // is configuredHome is an absolute path path.resolve will just resolve "configureHome"
   let javaHome = configuredHome ? path.resolve(project, configuredHome) : undefined;
   const java = javaHome ? path.join(javaHome, 'bin/java') : 'java';
   const env = { ...environment, ...(javaHome ? { JAVA_HOME: javaHome } : {}) };
