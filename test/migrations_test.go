@@ -240,8 +240,3 @@ func (b *dummyMigrationsBucket) RequestBuildArtifactUploadURL(context.Context, b
 	b.actionsRecorded = append(b.actionsRecorded, "RequestBuildArtifactUploadURL")
 	return "", nil
 }
-
-func (b *dummyMigrationsBucket) ListBuildPrefixes(context.Context, string) ([]string, error) {
-	b.actionsRecorded = append(b.actionsRecorded, "ListBuildPrefixes")
-	return nil, nil
-}

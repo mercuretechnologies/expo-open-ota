@@ -224,7 +224,6 @@ type Bucket interface {
 	PutBuildArtifact(ctx context.Context, ref BuildArtifact, staging bool, body io.Reader) error
 	DeleteBuildArtifact(ctx context.Context, ref BuildArtifact, staging bool) error
 	RequestBuildArtifactUploadURL(ctx context.Context, ref BuildArtifact) (string, error)
-	ListBuildPrefixes(ctx context.Context, folder string) ([]string, error)
 }
 
 type BucketType string

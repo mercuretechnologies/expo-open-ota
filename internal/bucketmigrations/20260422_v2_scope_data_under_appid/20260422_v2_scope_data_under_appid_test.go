@@ -176,8 +176,3 @@ func (u unreachableBucket) RequestBuildArtifactUploadURL(context.Context, bucket
 	u.t.Fatal("migration should have skipped")
 	return "", nil
 }
-
-func (u unreachableBucket) ListBuildPrefixes(context.Context, string) ([]string, error) {
-	u.t.Fatal("migration should have skipped")
-	return nil, nil
-}

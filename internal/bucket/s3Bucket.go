@@ -819,32 +819,3 @@ func (b *S3Bucket) RequestBuildArtifactUploadURL(ctx context.Context, ref BuildA
 	}
 	return presignResult.URL, nil
 }
-
-// ListBuildPrefixes returns the immediate child directories of a
-// prefix-relative folder.
-func (b *S3Bucket) ListBuildPrefixes(ctx context.Context, folder string) ([]string, error) {
-	if b.BucketName == "" {
-		return nil, errors.New("BucketName not set")
-	}
-	s3Client, err := aws.GetS3Client()
-	if err != nil {
-		return nil, err
-	}
-	full := b.prefixedKey(folder)
-	paginator := s3.NewListObjectsV2Paginator(s3Client, &s3.ListObjectsV2Input{
-		Bucket:    awssdk.String(b.BucketName),
-		Prefix:    awssdk.String(full),
-		Delimiter: awssdk.String("/"),
-	})
-	var names []string
-	for paginator.HasMorePages() {
-		page, err := paginator.NextPage(ctx)
-		if err != nil {
-			return nil, err
-		}
-		for _, common := range page.CommonPrefixes {
-			names = append(names, strings.TrimSuffix(strings.TrimPrefix(*common.Prefix, full), "/"))
-		}
-	}
-	return names, nil
-}

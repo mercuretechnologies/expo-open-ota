@@ -885,23 +885,3 @@ func pruneEmptyBuildDirs(root, dir string) {
 func (b *LocalBucket) RequestBuildArtifactUploadURL(context.Context, BuildArtifact) (string, error) {
 	return "", nil
 }
-
-func (b *LocalBucket) ListBuildPrefixes(_ context.Context, folder string) ([]string, error) {
-	if b.BasePath == "" {
-		return nil, errors.New("BasePath not set")
-	}
-	entries, err := os.ReadDir(filepath.Join(b.rootPath(), filepath.FromSlash(folder)))
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	var names []string
-	for _, entry := range entries {
-		if entry.IsDir() {
-			names = append(names, entry.Name())
-		}
-	}
-	return names, nil
-}

@@ -384,7 +384,3 @@ func (s *stubBucket) RequestBuildArtifactUploadURL(context.Context, BuildArtifac
 	s.mark()
 	return "", nil
 }
-func (s *stubBucket) ListBuildPrefixes(context.Context, string) ([]string, error) {
-	s.mark()
-	return nil, nil
-}

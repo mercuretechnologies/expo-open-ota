@@ -1349,7 +1349,3 @@ func (fakeRolloutBucket) DeleteBuildArtifact(context.Context, bucket.BuildArtifa
 func (fakeRolloutBucket) RequestBuildArtifactUploadURL(context.Context, bucket.BuildArtifact) (string, error) {
 	return "", nil
 }
-
-func (fakeRolloutBucket) ListBuildPrefixes(context.Context, string) ([]string, error) {
-	return nil, nil
-}

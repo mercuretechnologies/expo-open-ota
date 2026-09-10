@@ -671,27 +671,3 @@ func (b *AzureBucket) RequestBuildArtifactUploadURL(_ context.Context, ref Build
 	}
 	return url, nil
 }
-
-// ListBuildPrefixes returns the immediate child directories of a
-// prefix-relative folder.
-func (b *AzureBucket) ListBuildPrefixes(ctx context.Context, folder string) ([]string, error) {
-	cc, err := b.containerClient()
-	if err != nil {
-		return nil, err
-	}
-	full := b.prefixedKey(folder)
-	pager := cc.NewListBlobsHierarchyPager("/", &container.ListBlobsHierarchyOptions{Prefix: &full})
-	var names []string
-	for pager.More() {
-		page, err := pager.NextPage(ctx)
-		if err != nil {
-			return nil, err
-		}
-		for _, blobPrefix := range page.Segment.BlobPrefixes {
-			if blobPrefix.Name != nil {
-				names = append(names, strings.TrimSuffix(strings.TrimPrefix(*blobPrefix.Name, full), "/"))
-			}
-		}
-	}
-	return names, nil
-}

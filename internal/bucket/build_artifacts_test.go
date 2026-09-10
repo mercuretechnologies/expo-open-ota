@@ -128,43 +128,6 @@ func writeLegacyUpdate(t *testing.T, root string, segments ...string) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "update-metadata.json"), []byte("{}"), 0o644))
 }
 
-func TestBuildWritesRefuseLegacyOTATreeUnderBuildsPrefix(t *testing.T) {
-	for name, segments := range map[string][]string{
-		"v1 branch named builds": {"builds", "1.0.0", "1674170951"},
-		"cas of a v1 app":        {"builds", "cas"},
-	} {
-		t.Run(name, func(t *testing.T) {
-			base := t.TempDir()
-			writeLegacyUpdate(t, base, segments...)
-			b := testBuildBucket(base, "")
-			ctx := context.Background()
-			err := b.PutBuildArtifact(ctx, testArtifact(), true, strings.NewReader("bytes"))
-			require.ErrorIs(t, err, ErrBuildNamespaceConflict)
-			_, err = b.RequestBuildArtifactUploadURL(ctx, testArtifact())
-			require.ErrorIs(t, err, ErrBuildNamespaceConflict)
-			_, err = os.Stat(filepath.Join(base, "builds", "android"))
-			require.True(t, os.IsNotExist(err), "nothing is written into the conflicting tree")
-
-			file, err := b.GetBuildArtifact(ctx, testArtifact(), false)
-			require.NoError(t, err)
-			require.Nil(t, file)
-			require.NoError(t, b.DeleteBuildArtifact(ctx, testArtifact(), false), "reads and exact deletes still work")
-			_, err = os.Stat(filepath.Join(append([]string{base}, segments...)...))
-			require.NoError(t, err, "the legacy tree is preserved")
-		})
-	}
-}
-
-func TestBuildNamespaceProbeIsRememberedOncePassed(t *testing.T) {
-	base := t.TempDir()
-	b := testBuildBucket(base, "")
-	ctx := context.Background()
-	require.NoError(t, b.checkBuildNamespace(ctx))
-	writeLegacyUpdate(t, base, "builds", "1.0.0", "1674170951")
-	require.NoError(t, b.checkBuildNamespace(ctx))
-	require.ErrorIs(t, testBuildBucket(base, "").checkBuildNamespace(ctx), ErrBuildNamespaceConflict)
-}
-
 func TestBuildTreeCoexistsWithOTATreesAndMigration(t *testing.T) {
 	base := t.TempDir()
 	appId := "d8471dfc-c3e9-4e14-afd9-21dc34cc498a"
@@ -191,7 +154,6 @@ func TestBuildTreeCoexistsWithOTATreesAndMigration(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, file)
 	file.Reader.Close()
-	require.NoError(t, checkBuildNamespace(ctx, local))
 	require.NoError(t, b.DeleteUpdateFolder(appId, "main", "1.0.0", "1674170951"))
 	_, err = os.Stat(filepath.Join(base, appId, "main", "1.0.0", "1674170951"))
 	require.True(t, os.IsNotExist(err))
