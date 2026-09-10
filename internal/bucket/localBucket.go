@@ -827,10 +827,18 @@ func (b *LocalBucket) writeFileAtomically(target string, body io.Reader) error {
 	if b.BasePath == "" {
 		return errors.New("BasePath not set")
 	}
-	if err := os.MkdirAll(filepath.Dir(target), 0700); err != nil {
+	dir := filepath.Dir(target)
+	if err := os.MkdirAll(dir, 0700); err != nil {
 		return err
 	}
-	f, err := os.CreateTemp(filepath.Dir(target), ".upload-")
+	f, err := os.CreateTemp(dir, ".upload-")
+	// A concurrent DeleteBuildArtifact may have pruned dir in between.
+	if os.IsNotExist(err) {
+		if err = os.MkdirAll(dir, 0700); err != nil {
+			return err
+		}
+		f, err = os.CreateTemp(dir, ".upload-")
+	}
 	if err != nil {
 		return err
 	}

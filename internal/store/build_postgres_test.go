@@ -247,6 +247,11 @@ func TestBuildStoreConstraints(t *testing.T) {
 	_, _, err = f.builds.Create(ctx, uploading)
 	require.Contains(t, constraintName(err), "status")
 
+	iosApk := f.record(uuid.NewString(), types.BuildStatusBuilding)
+	iosApk.Platform = types.PlatformIOS
+	_, _, err = f.builds.Create(ctx, iosApk)
+	require.Equal(t, "builds_artifact_platform", constraintName(err), "an apk is an android artifact")
+
 	ok := withArtifact(f.record(uuid.NewString(), types.BuildStatusUploading))
 	_, inserted, err := f.builds.Create(ctx, ok)
 	require.NoError(t, err)

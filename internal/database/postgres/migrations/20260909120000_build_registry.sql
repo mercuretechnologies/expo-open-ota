@@ -22,6 +22,7 @@ CREATE TABLE builds (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     ready_at TIMESTAMPTZ,
     FOREIGN KEY (app_id,app_identifier_id) REFERENCES app_identifiers(app_id,id) ON DELETE CASCADE,
+    CONSTRAINT builds_artifact_platform CHECK ((platform = 'android') = (artifact_type IN ('apk', 'aab'))),
     CONSTRAINT builds_artifact_declared CHECK ((size > 0) = (sha256 <> '')),
     CONSTRAINT builds_artifact_required CHECK (status NOT IN ('uploading', 'ready') OR size > 0),
     CONSTRAINT builds_finished CHECK ((status = 'building') = (finished_at IS NULL)),
