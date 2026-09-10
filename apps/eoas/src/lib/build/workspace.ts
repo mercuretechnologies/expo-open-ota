@@ -42,8 +42,6 @@ export async function copyTemplate(name: string, destination: string): Promise<v
   await fs.copy(path.join(TEMPLATES, name), destination);
 }
 
-// EAS likewise archives the project before prebuild and injects signing/version
-// Gradle scripts afterwards (eas-cli build-tools/steps/utils/android/gradleConfig).
 // Installed dependencies are shared through links; generated native files stay in the copy.
 export async function copyProject(project: string, temporary: string): Promise<string> {
   let root = project;
