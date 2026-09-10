@@ -367,3 +367,39 @@ func TestValidatingBucketRejectsTheReservedBranchName(t *testing.T) {
 	_, err = b.RequestUploadUrlForFileUpdate("app-1", casDir, "1.0", "100", "metadata.json")
 	assert.ErrorContains(t, err, "reserved")
 }
+
+func (s *stubBucket) GetBuildArtifact(context.Context, BuildArtifact, bool) (*types.BucketFile, error) {
+	s.mark()
+	return nil, nil
+}
+func (s *stubBucket) PutBuildArtifact(context.Context, BuildArtifact, bool, io.Reader) error {
+	s.mark()
+	return nil
+}
+func (s *stubBucket) DeleteBuildArtifact(context.Context, BuildArtifact, bool) error {
+	s.mark()
+	return nil
+}
+func (s *stubBucket) RequestBuildArtifactUploadURL(context.Context, BuildArtifact) (string, error) {
+	s.mark()
+	return "", nil
+}
+
+func TestValidateBSDiffKey(t *testing.T) {
+	const target = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+	const source = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+	assert.NoError(t, validateBSDiffKey("app-1", "main", target, source))
+
+	for name, c := range map[string]struct{ appId, branch, target, source string }{
+		"empty appId":      {"", "main", target, source},
+		"traversal appId":  {"../evil", "main", target, source},
+		"traversal branch": {"app-1", "../evil", target, source},
+		"reserved branch":  {"app-1", bsDiffDir, target, source},
+		"traversal target": {"app-1", "main", "../evil", source},
+		"uppercase target": {"app-1", "main", strings.ToUpper(target), source},
+		"empty source":     {"app-1", "main", target, ""},
+		"non-uuid source":  {"app-1", "main", target, "not-a-uuid"},
+	} {
+		assert.Error(t, validateBSDiffKey(c.appId, c.branch, c.target, c.source), name)
+	}
+}

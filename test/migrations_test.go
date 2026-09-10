@@ -220,3 +220,23 @@ func TestShouldRunMultipleMigrationsAsc(t *testing.T) {
 		t.Fatalf("Expected action 'GetBranches', got '%s'", b.actionsRecorded[3])
 	}
 }
+
+func (b *dummyMigrationsBucket) GetBuildArtifact(context.Context, bucket.BuildArtifact, bool) (*types.BucketFile, error) {
+	b.actionsRecorded = append(b.actionsRecorded, "GetBuildArtifact")
+	return nil, nil
+}
+
+func (b *dummyMigrationsBucket) PutBuildArtifact(context.Context, bucket.BuildArtifact, bool, io.Reader) error {
+	b.actionsRecorded = append(b.actionsRecorded, "PutBuildArtifact")
+	return nil
+}
+
+func (b *dummyMigrationsBucket) DeleteBuildArtifact(context.Context, bucket.BuildArtifact, bool) error {
+	b.actionsRecorded = append(b.actionsRecorded, "DeleteBuildArtifact")
+	return nil
+}
+
+func (b *dummyMigrationsBucket) RequestBuildArtifactUploadURL(context.Context, bucket.BuildArtifact) (string, error) {
+	b.actionsRecorded = append(b.actionsRecorded, "RequestBuildArtifactUploadURL")
+	return "", nil
+}

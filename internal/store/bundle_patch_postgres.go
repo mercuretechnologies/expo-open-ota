@@ -91,7 +91,7 @@ func (s *PostgresBundlePatchStore) Finish(ctx context.Context, appId, branch, ta
 		reasonPtr = &reason
 	}
 	rows, err := s.engine.Queries.FinishBundlePatch(ctx, pgdb.FinishBundlePatchParams{
-		Status:           string(status),
+		Status:           status,
 		Reason:           reasonPtr,
 		PatchSize:        patchSize,
 		FullDownloadSize: fullDownloadSize,
@@ -129,7 +129,7 @@ func (s *PostgresBundlePatchStore) ListByTarget(ctx context.Context, appId, bran
 			TargetUpdateId:   strconv.FormatInt(row.TargetUpdateID, 10),
 			SourceUpdateId:   strconv.FormatInt(row.SourceUpdateID, 10),
 			SourceCommitHash: row.SourceCommitHash,
-			Status:           types.BundlePatchStatus(row.Status),
+			Status:           row.Status,
 			PatchSize:        row.PatchSize,
 			FullDownloadSize: row.FullDownloadSize,
 			Attempts:         int(row.Attempts),

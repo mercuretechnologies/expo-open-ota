@@ -117,7 +117,7 @@ func TestGetPublishGroupsPagePostgres(t *testing.T) {
 	require.Len(t, firstPage.Items, 2)
 	require.NotNil(t, firstPage.NextCursor)
 	assert.Equal(t, groups[2], firstPage.Items[0].PublishGroup)
-	assert.Equal(t, []string{"ios", "android"}, firstPage.Items[0].Platforms)
+	assert.Equal(t, []types.Platform{types.PlatformIOS, types.PlatformAndroid}, firstPage.Items[0].Platforms)
 	assert.Len(t, firstPage.Items[0].Updates, 2)
 	assert.Equal(t, groups[1], firstPage.Items[1].PublishGroup)
 

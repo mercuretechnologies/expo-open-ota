@@ -156,3 +156,23 @@ func TestUp_RunsOnSingleAppFlatEnv(t *testing.T) {
 	_, err := os.Stat(filepath.Join(base, "app-1", "branch-a", "1", "12345", ".check"))
 	assert.NoError(t, err)
 }
+
+func (u unreachableBucket) GetBuildArtifact(context.Context, bucket.BuildArtifact, bool) (*types.BucketFile, error) {
+	u.t.Fatal("migration should have skipped")
+	return nil, nil
+}
+
+func (u unreachableBucket) PutBuildArtifact(context.Context, bucket.BuildArtifact, bool, io.Reader) error {
+	u.t.Fatal("migration should have skipped")
+	return nil
+}
+
+func (u unreachableBucket) DeleteBuildArtifact(context.Context, bucket.BuildArtifact, bool) error {
+	u.t.Fatal("migration should have skipped")
+	return nil
+}
+
+func (u unreachableBucket) RequestBuildArtifactUploadURL(context.Context, bucket.BuildArtifact) (string, error) {
+	u.t.Fatal("migration should have skipped")
+	return "", nil
+}

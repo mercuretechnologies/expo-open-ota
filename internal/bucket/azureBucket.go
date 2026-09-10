@@ -611,3 +611,63 @@ func (b *AzureBucket) RemoveMigrationFromHistory(migrationId string) error {
 	}
 	return b.writeMigrationHistory(content)
 }
+
+func (b *AzureBucket) buildArtifactKey(ref BuildArtifact, staging bool) (string, error) {
+	key, err := ref.Key(staging)
+	if err != nil {
+		return "", err
+	}
+	return b.prefixedKey(key), nil
+}
+
+func (b *AzureBucket) GetBuildArtifact(ctx context.Context, ref BuildArtifact, staging bool) (*types.BucketFile, error) {
+	key, err := b.buildArtifactKey(ref, staging)
+	if err != nil {
+		return nil, err
+	}
+	return b.getObject(ctx, key)
+}
+
+func (b *AzureBucket) PutBuildArtifact(ctx context.Context, ref BuildArtifact, staging bool, body io.Reader) error {
+	key, err := b.buildArtifactKey(ref, staging)
+	if err != nil {
+		return err
+	}
+	return b.putObject(ctx, key, body)
+}
+
+func (b *AzureBucket) DeleteBuildArtifact(ctx context.Context, ref BuildArtifact, staging bool) error {
+	key, err := b.buildArtifactKey(ref, staging)
+	if err != nil {
+		return err
+	}
+	return b.deleteObject(ctx, key)
+}
+
+// deleteObject is a no-op when the blob does not exist.
+func (b *AzureBucket) deleteObject(ctx context.Context, key string) error {
+	cc, err := b.containerClient()
+	if err != nil {
+		return err
+	}
+	_, err = cc.NewBlobClient(key).Delete(ctx, nil)
+	if bloberror.HasCode(err, bloberror.BlobNotFound) {
+		return nil
+	}
+	return err
+}
+
+func (b *AzureBucket) RequestBuildArtifactUploadURL(_ context.Context, ref BuildArtifact) (string, error) {
+	key, err := b.buildArtifactKey(ref, true)
+	if err != nil {
+		return "", err
+	}
+	if b.ContainerName == "" {
+		return "", errors.New("ContainerName not set")
+	}
+	url, err := azure.SignBlobSAS(b.ContainerName, key, sas.BlobPermissions{Create: true, Write: true}, buildUploadExpiry)
+	if err != nil {
+		return "", fmt.Errorf("error generating SAS URL: %w", err)
+	}
+	return url, nil
+}

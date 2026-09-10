@@ -78,7 +78,7 @@ type App struct {
 type AppIdentifier struct {
 	ID          pgtype.UUID        `json:"id"`
 	AppID       pgtype.UUID        `json:"app_id"`
-	Platform    string             `json:"platform"`
+	Platform    types.Platform     `json:"platform"`
 	Identifier  string             `json:"identifier"`
 	BuildNumber string             `json:"build_number"`
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
@@ -122,17 +122,40 @@ type Branch struct {
 	Protected bool               `json:"protected"`
 }
 
+type Build struct {
+	ID              pgtype.UUID             `json:"id"`
+	AppID           pgtype.UUID             `json:"app_id"`
+	AppIdentifierID pgtype.UUID             `json:"app_identifier_id"`
+	Platform        types.Platform          `json:"platform"`
+	ApplicationID   string                  `json:"application_id"`
+	Status          types.BuildStatus       `json:"status"`
+	ArtifactType    types.BuildArtifactType `json:"artifact_type"`
+	Size            int64                   `json:"size"`
+	Sha256          string                  `json:"sha256"`
+	ArtifactKey     string                  `json:"artifact_key"`
+	Metadata        []byte                  `json:"metadata"`
+	ActorType       string                  `json:"actor_type"`
+	ActorID         string                  `json:"actor_id"`
+	ActorDisplay    string                  `json:"actor_display"`
+	StartedAt       pgtype.Timestamptz      `json:"started_at"`
+	FinishedAt      pgtype.Timestamptz      `json:"finished_at"`
+	DurationMs      *int64                  `json:"duration_ms"`
+	CreatedAt       pgtype.Timestamptz      `json:"created_at"`
+	UpdatedAt       pgtype.Timestamptz      `json:"updated_at"`
+	ReadyAt         pgtype.Timestamptz      `json:"ready_at"`
+}
+
 type BundlePatch struct {
-	BranchID         int64              `json:"branch_id"`
-	TargetUpdateID   int64              `json:"target_update_id"`
-	SourceUpdateID   int64              `json:"source_update_id"`
-	Status           string             `json:"status"`
-	Reason           *string            `json:"reason"`
-	PatchSize        *int64             `json:"patch_size"`
-	FullDownloadSize *int64             `json:"full_download_size"`
-	Attempts         int32              `json:"attempts"`
-	CreatedAt        pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
+	BranchID         int64                   `json:"branch_id"`
+	TargetUpdateID   int64                   `json:"target_update_id"`
+	SourceUpdateID   int64                   `json:"source_update_id"`
+	Status           types.BundlePatchStatus `json:"status"`
+	Reason           *string                 `json:"reason"`
+	PatchSize        *int64                  `json:"patch_size"`
+	FullDownloadSize *int64                  `json:"full_download_size"`
+	Attempts         int32                   `json:"attempts"`
+	CreatedAt        pgtype.Timestamptz      `json:"created_at"`
+	UpdatedAt        pgtype.Timestamptz      `json:"updated_at"`
 }
 
 type Channel struct {
@@ -345,7 +368,7 @@ type Update struct {
 	UpdateType        int32                     `json:"update_type"`
 	CommitHash        string                    `json:"commit_hash"`
 	Message           *string                   `json:"message"`
-	Platform          string                    `json:"platform"`
+	Platform          types.Platform            `json:"platform"`
 	CreatedAt         pgtype.Timestamptz        `json:"created_at"`
 	CheckedAt         pgtype.Timestamptz        `json:"checked_at"`
 	RolloutPercentage *int32                    `json:"rollout_percentage"`

@@ -798,3 +798,98 @@ func copyDirParallel(srcDir, dstDir string) error {
 	}
 	return nil
 }
+
+func (b *LocalBucket) buildArtifactPath(ref BuildArtifact, staging bool) (string, error) {
+	key, err := ref.Key(staging)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(b.rootPath(), filepath.FromSlash(key)), nil
+}
+
+func (b *LocalBucket) GetBuildArtifact(_ context.Context, ref BuildArtifact, staging bool) (*types.BucketFile, error) {
+	path, err := b.buildArtifactPath(ref, staging)
+	if err != nil {
+		return nil, err
+	}
+	return b.openFile(path)
+}
+
+func (b *LocalBucket) PutBuildArtifact(_ context.Context, ref BuildArtifact, staging bool, body io.Reader) error {
+	path, err := b.buildArtifactPath(ref, staging)
+	if err != nil {
+		return err
+	}
+	return b.writeFileAtomically(path, body)
+}
+
+func (b *LocalBucket) writeFileAtomically(target string, body io.Reader) error {
+	if b.BasePath == "" {
+		return errors.New("BasePath not set")
+	}
+	dir := filepath.Dir(target)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return err
+	}
+	f, err := os.CreateTemp(dir, ".upload-")
+	// A concurrent DeleteBuildArtifact may have pruned dir in between.
+	if os.IsNotExist(err) {
+		if err = os.MkdirAll(dir, 0700); err != nil {
+			return err
+		}
+		f, err = os.CreateTemp(dir, ".upload-")
+	}
+	if err != nil {
+		return err
+	}
+	defer os.Remove(f.Name())
+	_, copyErr := io.Copy(f, body)
+	syncErr := f.Sync()
+	closeErr := f.Close()
+	if copyErr != nil {
+		return copyErr
+	}
+	if syncErr != nil {
+		return syncErr
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	return os.Rename(f.Name(), target)
+}
+
+// DeleteBuildArtifact is a no-op when the file is absent.
+func (b *LocalBucket) DeleteBuildArtifact(_ context.Context, ref BuildArtifact, staging bool) error {
+	path, err := b.buildArtifactPath(ref, staging)
+	if err != nil {
+		return err
+	}
+	if b.BasePath == "" {
+		return errors.New("BasePath not set")
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	pruneEmptyBuildDirs(filepath.Join(b.rootPath(), BuildsPrefix), filepath.Dir(path))
+	return nil
+}
+
+// pruneEmptyBuildDirs removes dir and its empty parents, stopping at root.
+func pruneEmptyBuildDirs(root, dir string) {
+	for {
+		rel, err := filepath.Rel(root, dir)
+		if err != nil || rel == "." || strings.HasPrefix(rel, "..") {
+			return
+		}
+		if err := os.Remove(dir); err != nil {
+			return
+		}
+		dir = filepath.Dir(dir)
+	}
+}
+
+// RequestBuildArtifactUploadURL returns an empty URL: local uploads go
+// through the server.
+func (b *LocalBucket) RequestBuildArtifactUploadURL(context.Context, BuildArtifact) (string, error) {
+	return "", nil
+}

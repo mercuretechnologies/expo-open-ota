@@ -220,6 +220,10 @@ type Bucket interface {
 	GetBSDiff(ctx context.Context, appId, branch, targetUpdateUUID, sourceUpdateUUID string) (*types.BucketFile, error)
 	PutBSDiff(ctx context.Context, appId, branch, targetUpdateUUID, sourceUpdateUUID string, body io.Reader) error
 	DeleteBSDiffs(ctx context.Context, appId, branch string) error
+	GetBuildArtifact(ctx context.Context, ref BuildArtifact, staging bool) (*types.BucketFile, error)
+	PutBuildArtifact(ctx context.Context, ref BuildArtifact, staging bool, body io.Reader) error
+	DeleteBuildArtifact(ctx context.Context, ref BuildArtifact, staging bool) error
+	RequestBuildArtifactUploadURL(ctx context.Context, ref BuildArtifact) (string, error)
 }
 
 type BucketType string

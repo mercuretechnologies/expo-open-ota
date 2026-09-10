@@ -590,3 +590,63 @@ func (b *GCSBucket) RemoveMigrationFromHistory(migrationId string) error {
 	}
 	return w.Close()
 }
+
+func (b *GCSBucket) buildArtifactKey(ref BuildArtifact, staging bool) (string, error) {
+	key, err := ref.Key(staging)
+	if err != nil {
+		return "", err
+	}
+	return b.prefixedKey(key), nil
+}
+
+func (b *GCSBucket) GetBuildArtifact(ctx context.Context, ref BuildArtifact, staging bool) (*types.BucketFile, error) {
+	key, err := b.buildArtifactKey(ref, staging)
+	if err != nil {
+		return nil, err
+	}
+	return b.getObject(ctx, key)
+}
+
+func (b *GCSBucket) PutBuildArtifact(ctx context.Context, ref BuildArtifact, staging bool, body io.Reader) error {
+	key, err := b.buildArtifactKey(ref, staging)
+	if err != nil {
+		return err
+	}
+	return b.putObject(ctx, key, body)
+}
+
+func (b *GCSBucket) DeleteBuildArtifact(ctx context.Context, ref BuildArtifact, staging bool) error {
+	key, err := b.buildArtifactKey(ref, staging)
+	if err != nil {
+		return err
+	}
+	return b.deleteObject(ctx, key)
+}
+
+// deleteObject is a no-op when the key does not exist.
+func (b *GCSBucket) deleteObject(ctx context.Context, key string) error {
+	bh, err := b.bucketHandle(ctx)
+	if err != nil {
+		return err
+	}
+	err = bh.Object(key).Delete(ctx)
+	if errors.Is(err, storage.ErrObjectNotExist) {
+		return nil
+	}
+	return err
+}
+
+func (b *GCSBucket) RequestBuildArtifactUploadURL(_ context.Context, ref BuildArtifact) (string, error) {
+	key, err := b.buildArtifactKey(ref, true)
+	if err != nil {
+		return "", err
+	}
+	if b.BucketName == "" {
+		return "", errors.New("BucketName not set")
+	}
+	url, err := gcp.SignedURL(b.BucketName, key, "PUT", "", buildUploadExpiry)
+	if err != nil {
+		return "", fmt.Errorf("error generating signed URL: %w", err)
+	}
+	return url, nil
+}

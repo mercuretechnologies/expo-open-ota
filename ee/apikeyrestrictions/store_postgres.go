@@ -11,6 +11,7 @@ import (
 	"xprem/internal/database"
 	"xprem/internal/database/postgres/pgdb"
 	"xprem/internal/store"
+	"xprem/internal/types"
 	"xprem/internal/validation"
 
 	"github.com/jackc/pgx/v5"
@@ -230,7 +231,7 @@ func fromBuildActions(actions []BuildAction) []string {
 }
 
 // Membership is checked in the same transaction as the policy replacement.
-func identifierPlatform(ctx context.Context, q *pgdb.Queries, appID, identifierID string) (string, error) {
+func identifierPlatform(ctx context.Context, q *pgdb.Queries, appID, identifierID string) (types.Platform, error) {
 	row, err := q.GetAppIdentifierByID(ctx, pgdb.GetAppIdentifierByIDParams{AppID: store.ToPgUUID(appID), ID: store.ToPgUUID(identifierID)})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", validation.Errorf("appIdentifierId", "app identifier is not registered in this app")
