@@ -6,6 +6,7 @@ import path from 'path';
 import { AndroidToolsOptions, configureAndroidSdk, resolveAndroidTools } from './tools';
 import Log from '../../log';
 import { resolvePackageRunner, splitPackageRunner } from '../../packageRunner';
+import { resolveExpoUpdatesCli } from '../../runtimeVersion';
 import { secretsToRedact } from '../errors';
 import { BuildLog, withBuildLog } from '../log';
 import {
@@ -71,9 +72,14 @@ async function prepareBuild(
   const profile = await selectProfile(project, options);
   const local = await readEnvFile(project, options.envFile);
   buildLog.info('Locating local Android tools');
-  const toolEnv = await resolveAndroidTools(project, options, { ...process.env, ...local });
+  const toolEnv = await resolveAndroidTools(
+    project,
+    options,
+    { ...process.env, ...local },
+    buildLog.info
+  );
   buildLog.info(`Android SDK: ${toolEnv.ANDROID_HOME}`);
-  buildLog.info(`JAVA_HOME: ${toolEnv.JAVA_HOME ?? '(unset; gradlew uses java from PATH)'}`);
+  buildLog.info(`JAVA_HOME: ${toolEnv.JAVA_HOME}`);
   const packageRunner = splitPackageRunner(resolvePackageRunner(options.packageRunner, project));
   const nodeEnv = nodeEnvFor(profile.android.mode);
   const endpoint = await resolveBuildEndpoint(
@@ -130,9 +136,25 @@ async function buildInWorkspace(
     android: { ...expo.android, package: applicationId, versionCode },
   });
   if (await fs.pathExists(path.join(working, 'android'))) {
-    buildLog.warn(
-      'Using maintained Android project. Existing native Expo settings are retained; package, versionCode and signing are overridden in the temporary copy.'
+    buildLog.info(
+      'Using maintained Android project. Native settings are retained; package, versionCode, signing and the expo-updates configuration are overridden in the temporary copy.'
     );
+    // Same as EAS for bare projects: the manifest keeps whatever environment
+    // the last prebuild saw, so channel, URL and runtime are re-synced here.
+    await stages.run({
+      title: 'Syncing expo-updates configuration',
+      command: process.execPath,
+      args: [
+        resolveExpoUpdatesCli(working),
+        'configuration:syncnative',
+        '--platform',
+        'android',
+        '--workflow',
+        'generic',
+      ],
+      cwd: working,
+      env: build.env,
+    });
   } else {
     await stages.run(
       expoStage(build, working, 'Generating Android project', [
