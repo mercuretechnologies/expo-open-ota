@@ -1,8 +1,8 @@
-import { BuildPhase, BuildPhaseResult, LogMarker } from '@expo/eas-build-job';
 import { randomUUID } from 'crypto';
 import { afterEach, expect, it, vi } from 'vitest';
 
 import { LogLine } from '../log';
+import { BuildPhase, BuildPhaseResult, LogMarker } from '../phases';
 import { request } from '../server';
 import { createLogUploader } from '../upload';
 
