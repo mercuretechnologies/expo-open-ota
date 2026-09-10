@@ -17,15 +17,12 @@ describe('local Android tools', () => {
     sdk = path.join(project, 'Android SDK');
     await fs.outputFile(path.join(sdk, 'platforms/android-35/android.jar'), '');
     await fs.outputFile(path.join(sdk, 'build-tools/35.0.0/aapt2'), '');
-    vi.mocked(spawnAsync).mockImplementation(
-      async command =>
-        ({
-          stdout: command.endsWith('javac') ? 'javac 17.0.12' : '',
-          stderr: command.endsWith('javac')
-            ? ''
-            : '    java.home = /detected-jdk\n    java.version = 17.0.12\n',
-        }) as never
-    );
+    vi.mocked(spawnAsync).mockImplementation((async (command: string) => ({
+      stdout: command.endsWith('javac') ? 'javac 17.0.12' : '',
+      stderr: command.endsWith('javac')
+        ? ''
+        : '    java.home = /detected-jdk\n    java.version = 17.0.12\n',
+    })) as never);
   });
   afterEach(async () => {
     vi.restoreAllMocks();
