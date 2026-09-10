@@ -1,4 +1,4 @@
-// This file is partially copied from eas-cli[https://github.com/expo/eas-cli] to ensure consistent user experience across the CLI.
+// This file is partially copied from eas-cli v16.3.1 (MIT, https://github.com/expo/eas-cli/tree/v16.3.1) to ensure consistent user experience across the CLI.
 import { Platform } from '@expo/config';
 import fs from 'fs-extra';
 import Joi from 'joi';
