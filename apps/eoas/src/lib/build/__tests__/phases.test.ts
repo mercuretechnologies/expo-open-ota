@@ -1,10 +1,10 @@
-import { BuildPhase, BuildPhaseResult, LogMarker } from '@expo/eas-build-job';
 import fs from 'fs-extra';
 import os from 'os';
 import path from 'path';
 import { afterEach, expect, it, vi } from 'vitest';
 
 import { BuildLogEvent, createBuildLog } from '../log';
+import { BuildPhase, BuildPhaseResult, LogMarker } from '../phases';
 
 vi.mock('../../log', () => ({
   default: { log: vi.fn(), warn: vi.fn(), fail: vi.fn(), succeed: vi.fn() },

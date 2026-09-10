@@ -1,17 +1,12 @@
-import {
-  BuildPhase,
-  BuildPhaseResult,
-  LogMarker,
-  buildPhaseDisplayName,
-} from '@expo/eas-build-job';
 import { randomUUID } from 'crypto';
 import { mkdir, open } from 'fs/promises';
 import path from 'path';
 
 import { createBuildOutputRedactor } from './errors';
+import { BuildPhase, BuildPhaseResult, LogMarker, buildPhaseDisplayName } from './phases';
 import Log from '../log';
 
-// The fields used by EAS build-tools and its grouped log reader.
+// Log record shape compatible with EAS grouped-log readers.
 export interface BuildLogEvent {
   logId: string;
   time: string;

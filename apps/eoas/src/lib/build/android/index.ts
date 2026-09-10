@@ -1,5 +1,4 @@
 import { AndroidConfig } from '@expo/config-plugins';
-import { BuildPhase } from '@expo/eas-build-job';
 import fg from 'fast-glob';
 import fs from 'fs-extra';
 import path from 'path';
@@ -10,6 +9,7 @@ import { resolvePackageRunner, splitPackageRunner } from '../../packageRunner';
 import { resolveExpoUpdatesCli } from '../../runtimeVersion';
 import { secretsToRedact } from '../errors';
 import { BuildLog, withBuildLog } from '../log';
+import { BuildPhase } from '../phases';
 import {
   BuildInputs,
   BuildOptions,
