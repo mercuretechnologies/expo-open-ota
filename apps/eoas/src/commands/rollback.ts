@@ -1,8 +1,8 @@
-import { Env, Platform } from '@expo/eas-build-job';
 import { Command, Flags } from '@oclif/core';
 
 import { getAuthHeaders, retrieveCredentials, validateCredentials } from '../lib/auth';
 import {
+  Env,
   RequestedPlatform,
   getPrivateExpoConfigAsync,
   requireExpoAppId,
@@ -15,7 +15,7 @@ import { isExpoInstalled } from '../lib/package';
 import { confirmAsync } from '../lib/prompts';
 import { resolveRuntimeVersionAsync } from '../lib/runtimeVersion';
 import { resolveVcsClient } from '../lib/vcs';
-import { resolveWorkflowAsync } from '../lib/workflow';
+import { Platform, resolveWorkflowAsync } from '../lib/workflow';
 
 export default class Publish extends Command {
   static override args = {};

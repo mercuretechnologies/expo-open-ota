@@ -9,11 +9,22 @@ import { useLocation } from 'react-router';
 import { Button } from '@/components/ui/button';
 import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet';
 import { CommandPalette } from '@/components/CommandPalette';
+import { useSelectedApp } from '@/lib/SelectedAppContext';
 
 export const Layout = ({ children }: { children: React.ReactNode }) => {
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const { pathname } = useLocation();
+  const { apps, selectedAppId } = useSelectedApp();
+  const selectedApp = apps.find(app => app.id === selectedAppId);
+  const appName = selectedApp?.name || selectedApp?.id;
+
+  useEffect(() => {
+    document.title = appName ? `${appName} | xprem` : 'xprem';
+    return () => {
+      document.title = 'xprem';
+    };
+  }, [appName]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {

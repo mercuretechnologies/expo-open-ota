@@ -1,6 +1,5 @@
-// This file is copied from eas-cli[https://github.com/expo/eas-cli] to ensure consistent user experience across the CLI.
+// This file is copied from eas-cli v16.3.1 (MIT, https://github.com/expo/eas-cli/tree/v16.3.1) to ensure consistent user experience across the CLI.
 import { ExpoConfig, getConfig, getConfigFilePaths } from '@expo/config';
-import { Env } from '@expo/eas-build-job';
 import spawnAsync from '@expo/spawn-async';
 import fs from 'fs-extra';
 import Joi from 'joi';
@@ -10,6 +9,8 @@ import path from 'path';
 import Log from './log';
 import { isExpoInstalled } from './package';
 import { resolvePackageRunner, splitPackageRunner } from './packageRunner';
+
+export type Env = Record<string, string>;
 
 export enum RequestedPlatform {
   Android = 'android',

@@ -1,12 +1,13 @@
 import { ExpoConfig } from '@expo/config';
 import { Updates } from '@expo/config-plugins';
-import { Env, Workflow } from '@expo/eas-build-job';
 import spawnAsync from '@expo/spawn-async';
 import fs from 'fs-extra';
 import resolveFrom, { silent as silentResolveFrom } from 'resolve-from';
 import semver from 'semver';
 
+import { Env } from './expoConfig';
 import Log, { link } from './log';
+import { Workflow } from './workflow';
 
 export class ExpoUpdatesCLIModuleNotFoundError extends Error {}
 export class ExpoUpdatesCLIInvalidCommandError extends Error {}

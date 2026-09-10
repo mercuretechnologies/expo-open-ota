@@ -16,8 +16,8 @@ import (
 	"time"
 )
 
-// DefaultAPIBaseURL is the production license server.
-const DefaultAPIBaseURL = "https://api.xprem.dev"
+// APIBaseURL is the license server.
+const APIBaseURL = "https://api.xprem.dev"
 
 // Error codes answered by the license server on check, attach and validate.
 const (
@@ -58,11 +58,12 @@ type Client struct {
 	httpClient *http.Client
 }
 
-// NewClient falls back to DefaultAPIBaseURL when baseURL is empty.
-func NewClient(baseURL string) *Client {
-	if baseURL == "" {
-		baseURL = DefaultAPIBaseURL
-	}
+// NewClient talks to the license server at APIBaseURL.
+func NewClient() *Client {
+	return newClient(APIBaseURL)
+}
+
+func newClient(baseURL string) *Client {
 	baseURL = strings.TrimRight(baseURL, "/")
 	return &Client{baseURL: baseURL, httpClient: &http.Client{Timeout: 15 * time.Second}}
 }

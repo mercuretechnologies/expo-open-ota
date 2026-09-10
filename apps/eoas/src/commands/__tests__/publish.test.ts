@@ -43,7 +43,10 @@ vi.mock('../../lib/package', () => ({ isExpoInstalled: () => true }));
 vi.mock('../../lib/runtimeVersion', () => ({
   resolveRuntimeVersionAsync: async () => ({ runtimeVersion: '1.0.0' }),
 }));
-vi.mock('../../lib/workflow', () => ({ resolveWorkflowAsync: async () => 'generic' }));
+vi.mock('../../lib/workflow', async importOriginal => ({
+  ...(await importOriginal<typeof import('../../lib/workflow')>()),
+  resolveWorkflowAsync: async () => 'generic',
+}));
 vi.mock('../../lib/expoConfig', async importOriginal => {
   const original = await importOriginal<typeof import('../../lib/expoConfig')>();
   return {

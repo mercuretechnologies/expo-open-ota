@@ -1,4 +1,3 @@
-import { Env, Platform } from '@expo/eas-build-job';
 import spawnAsync from '@expo/spawn-async';
 import { Command, Flags } from '@oclif/core';
 import { randomUUID } from 'crypto';
@@ -18,6 +17,7 @@ import {
 } from '../lib/assets';
 import { getAuthHeaders, retrieveCredentials, validateCredentials } from '../lib/auth';
 import {
+  Env,
   RequestedPlatform,
   getPrivateExpoConfigAsync,
   getPublicExpoConfigAsync,
@@ -34,7 +34,7 @@ import { RateLimiter } from '../lib/rateLimiter';
 import { ensureRepoIsCleanAsync } from '../lib/repo';
 import { resolveRuntimeVersionAsync } from '../lib/runtimeVersion';
 import { resolveVcsClient } from '../lib/vcs';
-import { resolveWorkflowAsync } from '../lib/workflow';
+import { Platform, resolveWorkflowAsync } from '../lib/workflow';
 
 export default class Publish extends Command {
   static override args = {};

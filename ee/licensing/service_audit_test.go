@@ -90,7 +90,7 @@ func TestSyncEmitsSuspensionEventBeforeDroppingTheLicense(t *testing.T) {
 	anchor := time.Now().Add(-GracePeriod - time.Hour).UTC()
 	repo.stored.ValidationFailedAt = &anchor
 	repo.stored.ValidationErrorCode = CodeSubscriptionInactive
-	service := newTestService(t, repo, NewClient("http://127.0.0.1:1"))
+	service := newTestService(t, repo, newClient("http://127.0.0.1:1"))
 	var recorded []auditlog.Event
 	service.SetOnAuditEvent(gatedRecorder(&recorded))
 	Activate(repo.stored.License)

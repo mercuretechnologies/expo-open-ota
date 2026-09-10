@@ -1,6 +1,6 @@
 // Rendering for every command's output, drawn with the @clack/prompts
 // primitives so the whole CLI shares one visual identity (gutter, symbols,
-// notes). The static API is kept from the original eas-cli logger so call
+// notes). The static API is kept from the eas-cli v16.3.1 logger (MIT) so call
 // sites did not have to change.
 import * as clack from '@clack/prompts';
 import chalk from 'chalk';
