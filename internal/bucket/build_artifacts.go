@@ -20,17 +20,21 @@ type BuildArtifact struct {
 	Type         types.BuildArtifactType
 }
 
+func (r BuildArtifact) Validate() error {
+	if _, err := r.Type.Platform(); err != nil {
+		return err
+	}
+	if err := validateUUID("identifierId", r.IdentifierID); err != nil {
+		return err
+	}
+	return validateUUID("buildId", r.BuildID)
+}
+
 // Key is builds/{platform}/{identifierId}/{buildId}.{type}, with an
 // .uploads/ segment before the file name for the staging copy.
 func (r BuildArtifact) Key(staging bool) (string, error) {
 	platform, err := r.Type.Platform()
 	if err != nil {
-		return "", err
-	}
-	if err := validateUUID("identifierId", r.IdentifierID); err != nil {
-		return "", err
-	}
-	if err := validateUUID("buildId", r.BuildID); err != nil {
 		return "", err
 	}
 	folder := BuildsPrefix + "/" + string(platform) + "/" + r.IdentifierID + "/"

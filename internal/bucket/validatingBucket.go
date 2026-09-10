@@ -266,20 +266,30 @@ func (v *validatingBucket) RequestBlobUploadURL(appId, hash, branch string) (str
 	return v.Inner.RequestBlobUploadURL(appId, hash, branch)
 }
 
-// The build artifact methods delegate as-is: BuildArtifact.Key validates the
-// ref inside every backend.
 func (v *validatingBucket) GetBuildArtifact(ctx context.Context, ref BuildArtifact, staging bool) (*types.BucketFile, error) {
+	if err := ref.Validate(); err != nil {
+		return nil, err
+	}
 	return v.Inner.GetBuildArtifact(ctx, ref, staging)
 }
 
 func (v *validatingBucket) PutBuildArtifact(ctx context.Context, ref BuildArtifact, staging bool, body io.Reader) error {
+	if err := ref.Validate(); err != nil {
+		return err
+	}
 	return v.Inner.PutBuildArtifact(ctx, ref, staging, body)
 }
 
 func (v *validatingBucket) DeleteBuildArtifact(ctx context.Context, ref BuildArtifact, staging bool) error {
+	if err := ref.Validate(); err != nil {
+		return err
+	}
 	return v.Inner.DeleteBuildArtifact(ctx, ref, staging)
 }
 
 func (v *validatingBucket) RequestBuildArtifactUploadURL(ctx context.Context, ref BuildArtifact) (string, error) {
+	if err := ref.Validate(); err != nil {
+		return "", err
+	}
 	return v.Inner.RequestBuildArtifactUploadURL(ctx, ref)
 }

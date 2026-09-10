@@ -39,15 +39,23 @@ func TestBuildObjectKeysAreIsolatedAndValidated(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "builds/ios/"+testIdentifierID+"/"+testBuildID+".ipa", key)
 
+	stub := &stubBucket{}
+	v := &validatingBucket{Inner: stub}
+	ctx := context.Background()
 	for name, bad := range map[string]BuildArtifact{
 		"traversal identifier": {IdentifierID: "../escape", BuildID: testBuildID, Type: types.BuildArtifactAPK},
 		"uppercase uuid":       {IdentifierID: strings.ToUpper(testIdentifierID), BuildID: testBuildID, Type: types.BuildArtifactAPK},
 		"unknown type":         {IdentifierID: testIdentifierID, BuildID: testBuildID, Type: "apk/../x"},
 		"empty build":          {IdentifierID: testIdentifierID, Type: types.BuildArtifactAAB},
 	} {
-		_, err := bad.Key(false)
+		_, err := v.GetBuildArtifact(ctx, bad, false)
+		require.Error(t, err, name)
+		require.Error(t, v.PutBuildArtifact(ctx, bad, false, strings.NewReader("x")), name)
+		require.Error(t, v.DeleteBuildArtifact(ctx, bad, false), name)
+		_, err = v.RequestBuildArtifactUploadURL(ctx, bad)
 		require.Error(t, err, name)
 	}
+	require.False(t, stub.called)
 }
 
 func TestLocalBuildStagingCannotOverwritePublishedArtifact(t *testing.T) {
