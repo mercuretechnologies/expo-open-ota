@@ -1,9 +1,18 @@
 import { AndroidConfig, IOSConfig } from '@expo/config-plugins';
-import { Platform, Workflow } from '@expo/eas-build-job';
 import fs from 'fs-extra';
 import path from 'path';
 
 import { Client } from './vcs/vcs';
+
+export enum Platform {
+  ANDROID = 'android',
+  IOS = 'ios',
+}
+
+export enum Workflow {
+  GENERIC = 'generic',
+  MANAGED = 'managed',
+}
 
 export async function resolveWorkflowAsync(
   projectDir: string,

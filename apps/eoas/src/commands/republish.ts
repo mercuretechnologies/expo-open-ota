@@ -1,8 +1,12 @@
-import { Env } from '@expo/eas-build-job';
 import { Command, Flags } from '@oclif/core';
 
 import { getAuthHeaders, retrieveCredentials, validateCredentials } from '../lib/auth';
-import { getPrivateExpoConfigAsync, requireExpoAppId, resolveServerUrl } from '../lib/expoConfig';
+import {
+  Env,
+  getPrivateExpoConfigAsync,
+  requireExpoAppId,
+  resolveServerUrl,
+} from '../lib/expoConfig';
 import { fetchWithRetries } from '../lib/fetch';
 import Log from '../lib/log';
 import { ora } from '../lib/ora';

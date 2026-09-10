@@ -1,7 +1,6 @@
-import { Env } from '@expo/eas-build-job';
 import { Command, Flags } from '@oclif/core';
 
-import { getExpoAppId, getPrivateExpoConfigAsync, resolveServerUrl } from '../lib/expoConfig';
+import { Env, getExpoAppId, getPrivateExpoConfigAsync, resolveServerUrl } from '../lib/expoConfig';
 import { fetchWithRetries } from '../lib/fetch';
 import Log from '../lib/log';
 import { ora } from '../lib/ora';
