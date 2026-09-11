@@ -181,7 +181,6 @@ async function buildInWorkspace(
   await writeAppJson(working, effectiveExpo);
   await buildLog.runBuildPhase(BuildPhase.PREBUILD, async phaseLog => {
     if (await fs.pathExists(path.join(working, 'android'))) {
-      phaseLog.markSkipped();
       phaseLog.info(
         'Using maintained Android project. Native settings are retained; package, versionCode, signing and the expo-updates configuration are overridden in the temporary copy.'
       );
