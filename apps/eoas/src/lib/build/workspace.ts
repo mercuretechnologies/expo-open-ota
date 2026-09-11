@@ -7,7 +7,7 @@ import path from 'path';
 import { checkEnvironment } from './environment';
 import { BuildLog, PhaseLogger } from './log';
 import { BuildInputs, configEnvironment } from './prepare';
-import { BuildCommand, runBuildCommand } from './run';
+import { BuildCommand, runBuildCommand, terminateBuildCommand } from './run';
 import { BuildPlatform } from './server';
 import { getPrivateExpoConfigAsync } from '../expoConfig';
 import GitClient from '../vcs/clients/git';
@@ -24,7 +24,9 @@ export async function withTemporaryDirectory<T>(
   const interrupt = (): void => {
     buildLog.abort();
     buildLog.write('Build interrupted.');
-    void buildLog.close().finally(() => fs.remove(temporary).finally(() => process.exit(130)));
+    void terminateBuildCommand()
+      .then(() => buildLog.close())
+      .finally(() => fs.remove(temporary).finally(() => process.exit(130)));
   };
   process.once('SIGINT', interrupt);
   process.once('SIGTERM', interrupt);
