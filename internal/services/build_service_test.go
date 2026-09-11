@@ -199,7 +199,7 @@ func TestBuildStartRecordsBuildingAndIsIdempotent(t *testing.T) {
 	require.ErrorIs(t, err, ErrBuildConflict)
 	changedUpload := f.registerInput([]byte("apk"))
 	changedUpload.Metadata.Mode = "debug"
-	_, err = f.service.Begin(ctx, testBuildApp, testBuildIdentifier, testBuildID, changedUpload)
+	_, err = f.service.RegisterArtifact(ctx, testBuildApp, testBuildIdentifier, testBuildID, changedUpload)
 	require.ErrorIs(t, err, ErrBuildConflict)
 }
 
@@ -214,7 +214,7 @@ func TestBuildModePreservedAndOptionalForOlderClients(t *testing.T) {
 			require.Equal(t, mode, started.Metadata.Mode)
 			upload := f.registerInput([]byte("apk"))
 			upload.Metadata.Mode = mode
-			registered, err := f.service.Begin(context.Background(), testBuildApp, testBuildIdentifier, testBuildID, upload)
+			registered, err := f.service.RegisterArtifact(context.Background(), testBuildApp, testBuildIdentifier, testBuildID, upload)
 			require.NoError(t, err)
 			require.Equal(t, mode, registered.Build.Metadata.Mode)
 		})
@@ -287,7 +287,7 @@ func TestBuildRegisterValidation(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			input := f.registerInput([]byte("apk"))
 			mutate(&input)
-			_, err := f.service.Begin(ctx, testBuildApp, testBuildIdentifier, testBuildID, input)
+			_, err := f.service.RegisterArtifact(ctx, testBuildApp, testBuildIdentifier, testBuildID, input)
 			require.True(t, validation.IsValidationError(err), "%v", err)
 			require.Empty(t, f.repo.builds)
 		})
@@ -295,7 +295,7 @@ func TestBuildRegisterValidation(t *testing.T) {
 	input := f.registerInput([]byte("apk"))
 	input.Metadata.BuildNumber = "2100000000"
 	input.Metadata.Fingerprint = strings.Repeat("f", 64)
-	_, err := f.service.Begin(ctx, testBuildApp, testBuildIdentifier, testBuildID, input)
+	_, err := f.service.RegisterArtifact(ctx, testBuildApp, testBuildIdentifier, testBuildID, input)
 	require.NoError(t, err)
 }
 
@@ -306,7 +306,7 @@ func TestBuildLifecycleStartUploadComplete(t *testing.T) {
 	started, err := f.service.Start(ctx, testBuildApp, testBuildIdentifier, testBuildID, f.startInput())
 	require.NoError(t, err)
 
-	registration, err := f.service.Begin(context.Background(), testBuildApp, testBuildIdentifier, testBuildID, f.registerInput(content))
+	registration, err := f.service.RegisterArtifact(context.Background(), testBuildApp, testBuildIdentifier, testBuildID, f.registerInput(content))
 	require.NoError(t, err)
 	b := registration.Build
 	require.Equal(t, types.BuildStatusUploading, b.Status)
@@ -322,7 +322,7 @@ func TestBuildLifecycleStartUploadComplete(t *testing.T) {
 	require.Empty(t, registration.Upload.URL, "local storage hands out a token instead of a presigned URL")
 	require.NotEmpty(t, registration.LocalToken)
 
-	retry, err := f.service.Begin(context.Background(), testBuildApp, testBuildIdentifier, testBuildID, f.registerInput(content))
+	retry, err := f.service.RegisterArtifact(context.Background(), testBuildApp, testBuildIdentifier, testBuildID, f.registerInput(content))
 	require.NoError(t, err)
 	require.Equal(t, types.BuildStatusUploading, retry.Build.Status)
 	require.NotEmpty(t, retry.LocalToken, "an identical retry gets a fresh upload grant")
@@ -335,7 +335,7 @@ func TestBuildLifecycleStartUploadComplete(t *testing.T) {
 	require.Equal(t, f.now, afterMissing.Metadata.FinishedAt, "failure time is the server clock")
 	require.Equal(t, int64(len(content)), afterMissing.Size, "the declared artifact is kept on a failed upload")
 
-	retry, err = f.service.Begin(context.Background(), testBuildApp, testBuildIdentifier, testBuildID, f.registerInput(content))
+	retry, err = f.service.RegisterArtifact(context.Background(), testBuildApp, testBuildIdentifier, testBuildID, f.registerInput(content))
 	require.NoError(t, err)
 	require.Equal(t, types.BuildStatusUploading, retry.Build.Status, "a failed upload can be retried with the same artifact")
 	require.NoError(t, f.service.UploadLocal(ctx, retry.LocalToken, bytes.NewReader(content)))
@@ -359,7 +359,7 @@ func TestBuildLifecycleStartUploadComplete(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, ready.ReadyAt, again.ReadyAt, "complete is idempotent")
 
-	registration, err = f.service.Begin(context.Background(), testBuildApp, testBuildIdentifier, testBuildID, f.registerInput(content))
+	registration, err = f.service.RegisterArtifact(context.Background(), testBuildApp, testBuildIdentifier, testBuildID, f.registerInput(content))
 	require.NoError(t, err)
 	require.Equal(t, types.BuildStatusReady, registration.Build.Status)
 	require.Nil(t, registration.Upload, "a ready build gets no upload grant")
@@ -383,25 +383,25 @@ func TestBuildRegisterWithoutStart(t *testing.T) {
 	f := newBuildFixture(t)
 	ctx := context.Background()
 	content := []byte("direct")
-	registration, err := f.service.Begin(ctx, testBuildApp, testBuildIdentifier, testBuildID, f.registerInput(content))
+	registration, err := f.service.RegisterArtifact(ctx, testBuildApp, testBuildIdentifier, testBuildID, f.registerInput(content))
 	require.NoError(t, err)
 	require.Equal(t, types.BuildStatusUploading, registration.Build.Status)
 	require.Len(t, f.repo.builds, 1)
 
 	changed := f.registerInput([]byte("different"))
-	_, err = f.service.Begin(ctx, testBuildApp, testBuildIdentifier, testBuildID, changed)
+	_, err = f.service.RegisterArtifact(ctx, testBuildApp, testBuildIdentifier, testBuildID, changed)
 	require.ErrorIs(t, err, ErrBuildConflict, "checksum is immutable once declared")
 	changed = f.registerInput(content)
 	changed.Metadata.BuildNumber = "43"
-	_, err = f.service.Begin(ctx, testBuildApp, testBuildIdentifier, testBuildID, changed)
+	_, err = f.service.RegisterArtifact(ctx, testBuildApp, testBuildIdentifier, testBuildID, changed)
 	require.ErrorIs(t, err, ErrBuildConflict, "no second allocation on the same build")
 	changed = f.registerInput(content)
 	changed.Metadata.Profile = "preview"
-	_, err = f.service.Begin(ctx, testBuildApp, testBuildIdentifier, testBuildID, changed)
+	_, err = f.service.RegisterArtifact(ctx, testBuildApp, testBuildIdentifier, testBuildID, changed)
 	require.ErrorIs(t, err, ErrBuildConflict)
 	changed = f.registerInput(content)
 	changed.Metadata.FinishedAt = changed.Metadata.FinishedAt.Add(time.Second)
-	_, err = f.service.Begin(ctx, testBuildApp, testBuildIdentifier, testBuildID, changed)
+	_, err = f.service.RegisterArtifact(ctx, testBuildApp, testBuildIdentifier, testBuildID, changed)
 	require.ErrorIs(t, err, ErrBuildConflict)
 
 	_, err = f.service.Start(ctx, testBuildApp, testBuildIdentifier, testBuildID, f.startInput())
@@ -465,7 +465,7 @@ func TestBuildFailFromUploadingDiscardsStaging(t *testing.T) {
 	f := newBuildFixture(t)
 	ctx := context.Background()
 	content := []byte("partial")
-	registration, err := f.service.Begin(ctx, testBuildApp, testBuildIdentifier, testBuildID, f.registerInput(content))
+	registration, err := f.service.RegisterArtifact(ctx, testBuildApp, testBuildIdentifier, testBuildID, f.registerInput(content))
 	require.NoError(t, err)
 	require.NoError(t, f.service.UploadLocal(ctx, registration.LocalToken, bytes.NewReader(content)))
 	_, err = os.Stat(f.stagedPath(t, *registration.Build))
@@ -504,7 +504,7 @@ func TestBuildCompleteRequiresUploadingState(t *testing.T) {
 func TestBuildCompleteRejectsTamperedUpload(t *testing.T) {
 	f := newBuildFixture(t)
 	ctx := context.Background()
-	registration, err := f.service.Begin(ctx, testBuildApp, testBuildIdentifier, testBuildID, f.registerInput([]byte("declared")))
+	registration, err := f.service.RegisterArtifact(ctx, testBuildApp, testBuildIdentifier, testBuildID, f.registerInput([]byte("declared")))
 	require.NoError(t, err)
 	require.NoError(t, f.storage.PutBuildArtifact(ctx, artifactRef(*registration.Build), true, strings.NewReader("tampered")))
 	_, err = f.service.Complete(ctx, testBuildApp, testBuildIdentifier, testBuildID)
@@ -515,7 +515,7 @@ func TestBuildCompleteRejectsTamperedUpload(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, types.BuildStatusFailed, failed.Status)
 
-	registration, err = f.service.Begin(ctx, testBuildApp, testBuildIdentifier, testBuildID, f.registerInput([]byte("declared")))
+	registration, err = f.service.RegisterArtifact(ctx, testBuildApp, testBuildIdentifier, testBuildID, f.registerInput([]byte("declared")))
 	require.NoError(t, err)
 	require.Equal(t, types.BuildStatusUploading, registration.Build.Status)
 	require.NoError(t, f.service.UploadLocal(ctx, registration.LocalToken, strings.NewReader("declared")))
@@ -527,7 +527,7 @@ func TestBuildCompleteRejectsTamperedUpload(t *testing.T) {
 func TestBuildUploadLocalBounds(t *testing.T) {
 	f := newBuildFixture(t)
 	ctx := context.Background()
-	registration, err := f.service.Begin(ctx, testBuildApp, testBuildIdentifier, testBuildID, f.registerInput([]byte("12345")))
+	registration, err := f.service.RegisterArtifact(ctx, testBuildApp, testBuildIdentifier, testBuildID, f.registerInput([]byte("12345")))
 	require.NoError(t, err)
 
 	err = f.service.UploadLocal(ctx, registration.LocalToken, strings.NewReader("123456"))
@@ -550,7 +550,7 @@ func TestBuildUploadLocalBounds(t *testing.T) {
 func TestBuildTokenRejectsOtherSecret(t *testing.T) {
 	f := newBuildFixture(t)
 	ctx := context.Background()
-	registration, err := f.service.Begin(ctx, testBuildApp, testBuildIdentifier, testBuildID, f.registerInput([]byte("x")))
+	registration, err := f.service.RegisterArtifact(ctx, testBuildApp, testBuildIdentifier, testBuildID, f.registerInput([]byte("x")))
 	require.NoError(t, err)
 	t.Setenv("JWT_SECRET", "rotated")
 	require.ErrorIs(t, f.service.UploadLocal(ctx, registration.LocalToken, strings.NewReader("x")), ErrUnauthorized)
@@ -571,7 +571,7 @@ func TestBuildConcurrentRegistrationsAgree(t *testing.T) {
 			if i%2 == 0 {
 				_, err = f.service.Start(ctx, testBuildApp, testBuildIdentifier, testBuildID, f.startInput())
 			} else {
-				_, err = f.service.Begin(ctx, testBuildApp, testBuildIdentifier, testBuildID, f.registerInput(content))
+				_, err = f.service.RegisterArtifact(ctx, testBuildApp, testBuildIdentifier, testBuildID, f.registerInput(content))
 			}
 			results <- err
 		}(i)

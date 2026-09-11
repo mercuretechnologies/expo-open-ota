@@ -227,8 +227,8 @@ func (s *BuildService) Start(ctx context.Context, appID, identifierID, id string
 	return existing, nil
 }
 
-// Begin declares the compiled artifact and hands back where to upload it.
-func (s *BuildService) Begin(ctx context.Context, appID, identifierID, id string, input RegisterBuildInput) (*BuildRegistration, error) {
+// RegisterArtifact declares the compiled artifact and hands back where to upload it.
+func (s *BuildService) RegisterArtifact(ctx context.Context, appID, identifierID, id string, input RegisterBuildInput) (*BuildRegistration, error) {
 	if s.repo == nil {
 		return nil, store.ErrNotSupportedInStatelessMode
 	}

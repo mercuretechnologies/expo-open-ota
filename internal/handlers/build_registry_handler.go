@@ -81,12 +81,12 @@ func (h *BuildRegistryHandler) Start(w http.ResponseWriter, r *http.Request) {
 	RenderJSON(w, http.StatusOK, build)
 }
 
-func (h *BuildRegistryHandler) Begin(w http.ResponseWriter, r *http.Request) {
+func (h *BuildRegistryHandler) RegisterArtifact(w http.ResponseWriter, r *http.Request) {
 	var input services.RegisterBuildInput
 	if !decodeBuildBody(w, r, &input) {
 		return
 	}
-	result, err := h.service.Begin(r.Context(), mux.Vars(r)["APP_ID"], services.BuildIdentifierFromContext(r.Context()), mux.Vars(r)["BUILD_ID"], input)
+	result, err := h.service.RegisterArtifact(r.Context(), mux.Vars(r)["APP_ID"], services.BuildIdentifierFromContext(r.Context()), mux.Vars(r)["BUILD_ID"], input)
 	if err != nil {
 		renderBuildRegistryError(w, err)
 		return

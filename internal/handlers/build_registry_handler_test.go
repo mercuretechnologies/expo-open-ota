@@ -134,7 +134,7 @@ func newRegistryFixture(t *testing.T) *registryFixture {
 		}
 	}
 	router.HandleFunc("/{APP_ID}/build/{IDENTIFIER_ID}/artifacts/{BUILD_ID}/start", authorized(handler.Start)).Methods(http.MethodPut)
-	router.HandleFunc("/{APP_ID}/build/{IDENTIFIER_ID}/artifacts/{BUILD_ID}", authorized(handler.Begin)).Methods(http.MethodPut)
+	router.HandleFunc("/{APP_ID}/build/{IDENTIFIER_ID}/artifacts/{BUILD_ID}", authorized(handler.RegisterArtifact)).Methods(http.MethodPut)
 	router.HandleFunc("/{APP_ID}/build/{IDENTIFIER_ID}/artifacts/{BUILD_ID}/failed", authorized(handler.Fail)).Methods(http.MethodPost)
 	router.HandleFunc("/{APP_ID}/build/{IDENTIFIER_ID}/artifacts/{BUILD_ID}/complete", authorized(handler.Complete)).Methods(http.MethodPost)
 	router.HandleFunc("/build-uploads/{TOKEN}", handler.UploadLocal).Methods(http.MethodPut)
