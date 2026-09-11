@@ -1,3 +1,4 @@
+import { stripVTControlCharacters } from 'util';
 export function formatBuildError(stage: string, error: unknown, secrets: string[]): string {
   const failure =
     error && typeof error === 'object'
@@ -32,9 +33,9 @@ export function createBuildOutputRedactor(secrets: string[]): (output: string) =
   if (sensitive.length) {
     const pattern = sensitive.map(value => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
     const expression = new RegExp(pattern, 'g');
-    return (output: string) => output.replace(expression, '[REDACTED]');
+    return (output: string) => stripVTControlCharacters(output).replace(expression, '[REDACTED]');
   }
-  return (output: string) => output;
+  return stripVTControlCharacters;
 }
 
 // Shorter variable values ("1", "true", "production") are flags or names whose

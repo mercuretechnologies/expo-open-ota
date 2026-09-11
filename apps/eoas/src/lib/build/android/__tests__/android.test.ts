@@ -222,7 +222,7 @@ describe('Android orchestration', () => {
     const logs = await fs.readdir(path.join(project, 'build-artifacts/logs'));
     expect(logs).toHaveLength(1);
     const log = await fs.readFile(path.join(project, 'build-artifacts/logs', logs[0]), 'utf8');
-    expect(log).toContain('Building signed AAB');
+    expect(log).toContain('[RUN_GRADLEW]');
     expect(log).toContain('versionCode 42');
   });
   it('syncs the expo-updates configuration into a maintained Android project instead of prebuilding', async () => {
@@ -351,6 +351,7 @@ describe('Android orchestration', () => {
       >;
     });
     const terminal = vi.spyOn(process.stdout, 'write').mockReturnValue(true);
+    const terminalError = vi.spyOn(process.stderr, 'write').mockReturnValue(true);
     await buildAndroid(project, {
       profile: 'production',
       serverUrl: 'https://example.com',
@@ -360,7 +361,9 @@ describe('Android orchestration', () => {
     });
     const logs = await fs.readdir(path.join(project, 'build-artifacts/logs'));
     const log = await fs.readFile(path.join(project, 'build-artifacts/logs', logs[0]), 'utf8');
-    const displayed = terminal.mock.calls.map(([line]) => String(line)).join('');
+    const displayed = [...terminal.mock.calls, ...terminalError.mock.calls]
+      .map(([line]) => String(line))
+      .join('');
     for (const text of [log, displayed]) {
       expect(text).toContain('Compilation 0\n');
       expect(text).toContain('Compilation 99\n');

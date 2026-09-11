@@ -29,8 +29,7 @@ export default class Build extends Command {
       description: 'Local Android SDK directory (overrides ANDROID_HOME and sdk.dir)',
     }),
     verbose: Flags.boolean({
-      description:
-        'Print all build output instead of a compact preview (full logs are always saved)',
+      description: 'Print every tool output line with its build phase (full logs are always saved)',
       default: false,
     }),
   };

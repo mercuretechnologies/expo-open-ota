@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { formatBuildError } from '../errors';
+import { createBuildOutputRedactor, formatBuildError } from '../errors';
 
 describe('build diagnostics', () => {
   it('shows the stage, exit code and actual tool output', () => {
@@ -52,4 +52,14 @@ describe('build diagnostics', () => {
     expect(message).not.toContain('secret-value');
     expect(message.length).toBeLessThan(13000);
   });
+});
+
+it('strips terminal colors and cursor escapes before masking secrets', () => {
+  const redact = createBuildOutputRedactor(['signing-secret']);
+  expect(redact('\x1b[2K\x1b[33mApplying plugin\x1b[0m \x1b[32msigning-\x1b[0msecret')).toBe(
+    'Applying plugin [REDACTED]'
+  );
+  expect(createBuildOutputRedactor([])('Version \x1b[32m2.1.20-2.0.1\x1b[0m')).toBe(
+    'Version 2.1.20-2.0.1'
+  );
 });

@@ -4,7 +4,7 @@ import fs from 'fs-extra';
 import path from 'path';
 
 import { mergeEnvironment } from './environment';
-import { BuildLog } from './log';
+import { BuildLog, PhaseLogger } from './log';
 import { BuildPlatform, fetchEnvironment, resolveIdentifier } from './server';
 import { CONFIG_FILENAME, readConfig } from '../buildConfig/config';
 import { ResourceNameSchema } from '../buildConfig/schema';
@@ -112,7 +112,7 @@ export async function fetchBuildEnvironment(
   endpoint: string,
   profile: BuildProfile,
   local: Record<string, string>,
-  buildLog: BuildLog
+  buildLog: PhaseLogger
 ): Promise<Record<string, string>> {
   let remote: Record<string, string> = {};
   if (profile.channel) {
