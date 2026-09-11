@@ -8,7 +8,7 @@ import Log from '../../log';
 import { resolvePackageRunner, splitPackageRunner } from '../../packageRunner';
 import { resolveExpoUpdatesCli } from '../../runtimeVersion';
 import { secretsToRedact } from '../errors';
-import { BuildLog, withBuildLog } from '../log';
+import { BuildLog, PhaseLogger, withBuildLog } from '../log';
 import { BuildPhase } from '../phases';
 import {
   BuildInputs,
@@ -62,7 +62,7 @@ export async function buildAndroid(project: string, options: AndroidBuildOptions
         build.credentials.keystorePassword,
         build.credentials.keyPassword,
       ]);
-      buildLog.setSecrets(secrets);
+      buildLog.maskSecrets(secrets);
       return await withTemporaryDirectory(buildLog, temporary =>
         buildInWorkspace(build, temporary, buildLog, secrets)
       );
@@ -82,7 +82,7 @@ async function prepareBuild(
     'Read xprem.json'
   );
   const local = await readEnvFile(project, options.envFile);
-  buildLog.setSecrets(secretsToRedact(local, []));
+  buildLog.maskSecrets(secretsToRedact(local, []));
   const toolEnv = await buildLog.runBuildPhase(
     BuildPhase.BUILDER_INFO,
     async phaseLog => {
@@ -112,7 +112,7 @@ async function prepareBuild(
   const variables = await buildLog.runBuildPhase(BuildPhase.SET_UP_BUILD_ENVIRONMENT, phaseLog =>
     fetchBuildEnvironment(endpoint, profile, local, phaseLog)
   );
-  buildLog.setSecrets(secretsToRedact(variables, []));
+  buildLog.maskSecrets(secretsToRedact(variables, []));
   const credentials = await buildLog.runBuildPhase(
     BuildPhase.PREPARE_CREDENTIALS,
     () =>
@@ -316,7 +316,7 @@ async function collectArtifact(
   build: AndroidBuild,
   working: string,
   versionCode: number,
-  buildLog: BuildLog
+  buildLog: PhaseLogger
 ): Promise<string> {
   const { artifact, mode } = build.profile.android;
   const candidates = await fg(

@@ -1,7 +1,7 @@
 import spawnAsync from '@expo/spawn-async';
 
 import { formatBuildError } from './errors';
-import { BuildLog } from './log';
+import { PhaseLogger } from './log';
 import { streamBuildOutput } from './output';
 
 export interface BuildCommand {
@@ -14,7 +14,7 @@ export interface BuildCommand {
 
 export async function runBuildCommand(
   { title, command, args, cwd, env }: BuildCommand,
-  log: BuildLog,
+  log: PhaseLogger,
   secrets: string[]
 ): Promise<void> {
   try {

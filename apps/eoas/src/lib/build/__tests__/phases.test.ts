@@ -3,7 +3,7 @@ import os from 'os';
 import path from 'path';
 import { afterEach, expect, it, vi } from 'vitest';
 
-import { BuildLogEvent, createBuildLog } from '../log';
+import { LogLine, createBuildLog } from '../log';
 import { BuildPhase, BuildPhaseResult, LogMarker } from '../phases';
 
 vi.mock('../../log', () => ({
@@ -21,7 +21,7 @@ it('uses EAS markers, phase IDs, results and durations, including buffered prepa
       phase.info('Preparing project');
       vi.advanceTimersByTime(1234);
     });
-    const events: BuildLogEvent[] = [];
+    const events: LogLine[] = [];
     log.streamTo({
       write: event => {
         events.push(event);
@@ -50,8 +50,8 @@ it('uses EAS markers, phase IDs, results and durations, including buffered prepa
 it('keeps errors in their phase, masks secrets, and closes an interrupted phase once', async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'eoas-phases-'));
   const log = await createBuildLog(directory, 'test');
-  const events: BuildLogEvent[] = [];
-  log.setSecrets(['password']);
+  const events: LogLine[] = [];
+  log.maskSecrets(['password']);
   log.streamTo({
     write: event => {
       events.push(event);

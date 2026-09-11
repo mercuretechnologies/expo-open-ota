@@ -5,7 +5,7 @@ import os from 'os';
 import path from 'path';
 
 import { checkEnvironment } from './environment';
-import { BuildLog } from './log';
+import { BuildLog, PhaseLogger } from './log';
 import { BuildInputs, configEnvironment } from './prepare';
 import { BuildCommand, runBuildCommand } from './run';
 import { BuildPlatform } from './server';
@@ -118,7 +118,7 @@ export async function validateBundle(
   mode: 'debug' | 'release',
   working: string,
   temporary: string,
-  buildLog: BuildLog,
+  buildLog: PhaseLogger,
   secrets: string[]
 ): Promise<void> {
   let report: string | undefined;
