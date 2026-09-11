@@ -26,7 +26,7 @@ func registerBuildRoutes(r *mux.Router, container *AppContainer) {
 	build.route(http.MethodPost, "/{IDENTIFIER_ID}/artifacts/{BUILD_ID}/complete", container.BuildRegistryHandler.Complete, apikeyrestrictions.BuildActionCreate)
 	r.HandleFunc("/build-uploads/{TOKEN}", container.BuildRegistryHandler.UploadLocal).Methods(http.MethodPut)
 
-	build.route(http.MethodGet, "/resolve/android/{APPLICATION_ID}", container.BuildHandler.ResolveIdentifier,
+	build.route(http.MethodGet, "/resolve/{PLATFORM}/{APPLICATION_ID}", container.BuildHandler.ResolveIdentifier,
 		apikeyrestrictions.BuildActionCreate)
 	build.route(http.MethodPost, "/{IDENTIFIER_ID}/build-number", container.BuildHandler.AllocateBuildNumber,
 		apikeyrestrictions.BuildActionCreate)

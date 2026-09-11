@@ -299,6 +299,84 @@ func TestBuildRegisterValidation(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestBuildRegistrationPlatformRules(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		platform     types.Platform
+		artifactType types.BuildArtifactType
+		buildNumber  string
+		wantError    string
+	}{
+		{"android apk", types.PlatformAndroid, types.BuildArtifactAPK, "42", ""},
+		{"android aab", types.PlatformAndroid, types.BuildArtifactAAB, "2100000000", ""},
+		{"android dotted number", types.PlatformAndroid, types.BuildArtifactAPK, "1.2.3", "buildNumber"},
+		{"android zero", types.PlatformAndroid, types.BuildArtifactAPK, "0", "buildNumber"},
+		{"android overflow", types.PlatformAndroid, types.BuildArtifactAPK, "2100000001", "buildNumber"},
+		{"ios dotted number", types.PlatformIOS, types.BuildArtifactIPA, "1.2.3", ""},
+		{"ios beyond android limit", types.PlatformIOS, types.BuildArtifactIPA, "2100000001", ""},
+		{"ios invalid number", types.PlatformIOS, types.BuildArtifactIPA, "1.02.3", "buildNumber"},
+		{"ipa for android", types.PlatformAndroid, types.BuildArtifactIPA, "42", "does not match identifier platform"},
+		{"apk for ios", types.PlatformIOS, types.BuildArtifactAPK, "42", "does not match identifier platform"},
+		{"aab for ios", types.PlatformIOS, types.BuildArtifactAAB, "42", "does not match identifier platform"},
+		{"unknown artifact", types.PlatformAndroid, "zip", "42", "unsupported build artifact type"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newBuildFixture(t)
+			input := f.registerInput([]byte("artifact"))
+			input.ArtifactType = tc.artifactType
+			input.Metadata.BuildNumber = tc.buildNumber
+			err := f.service.validateRegister(tc.platform, &input)
+			if tc.wantError == "" {
+				require.NoError(t, err)
+			} else {
+				require.ErrorContains(t, err, tc.wantError)
+				require.True(t, validation.IsValidationError(err))
+			}
+		})
+	}
+}
+
+func TestBuildRejectsUnsupportedPlatformBeforeMetadata(t *testing.T) {
+	for _, operation := range []string{"start", "register"} {
+		t.Run(operation, func(t *testing.T) {
+			f := newBuildFixture(t)
+			// No storage may be consulted and no build persisted on rejection.
+			f.service.storage = nil
+			var err error
+			if operation == "start" {
+				_, err = f.service.Start(context.Background(), testBuildApp, otherBuildID, testBuildID, BuildStartInput{ArtifactType: types.BuildArtifactIPA})
+			} else {
+				_, err = f.service.RegisterArtifact(context.Background(), testBuildApp, otherBuildID, testBuildID, RegisterBuildInput{ArtifactType: types.BuildArtifactIPA})
+			}
+			require.ErrorContains(t, err, "iOS build artifacts are not supported yet")
+			require.True(t, validation.IsValidationError(err))
+			require.Empty(t, f.repo.builds)
+		})
+	}
+}
+
+func TestBuildRejectsArtifactForAnotherPlatform(t *testing.T) {
+	for _, operation := range []string{"start", "register"} {
+		t.Run(operation, func(t *testing.T) {
+			f := newBuildFixture(t)
+			f.service.storage = nil
+			var err error
+			if operation == "start" {
+				input := f.startInput()
+				input.ArtifactType = types.BuildArtifactIPA
+				_, err = f.service.Start(context.Background(), testBuildApp, testBuildIdentifier, testBuildID, input)
+			} else {
+				input := f.registerInput([]byte("artifact"))
+				input.ArtifactType = types.BuildArtifactIPA
+				_, err = f.service.RegisterArtifact(context.Background(), testBuildApp, testBuildIdentifier, testBuildID, input)
+			}
+			require.ErrorContains(t, err, "does not match identifier platform")
+			require.True(t, validation.IsValidationError(err))
+			require.Empty(t, f.repo.builds)
+		})
+	}
+}
+
 func TestBuildLifecycleStartUploadComplete(t *testing.T) {
 	f := newBuildFixture(t)
 	ctx := WithCliAuth(context.Background(), CliCredential{AppID: testBuildApp, KeyID: 7, KeyName: "ci-key"})

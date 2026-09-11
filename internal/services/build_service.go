@@ -96,12 +96,13 @@ func normalizeTime(t time.Time) time.Time {
 	return t.UTC().Truncate(time.Microsecond)
 }
 
-func (s *BuildService) validateStart(id string, artifactType types.BuildArtifactType, m *BuildStartMetadata) error {
-	if err := validateBuildID(id); err != nil {
-		return err
+func (s *BuildService) validateStart(platform types.Platform, artifactType types.BuildArtifactType, m *BuildStartMetadata) error {
+	artifactPlatform, err := artifactType.Platform()
+	if err != nil {
+		return validation.Errorf("artifactType", "%s", err)
 	}
-	if artifactType != types.BuildArtifactAPK && artifactType != types.BuildArtifactAAB {
-		return validation.Errorf("artifactType", "expected apk or aab")
+	if artifactPlatform != platform {
+		return validation.Errorf("artifactType", "%q does not match identifier platform %q", artifactType, platform)
 	}
 	if m.Profile == "" || m.CLIVersion == "" {
 		return validation.Errorf("metadata", "profile and CLI version are required")
@@ -132,17 +133,20 @@ func (s *BuildService) validateFinish(startedAt time.Time, finishedAt *time.Time
 	return nil
 }
 
-func (s *BuildService) validateRegister(id string, input *RegisterBuildInput) error {
+func (s *BuildService) validateRegister(platform types.Platform, input *RegisterBuildInput) error {
 	m := &input.Metadata
 	start := BuildStartMetadata{Profile: m.Profile, Mode: m.Mode, Environment: m.Environment, Channel: m.Channel, CLIVersion: m.CLIVersion, GitCommit: m.GitCommit, GitMessage: m.GitMessage, GitDirty: m.GitDirty, StartedAt: m.StartedAt}
-	if err := s.validateStart(id, input.ArtifactType, &start); err != nil {
+	if err := s.validateStart(platform, input.ArtifactType, &start); err != nil {
 		return err
 	}
 	m.StartedAt = start.StartedAt
 	if input.Size <= 0 || input.Size > MaxBuildSize || !buildHash.MatchString(input.SHA256) {
 		return validation.Errorf("artifact", "expected a size up to 2 GiB and SHA-256 hex checksum")
 	}
-	if err := validation.BuildNumber(types.PlatformAndroid, m.BuildNumber); err != nil || m.BuildNumber == "0" {
+	if err := validation.BuildNumber(platform, m.BuildNumber); err != nil {
+		return err
+	}
+	if platform == types.PlatformAndroid && m.BuildNumber == "0" {
 		return validation.Errorf("metadata", "buildNumber must be an Android versionCode from 1 to %d", validation.MaxAndroidBuildNumber)
 	}
 	if !fingerprintHash.MatchString(m.Fingerprint) {
@@ -186,6 +190,9 @@ func (s *BuildService) newRecord(ctx context.Context, appID, identifierID, id st
 	if s.repo == nil {
 		return nil, store.ErrNotSupportedInStatelessMode
 	}
+	if err := validateBuildID(id); err != nil {
+		return nil, err
+	}
 	ref, err := s.identifiers.GetAppIdentifierByID(ctx, appID, identifierID)
 	if err != nil {
 		return nil, err
@@ -193,25 +200,30 @@ func (s *BuildService) newRecord(ctx context.Context, appID, identifierID, id st
 	if ref == nil {
 		return nil, &store.ErrResourceNotFound{Resource: "app identifier", Identifier: identifierID}
 	}
-	if ref.Platform != types.PlatformAndroid {
-		return nil, validation.Errorf("platform", "only Android build artifacts are supported")
+	// Keep rollout support separate from the platform-specific validation rules.
+	switch ref.Platform {
+	case types.PlatformAndroid:
+	case types.PlatformIOS:
+		return nil, validation.Errorf("platform", "iOS build artifacts are not supported yet")
+	default:
+		return nil, validation.Errorf("platform", "unsupported build platform %q", ref.Platform)
 	}
 	actorType, actorID, actorDisplay := auditActorFromContext(ctx)
 	record := &types.BuildRecord{ID: id, AppID: appID, AppIdentifierID: identifierID, Platform: ref.Platform, ApplicationID: ref.Identifier, ArtifactType: artifactType, ActorType: string(actorType), ActorID: actorID, ActorDisplay: actorDisplay}
 	record.ArtifactKey, err = artifactRef(*record).Key(false)
-	return record, err
+	if err != nil {
+		return nil, validation.Errorf("artifactType", "%s", err)
+	}
+	return record, nil
 }
 
 // Start records a build before compilation; repeating it with the same inputs returns the existing row.
 func (s *BuildService) Start(ctx context.Context, appID, identifierID, id string, input BuildStartInput) (*types.BuildRecord, error) {
-	if s.repo == nil {
-		return nil, store.ErrNotSupportedInStatelessMode
-	}
-	if err := s.validateStart(id, input.ArtifactType, &input.Metadata); err != nil {
-		return nil, err
-	}
 	record, err := s.newRecord(ctx, appID, identifierID, id, input.ArtifactType)
 	if err != nil {
+		return nil, err
+	}
+	if err := s.validateStart(record.Platform, input.ArtifactType, &input.Metadata); err != nil {
 		return nil, err
 	}
 	m := input.Metadata
@@ -229,14 +241,11 @@ func (s *BuildService) Start(ctx context.Context, appID, identifierID, id string
 
 // RegisterArtifact declares the compiled artifact and hands back where to upload it.
 func (s *BuildService) RegisterArtifact(ctx context.Context, appID, identifierID, id string, input RegisterBuildInput) (*BuildRegistration, error) {
-	if s.repo == nil {
-		return nil, store.ErrNotSupportedInStatelessMode
-	}
-	if err := s.validateRegister(id, &input); err != nil {
-		return nil, err
-	}
 	record, err := s.newRecord(ctx, appID, identifierID, id, input.ArtifactType)
 	if err != nil {
+		return nil, err
+	}
+	if err := s.validateRegister(record.Platform, &input); err != nil {
 		return nil, err
 	}
 	record.Status, record.Size, record.SHA256, record.Metadata = types.BuildStatusUploading, input.Size, input.SHA256, input.Metadata

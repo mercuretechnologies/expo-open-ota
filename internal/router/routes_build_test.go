@@ -173,7 +173,7 @@ func TestBuildRoutesEnterpriseDomains(t *testing.T) {
 		for _, target := range []struct {
 			platform types.Platform
 			endpoint string
-		}{{"android", "environment"}, {"ios", "environment"}, {"android", "credentials/android"}, {"android", "build-number"}, {"ios", "build-number"}, {"android", "resolve/android/com.example.app"}} {
+		}{{"android", "environment"}, {"ios", "environment"}, {"android", "credentials/android"}, {"android", "build-number"}, {"ios", "build-number"}, {"android", "resolve/android/com.example.app"}, {"ios", "resolve/ios/com.example.app"}} {
 			endpoint := target.endpoint
 			t.Run(tc.name+"/"+string(target.platform)+"/"+endpoint, func(t *testing.T) {
 				access := tc.access
@@ -197,7 +197,7 @@ func TestBuildRoutesEnterpriseDomains(t *testing.T) {
 					method = http.MethodPost
 				}
 				requestPath := "/app-1/build/" + buildID + "/" + endpoint
-				if endpoint == "resolve/android/com.example.app" {
+				if strings.HasPrefix(endpoint, "resolve/") {
 					requestPath = "/app-1/build/" + endpoint
 				}
 				req := httptest.NewRequest(method, requestPath, nil)
@@ -214,7 +214,7 @@ func TestBuildRoutesEnterpriseDomains(t *testing.T) {
 				} else {
 					require.Zero(t, identifiers.allocated)
 				}
-				if tc.status == 200 && endpoint == "resolve/android/com.example.app" {
+				if tc.status == 200 && strings.HasPrefix(endpoint, "resolve/") {
 					require.JSONEq(t, `{"identifierId":"`+buildID+`"}`, w.Body.String())
 				}
 				if tc.status == 200 && endpoint == "environment" {
@@ -352,33 +352,40 @@ func (repo *buildIdentifierRepo) AllocateBuildNumber(ctx context.Context, app, i
 
 func TestBuildResolveTargetedLookup(t *testing.T) {
 	for _, tc := range []struct {
-		name, app, identifier string
-		platform              types.Platform
-		err                   error
-		status                int
+		name, app, identifier       string
+		platform, requestedPlatform types.Platform
+		err                         error
+		status                      int
 	}{
-		{"found", "app-1", "com.example.app", types.PlatformAndroid, nil, 200},
-		{"unknown", "app-1", "com.example.missing", types.PlatformAndroid, nil, 404},
-		{"foreign app", "app-2", "com.example.app", types.PlatformAndroid, nil, 404},
-		{"wrong platform", "app-1", "com.example.app", types.PlatformIOS, nil, 404},
-		{"database error", "app-1", "com.example.app", types.PlatformAndroid, errors.New("database unavailable"), 500},
+		{"android", "app-1", "com.example.app", types.PlatformAndroid, types.PlatformAndroid, nil, 200},
+		{"ios", "app-1", "com.example.app", types.PlatformIOS, types.PlatformIOS, nil, 200},
+		{"unknown", "app-1", "com.example.missing", types.PlatformAndroid, types.PlatformAndroid, nil, 404},
+		{"foreign app", "app-2", "com.example.app", types.PlatformAndroid, types.PlatformAndroid, nil, 404},
+		{"android does not resolve ios", "app-1", "com.example.app", types.PlatformIOS, types.PlatformAndroid, nil, 404},
+		{"ios does not resolve android", "app-1", "com.example.app", types.PlatformAndroid, types.PlatformIOS, nil, 404},
+		{"unknown platform", "app-1", "com.example.app", types.PlatformAndroid, "windows", nil, 400},
+		{"database error", "app-1", "com.example.app", types.PlatformAndroid, types.PlatformAndroid, errors.New("database unavailable"), 500},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			repo := &buildIdentifierRepo{platform: tc.platform, lookupErr: tc.err}
 			policy := &recordingBuildPolicy{}
 			group := buildGroup{cliAuth: services.NewCliAuthService(acceptingCliRepo{}), apiKeyAccess: policy, identifiers: repo}
 			router := mux.NewRouter()
-			router.Handle("/{APP_ID}/build/resolve/android/{APPLICATION_ID}", group.guard(apikeyrestrictions.BuildActionCreate)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			router.Handle("/{APP_ID}/build/resolve/{PLATFORM}/{APPLICATION_ID}", group.guard(apikeyrestrictions.BuildActionCreate)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				require.Equal(t, buildID, services.BuildIdentifierFromContext(r.Context()))
 				require.Empty(t, mux.Vars(r)["IDENTIFIER_ID"])
 				require.Equal(t, tc.identifier, mux.Vars(r)["APPLICATION_ID"])
 				w.WriteHeader(200)
 			})))
-			req := httptest.NewRequest("GET", "/"+tc.app+"/build/resolve/android/"+tc.identifier, nil)
+			req := httptest.NewRequest("GET", "/"+tc.app+"/build/resolve/"+string(tc.requestedPlatform)+"/"+tc.identifier, nil)
 			req.Header.Set("Authorization", "Bearer eoo_key")
 			recorder := httptest.NewRecorder()
 			router.ServeHTTP(recorder, req)
 			require.Equal(t, tc.status, recorder.Code, recorder.Body.String())
+			if tc.status == http.StatusBadRequest {
+				require.Contains(t, recorder.Body.String(), "platform")
+				require.Empty(t, repo.app, "invalid platforms must fail before identifier lookup")
+			}
 			if tc.err != nil {
 				var problem handlers.APIError
 				require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &problem))

@@ -51,7 +51,12 @@ func (g buildGroup) guard(action apikeyrestrictions.BuildAction) mux.MiddlewareF
 			var ref *store.AppIdentifierRef
 			target := vars["APPLICATION_ID"]
 			if target != "" {
-				ref, err = g.identifiers.GetAppIdentifierByPlatformAndIdentifier(r.Context(), credential.AppID, types.PlatformAndroid, target)
+				platform, parseErr := types.ParsePlatform(vars["PLATFORM"])
+				if parseErr != nil {
+					handlers.RenderBuildInputError(w, validation.Errorf("platform", "%s", parseErr))
+					return
+				}
+				ref, err = g.identifiers.GetAppIdentifierByPlatformAndIdentifier(r.Context(), credential.AppID, platform, target)
 			} else {
 				identifierID, parseErr := uuid.Parse(vars["IDENTIFIER_ID"])
 				if parseErr != nil {
