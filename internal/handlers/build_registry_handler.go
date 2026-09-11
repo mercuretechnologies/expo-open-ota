@@ -10,7 +10,6 @@ import (
 	"strconv"
 	"strings"
 	"xprem/config"
-	"xprem/internal/bucket"
 	"xprem/internal/services"
 	"xprem/internal/store"
 	"xprem/internal/types"
@@ -34,8 +33,6 @@ func renderBuildRegistryError(w http.ResponseWriter, err error) {
 		RenderError(w, http.StatusUnauthorized, "Invalid or expired upload authorization.")
 	case errors.Is(err, services.ErrBuildConflict), errors.Is(err, services.ErrBuildNotReady), errors.Is(err, services.ErrBuildState):
 		RenderError(w, http.StatusConflict, err.Error())
-	case errors.Is(err, bucket.ErrBuildNamespaceConflict):
-		RenderError(w, http.StatusConflict, bucket.ErrBuildNamespaceConflict.Error())
 	case errors.Is(err, services.ErrBuildIntegrity):
 		RenderError(w, http.StatusBadRequest, err.Error())
 	case errors.As(err, &missing):

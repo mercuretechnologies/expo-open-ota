@@ -125,7 +125,7 @@ func newRegistryFixture(t *testing.T) *registryFixture {
 	t.Setenv("JWT_SECRET", "registry-secret")
 	t.Setenv("BASE_URL", "https://ota.example.com/sub/path/")
 	repo := newRegistryRepo()
-	service := services.NewBuildService(repo, registryIdentifierRepo{}, bucket.NewBuildArtifactStorage(&bucket.LocalBucket{BasePath: t.TempDir()}))
+	service := services.NewBuildService(repo, registryIdentifierRepo{}, &bucket.LocalBucket{BasePath: t.TempDir()})
 	handler := NewBuildRegistryHandler(service)
 	router := mux.NewRouter()
 	authorized := func(next http.HandlerFunc) http.HandlerFunc {
@@ -347,7 +347,6 @@ func TestBuildRegistryErrorMapping(t *testing.T) {
 	}{
 		{services.ErrUnauthorized, http.StatusUnauthorized},
 		{services.ErrBuildConflict, http.StatusConflict},
-		{bucket.ErrBuildNamespaceConflict, http.StatusConflict},
 		{services.ErrBuildNotReady, http.StatusConflict},
 		{services.ErrBuildState, http.StatusConflict},
 		{services.ErrBuildIntegrity, http.StatusBadRequest},

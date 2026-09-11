@@ -109,7 +109,7 @@ func (r *memoryBuildRepo) Transition(ctx context.Context, appID, id string, deci
 type buildFixture struct {
 	service *BuildService
 	repo    *memoryBuildRepo
-	storage *bucket.BuildArtifactStorage
+	storage *bucket.LocalBucket
 	root    string
 	now     time.Time
 }
@@ -121,7 +121,7 @@ func newBuildFixture(t *testing.T) *buildFixture {
 	identifiers.add(testBuildIdentifier, types.PlatformAndroid, "com.example.app")
 	identifiers.add(otherBuildID, types.PlatformIOS, "com.example.ios")
 	root := t.TempDir()
-	storage := bucket.NewBuildArtifactStorage(&bucket.LocalBucket{BasePath: root})
+	storage := &bucket.LocalBucket{BasePath: root}
 	repo := newMemoryBuildRepo()
 	service := NewBuildService(repo, identifiers, storage)
 	now := time.Date(2026, 9, 9, 12, 0, 0, 0, time.UTC)
@@ -163,7 +163,7 @@ func TestBuildStartRecordsBuildingAndIsIdempotent(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, types.BuildStatusBuilding, first.Status)
 	require.Equal(t, "com.example.app", first.ApplicationID)
-	require.Equal(t, "apk", first.ArtifactType)
+	require.Equal(t, types.BuildArtifactAPK, first.ArtifactType)
 	require.Equal(t, "release", first.Metadata.Mode)
 	require.Zero(t, first.Size)
 	require.Empty(t, first.SHA256)
@@ -506,7 +506,7 @@ func TestBuildCompleteRejectsTamperedUpload(t *testing.T) {
 	ctx := context.Background()
 	registration, err := f.service.Begin(ctx, testBuildApp, testBuildIdentifier, testBuildID, f.registerInput([]byte("declared")))
 	require.NoError(t, err)
-	require.NoError(t, f.storage.Put(ctx, artifactRef(*registration.Build), true, strings.NewReader("tampered")))
+	require.NoError(t, f.storage.PutBuildArtifact(ctx, artifactRef(*registration.Build), true, strings.NewReader("tampered")))
 	_, err = f.service.Complete(ctx, testBuildApp, testBuildIdentifier, testBuildID)
 	require.ErrorIs(t, err, ErrBuildIntegrity)
 	_, err = os.Stat(f.finalPath(t, *registration.Build))

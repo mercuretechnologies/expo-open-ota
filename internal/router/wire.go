@@ -146,7 +146,6 @@ func InitDependencies(ctx context.Context) (*AppContainer, func()) {
 	dbUrl := config.GetDBURL()
 
 	resolvedBucket := bucket.GetBucket()
-	buildStorage := bucket.NewBuildArtifactStorage(resolvedBucket)
 
 	if dbUrl != "" {
 		if !database.IsValidDBURL(dbUrl) {
@@ -321,7 +320,7 @@ func InitDependencies(ctx context.Context) (*AppContainer, func()) {
 	bsDiffService.SetOnAuditEvent(auditService.Record)
 	rolloutService := services.NewRolloutService(rolloutRepo, channelRepo, updateRepo, deploymentService)
 	rolloutService.SetOnAuditEvent(auditService.Record)
-	buildService := services.NewBuildService(buildRepo, appIdentifierRepo, buildStorage)
+	buildService := services.NewBuildService(buildRepo, appIdentifierRepo, resolvedBucket)
 	appIdentifierService := services.NewAppIdentifierService(appIdentifierRepo)
 	appIdentifierService.SetOnAuditEvent(auditService.Record)
 	credentialsService := services.NewCredentialsService(credentialsRepo, appIdentifierRepo)

@@ -36,20 +36,14 @@ type BuildRepository interface {
 	List(context.Context, string, int32, int32) ([]types.BuildRecord, int64, error)
 	Transition(context.Context, string, string, func(types.BuildRecord) (*types.BuildRecord, error)) (*types.BuildRecord, error)
 }
-type BuildStorage interface {
-	Get(context.Context, bucket.BuildArtifact, bool) (*types.BucketFile, error)
-	Put(context.Context, bucket.BuildArtifact, bool, io.Reader) error
-	PresignUpload(context.Context, bucket.BuildArtifact) (string, map[string]string, error)
-	Delete(context.Context, bucket.BuildArtifact, bool) error
-}
 type BuildService struct {
 	repo        BuildRepository
 	identifiers AppIdentifierRepository
-	storage     BuildStorage
+	storage     bucket.Bucket
 	now         func() time.Time
 }
 
-func NewBuildService(repo BuildRepository, identifiers AppIdentifierRepository, storage BuildStorage) *BuildService {
+func NewBuildService(repo BuildRepository, identifiers AppIdentifierRepository, storage bucket.Bucket) *BuildService {
 	return &BuildService{repo: repo, identifiers: identifiers, storage: storage, now: time.Now}
 }
 
@@ -66,14 +60,14 @@ type BuildStartMetadata struct {
 	StartedAt   time.Time `json:"startedAt"`
 }
 type BuildStartInput struct {
-	ArtifactType string             `json:"artifactType"`
-	Metadata     BuildStartMetadata `json:"metadata"`
+	ArtifactType types.BuildArtifactType `json:"artifactType"`
+	Metadata     BuildStartMetadata      `json:"metadata"`
 }
 type RegisterBuildInput struct {
-	ArtifactType string              `json:"artifactType"`
-	Size         int64               `json:"size"`
-	SHA256       string              `json:"sha256"`
-	Metadata     types.BuildMetadata `json:"metadata"`
+	ArtifactType types.BuildArtifactType `json:"artifactType"`
+	Size         int64                   `json:"size"`
+	SHA256       string                  `json:"sha256"`
+	Metadata     types.BuildMetadata     `json:"metadata"`
 }
 type FailBuildInput struct {
 	FinishedAt time.Time `json:"finishedAt"`
@@ -102,11 +96,11 @@ func normalizeTime(t time.Time) time.Time {
 	return t.UTC().Truncate(time.Microsecond)
 }
 
-func (s *BuildService) validateStart(id, artifactType string, m *BuildStartMetadata) error {
+func (s *BuildService) validateStart(id string, artifactType types.BuildArtifactType, m *BuildStartMetadata) error {
 	if err := validateBuildID(id); err != nil {
 		return err
 	}
-	if artifactType != "apk" && artifactType != "aab" {
+	if artifactType != types.BuildArtifactAPK && artifactType != types.BuildArtifactAAB {
 		return validation.Errorf("artifactType", "expected apk or aab")
 	}
 	if m.Profile == "" || m.CLIVersion == "" {
@@ -185,10 +179,10 @@ func withArtifact(current, declared types.BuildRecord) *types.BuildRecord {
 }
 
 func artifactRef(b types.BuildRecord) bucket.BuildArtifact {
-	return bucket.BuildArtifact{Platform: b.Platform, IdentifierID: b.AppIdentifierID, BuildID: b.ID, Format: b.ArtifactType}
+	return bucket.BuildArtifact{IdentifierID: b.AppIdentifierID, BuildID: b.ID, Type: b.ArtifactType}
 }
 
-func (s *BuildService) newRecord(ctx context.Context, appID, identifierID, id, artifactType string) (*types.BuildRecord, error) {
+func (s *BuildService) newRecord(ctx context.Context, appID, identifierID, id string, artifactType types.BuildArtifactType) (*types.BuildRecord, error) {
 	if s.repo == nil {
 		return nil, store.ErrNotSupportedInStatelessMode
 	}
@@ -279,11 +273,11 @@ func (s *BuildService) Begin(ctx context.Context, appID, identifierID, id string
 	if existing.Status == types.BuildStatusReady {
 		return result, nil
 	}
-	url, headers, err := s.storage.PresignUpload(ctx, artifactRef(*existing))
+	url, err := s.storage.RequestBuildArtifactUploadURL(ctx, artifactRef(*existing))
 	if err != nil {
 		return nil, err
 	}
-	result.Upload = &BuildUpload{URL: url, Method: "PUT", Headers: headers}
+	result.Upload = &BuildUpload{URL: url, Method: "PUT", Headers: bucket.UploadHeaders(s.storage)}
 	if url == "" {
 		result.LocalToken, err = s.uploadToken(*existing)
 	}
@@ -347,7 +341,7 @@ func (s *BuildService) Fail(ctx context.Context, appID, identifierID, id string,
 		return failed(current, input.FinishedAt), nil
 	})
 	if err == nil && staged {
-		_ = s.storage.Delete(ctx, artifactRef(*record), true)
+		_ = s.storage.DeleteBuildArtifact(ctx, artifactRef(*record), true)
 	}
 	return record, err
 }
@@ -384,13 +378,13 @@ func (s *BuildService) Complete(ctx context.Context, appID, identifierID, id str
 		return &next, nil
 	})
 	if err == nil {
-		_ = s.storage.Delete(ctx, artifactRef(*completed), true)
+		_ = s.storage.DeleteBuildArtifact(ctx, artifactRef(*completed), true)
 	}
 	return completed, err
 }
 
 func (s *BuildService) verifyStaged(ctx context.Context, b types.BuildRecord) error {
-	file, err := s.storage.Get(ctx, artifactRef(b), true)
+	file, err := s.storage.GetBuildArtifact(ctx, artifactRef(b), true)
 	if err != nil {
 		return err
 	}
@@ -415,14 +409,14 @@ func (s *BuildService) verifyStaged(ctx context.Context, b types.BuildRecord) er
 	if _, err = temporary.Seek(0, io.SeekStart); err != nil {
 		return err
 	}
-	return s.storage.Put(ctx, artifactRef(b), false, temporary)
+	return s.storage.PutBuildArtifact(ctx, artifactRef(b), false, temporary)
 }
 
 func (s *BuildService) Download(ctx context.Context, record types.BuildRecord) (*types.BucketFile, error) {
 	if record.Status != types.BuildStatusReady {
 		return nil, ErrBuildNotReady
 	}
-	return s.storage.Get(ctx, artifactRef(record), false)
+	return s.storage.GetBuildArtifact(ctx, artifactRef(record), false)
 }
 
 type buildUploadClaims struct {
@@ -465,11 +459,11 @@ func (s *BuildService) UploadLocal(ctx context.Context, token string, body io.Re
 		return ErrBuildState
 	}
 	reader := &countingReader{Reader: io.LimitReader(body, b.Size+1)}
-	if err := s.storage.Put(ctx, artifactRef(*b), true, reader); err != nil {
+	if err := s.storage.PutBuildArtifact(ctx, artifactRef(*b), true, reader); err != nil {
 		return err
 	}
 	if reader.n > b.Size {
-		_ = s.storage.Delete(ctx, artifactRef(*b), true)
+		_ = s.storage.DeleteBuildArtifact(ctx, artifactRef(*b), true)
 		return ErrBuildIntegrity
 	}
 	return nil
