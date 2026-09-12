@@ -44,11 +44,27 @@ type registryRepo struct {
 	mu     sync.Mutex
 	builds map[string]types.BuildRecord
 	shares map[string]types.BuildShare
+	logs   []types.BuildLogChunk
 	err    error
 }
 
 func newRegistryRepo() *registryRepo {
 	return &registryRepo{builds: map[string]types.BuildRecord{}, shares: map[string]types.BuildShare{}}
+}
+
+func (r *registryRepo) AppendLogs(_ context.Context, _, _ string, offset int32, content, format string) error {
+	r.logs = append(r.logs, types.BuildLogChunk{Offset: offset, Content: content, Format: format})
+	return nil
+}
+
+func (r *registryRepo) ListLogs(_ context.Context, _, _ string, after int32) ([]types.BuildLogChunk, error) {
+	chunks := []types.BuildLogChunk{}
+	for _, chunk := range r.logs {
+		if chunk.Offset >= after {
+			chunks = append(chunks, chunk)
+		}
+	}
+	return chunks, nil
 }
 
 func (r *registryRepo) Create(_ context.Context, record types.BuildRecord) (*types.BuildRecord, bool, error) {
@@ -163,6 +179,7 @@ func newRegistryFixture(t *testing.T) *registryFixture {
 		}
 	}
 	router.HandleFunc("/{APP_ID}/build/{IDENTIFIER_ID}/artifacts/{BUILD_ID}/start", authorized(handler.Start)).Methods(http.MethodPut)
+	router.HandleFunc("/{APP_ID}/build/{IDENTIFIER_ID}/artifacts/{BUILD_ID}/logs", authorized(handler.AppendLogs)).Methods(http.MethodPost)
 	router.HandleFunc("/{APP_ID}/build/{IDENTIFIER_ID}/artifacts/{BUILD_ID}", authorized(handler.RegisterArtifact)).Methods(http.MethodPut)
 	router.HandleFunc("/{APP_ID}/build/{IDENTIFIER_ID}/artifacts/{BUILD_ID}/failed", authorized(handler.Fail)).Methods(http.MethodPost)
 	router.HandleFunc("/{APP_ID}/build/{IDENTIFIER_ID}/artifacts/{BUILD_ID}/complete", authorized(handler.Complete)).Methods(http.MethodPost)
@@ -171,6 +188,7 @@ func newRegistryFixture(t *testing.T) *registryFixture {
 	router.HandleFunc("/build-shares/{TOKEN}/download", handler.PublicShare).Methods(http.MethodGet)
 	router.HandleFunc("/api/app/{APP_ID}/builds", handler.List).Methods(http.MethodGet)
 	router.HandleFunc("/api/app/{APP_ID}/builds/{BUILD_ID}", handler.Get).Methods(http.MethodGet)
+	router.HandleFunc("/api/app/{APP_ID}/builds/{BUILD_ID}/logs", handler.ListLogs).Methods(http.MethodGet)
 	router.HandleFunc("/api/app/{APP_ID}/builds/{BUILD_ID}/download", handler.Download).Methods(http.MethodGet)
 	router.HandleFunc("/api/app/{APP_ID}/builds/{BUILD_ID}/shares", handler.CreateShare).Methods(http.MethodPost)
 	return &registryFixture{handler: handler, repo: repo, router: router}
@@ -194,6 +212,55 @@ func (f *registryFixture) build(t *testing.T, w *httptest.ResponseRecorder) type
 }
 
 const registryPath = "/" + registryApp + "/build/" + registryIdentifier + "/artifacts/" + registryBuild
+
+func TestBuildRegistryLogRequests(t *testing.T) {
+	f := newRegistryFixture(t)
+	w := f.do(http.MethodPut, registryPath+"/start", startBody(time.Now().Add(-time.Minute)))
+	require.Equal(t, http.StatusOK, w.Code)
+	w = f.do(http.MethodPost, registryPath+"/logs", `{"offset":0,"content":"héllo\n"}`)
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	require.JSONEq(t, `{"nextOffset":7}`, w.Body.String())
+	for _, body := range []string{
+		`{}`, `null`, `{"offset":-1,"content":"x"}`, `{"offset":2147483648,"content":"x"}`,
+		`{"offset":0,"content":"x","token":"no"}`, `{"offset":0,"content":"x"} {}`,
+		`{"offset":0,"content":"` + strings.Repeat("x", types.MaxBuildLogChunkBytes+1) + `"}`,
+	} {
+		require.Equal(t, http.StatusBadRequest, f.do(http.MethodPost, registryPath+"/logs", body).Code, body[:min(80, len(body))])
+	}
+	require.Len(t, f.repo.logs, 1)
+	path := "/api/app/" + registryApp + "/builds/" + registryBuild + "/logs"
+	w = f.do(http.MethodGet, path, "")
+	require.Equal(t, http.StatusOK, w.Code)
+	require.Contains(t, w.Body.String(), `"nextOffset":7`)
+	require.Contains(t, w.Body.String(), "héllo")
+	w = f.do(http.MethodGet, path+"?after=7", "")
+	require.Equal(t, http.StatusOK, w.Code)
+	require.JSONEq(t, `{"chunks":[],"nextOffset":7}`, w.Body.String())
+	for _, after := range []string{"-1", "hello", "2147483648", "10485761"} {
+		require.Equal(t, http.StatusBadRequest, f.do(http.MethodGet, path+"?after="+after, "").Code)
+	}
+	w = f.do(http.MethodGet, strings.Replace(path, registryApp, registryIdentifier, 1), "")
+	require.Equal(t, http.StatusNotFound, w.Code)
+	content := `{"logId":"step","time":"2026-09-09T10:00:00Z","level":30,"msg":"Gradle terminé","phase":"RUN_GRADLEW","buildStepId":"gradle","marker":"END_PHASE","result":"success","durationMs":12345}` + "\n"
+	body, err := json.Marshal(map[string]any{"offset": 7, "content": content, "format": "ndjson"})
+	require.NoError(t, err)
+	w = f.do(http.MethodPost, registryPath+"/logs", string(body))
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	var appended struct {
+		NextOffset int `json:"nextOffset"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &appended))
+	require.Equal(t, 7+len(content), appended.NextOffset)
+	w = f.do(http.MethodGet, path+"?after=7", "")
+	require.Equal(t, http.StatusOK, w.Code)
+	var page struct {
+		Chunks []types.BuildLogChunk `json:"chunks"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &page))
+	require.Len(t, page.Chunks, 1)
+	require.Equal(t, "ndjson", page.Chunks[0].Format)
+	require.Equal(t, content, page.Chunks[0].Content)
+}
 
 func startBody(startedAt time.Time) string {
 	body, _ := json.Marshal(map[string]any{"artifactType": "apk", "metadata": map[string]any{"profile": "production", "channel": "stable", "cliVersion": "2.0.0", "gitCommit": "abc", "gitMessage": "release", "gitDirty": true, "startedAt": startedAt}})

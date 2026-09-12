@@ -34,7 +34,7 @@ func renderBuildRegistryError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, services.ErrUnauthorized):
 		RenderError(w, http.StatusUnauthorized, "Invalid or expired upload authorization.")
-	case errors.Is(err, services.ErrBuildConflict), errors.Is(err, services.ErrBuildNotReady), errors.Is(err, services.ErrBuildState):
+	case errors.Is(err, services.ErrBuildConflict), errors.Is(err, services.ErrBuildNotReady), errors.Is(err, services.ErrBuildState), errors.Is(err, store.ErrBuildLogOffset):
 		RenderError(w, http.StatusConflict, err.Error())
 	case errors.Is(err, services.ErrBuildIntegrity):
 		RenderError(w, http.StatusBadRequest, err.Error())
@@ -162,6 +162,54 @@ func (h *BuildRegistryHandler) Get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	RenderJSON(w, http.StatusOK, b)
+}
+
+func (h *BuildRegistryHandler) AppendLogs(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		Offset  int32  `json:"offset"`
+		Content string `json:"content"`
+		Format  string `json:"format"`
+	}
+	// JSON escaping can expand a byte to six characters (for example, a tab).
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, types.MaxBuildLogChunkBytes*6+1024))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&input); err != nil {
+		RenderError(w, http.StatusBadRequest, "Invalid log batch.")
+		return
+	}
+	if err := decoder.Decode(new(any)); err != io.EOF {
+		RenderError(w, http.StatusBadRequest, "Invalid log batch.")
+		return
+	}
+	if err := h.service.AppendLogs(r.Context(), mux.Vars(r)["APP_ID"], services.BuildIdentifierFromContext(r.Context()), mux.Vars(r)["BUILD_ID"], input.Offset, input.Content, input.Format); err != nil {
+		renderBuildRegistryError(w, err)
+		return
+	}
+	RenderJSON(w, http.StatusOK, map[string]int32{"nextOffset": input.Offset + int32(len(input.Content))})
+}
+
+func (h *BuildRegistryHandler) ListLogs(w http.ResponseWriter, r *http.Request) {
+	after := int64(0)
+	var err error
+	if value := r.URL.Query().Get("after"); value != "" {
+		after, err = strconv.ParseInt(value, 10, 32)
+	}
+	if err != nil {
+		RenderError(w, http.StatusBadRequest, "Invalid log offset.")
+		return
+	}
+	chunks, err := h.service.ListLogs(r.Context(), mux.Vars(r)["APP_ID"], mux.Vars(r)["BUILD_ID"], int32(after))
+	if err != nil {
+		renderBuildRegistryError(w, err)
+		return
+	}
+	next := int32(after)
+	if len(chunks) > 0 {
+		last := chunks[len(chunks)-1]
+		next = last.Offset + int32(len(last.Content))
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	RenderJSON(w, http.StatusOK, map[string]any{"chunks": chunks, "nextOffset": next})
 }
 
 func (h *BuildRegistryHandler) Download(w http.ResponseWriter, r *http.Request) {

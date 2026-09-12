@@ -137,7 +137,7 @@ export const PERMISSION_GROUPS: PermissionGroup[] = [
       {
         value: 'build:read',
         label: 'View builds',
-        description: 'List the builds of the app and view their metadata.',
+        description: 'List the builds of the app and open one: its metadata and its log.',
       },
       {
         value: 'build:download',
