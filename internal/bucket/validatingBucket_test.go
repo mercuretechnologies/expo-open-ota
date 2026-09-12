@@ -380,9 +380,9 @@ func (s *stubBucket) DeleteBuildArtifact(context.Context, BuildArtifact, bool) e
 	s.mark()
 	return nil
 }
-func (s *stubBucket) RequestBuildArtifactUploadURL(context.Context, BuildArtifact) (string, error) {
+func (s *stubBucket) RequestBuildArtifactUploadURL(context.Context, string, BuildArtifact) (*UploadRequest, error) {
 	s.mark()
-	return "", nil
+	return &UploadRequest{Method: "PUT"}, nil
 }
 
 func TestValidateBSDiffKey(t *testing.T) {

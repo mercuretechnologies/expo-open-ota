@@ -8,17 +8,23 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
+	"time"
 	"xprem/config"
 	"xprem/ee/apikeyrestrictions"
 	"xprem/ee/licensing"
 	"xprem/internal/android/androidtest"
+	"xprem/internal/bucket"
 	"xprem/internal/handlers"
 	"xprem/internal/services"
 	"xprem/internal/store"
 	"xprem/internal/types"
 
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/gorilla/mux"
 	"github.com/stretchr/testify/require"
 )
@@ -172,7 +178,7 @@ func TestBuildRoutesEnterpriseDomains(t *testing.T) {
 		for _, target := range []struct {
 			platform types.Platform
 			endpoint string
-		}{{"android", "environment"}, {"ios", "environment"}, {"android", "credentials/android"}, {"android", "build-number"}, {"ios", "build-number"}, {"android", "resolve/android/com.example.app"}} {
+		}{{"android", "environment"}, {"ios", "environment"}, {"android", "credentials/android"}, {"android", "build-number"}, {"ios", "build-number"}, {"android", "resolve/android/com.example.app"}, {"ios", "resolve/ios/com.example.app"}} {
 			endpoint := target.endpoint
 			t.Run(tc.name+"/"+string(target.platform)+"/"+endpoint, func(t *testing.T) {
 				access := tc.access
@@ -196,7 +202,7 @@ func TestBuildRoutesEnterpriseDomains(t *testing.T) {
 					method = http.MethodPost
 				}
 				requestPath := "/app-1/build/" + buildID + "/" + endpoint
-				if endpoint == "resolve/android/com.example.app" {
+				if strings.HasPrefix(endpoint, "resolve/") {
 					requestPath = "/app-1/build/" + endpoint
 				}
 				req := httptest.NewRequest(method, requestPath, nil)
@@ -213,7 +219,7 @@ func TestBuildRoutesEnterpriseDomains(t *testing.T) {
 				} else {
 					require.Zero(t, identifiers.allocated)
 				}
-				if tc.status == 200 && endpoint == "resolve/android/com.example.app" {
+				if tc.status == 200 && strings.HasPrefix(endpoint, "resolve/") {
 					require.JSONEq(t, `{"identifierId":"`+buildID+`"}`, w.Body.String())
 				}
 				if tc.status == 200 && endpoint == "environment" {
@@ -351,33 +357,40 @@ func (repo *buildIdentifierRepo) AllocateBuildNumber(ctx context.Context, app, i
 
 func TestBuildResolveTargetedLookup(t *testing.T) {
 	for _, tc := range []struct {
-		name, app, identifier string
-		platform              types.Platform
-		err                   error
-		status                int
+		name, app, identifier       string
+		platform, requestedPlatform types.Platform
+		err                         error
+		status                      int
 	}{
-		{"found", "app-1", "com.example.app", types.PlatformAndroid, nil, 200},
-		{"unknown", "app-1", "com.example.missing", types.PlatformAndroid, nil, 404},
-		{"foreign app", "app-2", "com.example.app", types.PlatformAndroid, nil, 404},
-		{"wrong platform", "app-1", "com.example.app", types.PlatformIOS, nil, 404},
-		{"database error", "app-1", "com.example.app", types.PlatformAndroid, errors.New("database unavailable"), 500},
+		{"android", "app-1", "com.example.app", types.PlatformAndroid, types.PlatformAndroid, nil, 200},
+		{"ios", "app-1", "com.example.app", types.PlatformIOS, types.PlatformIOS, nil, 200},
+		{"unknown", "app-1", "com.example.missing", types.PlatformAndroid, types.PlatformAndroid, nil, 404},
+		{"foreign app", "app-2", "com.example.app", types.PlatformAndroid, types.PlatformAndroid, nil, 404},
+		{"android does not resolve ios", "app-1", "com.example.app", types.PlatformIOS, types.PlatformAndroid, nil, 404},
+		{"ios does not resolve android", "app-1", "com.example.app", types.PlatformAndroid, types.PlatformIOS, nil, 404},
+		{"unknown platform", "app-1", "com.example.app", types.PlatformAndroid, "windows", nil, 400},
+		{"database error", "app-1", "com.example.app", types.PlatformAndroid, types.PlatformAndroid, errors.New("database unavailable"), 500},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			repo := &buildIdentifierRepo{platform: tc.platform, lookupErr: tc.err}
 			policy := &recordingBuildPolicy{}
 			group := buildGroup{cliAuth: services.NewCliAuthService(acceptingCliRepo{}), apiKeyAccess: policy, identifiers: repo}
 			router := mux.NewRouter()
-			router.Handle("/{APP_ID}/build/resolve/android/{APPLICATION_ID}", group.guard(apikeyrestrictions.BuildActionCreate)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			router.Handle("/{APP_ID}/build/resolve/{PLATFORM}/{APPLICATION_ID}", group.guard(apikeyrestrictions.BuildActionCreate)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				require.Equal(t, buildID, services.BuildIdentifierFromContext(r.Context()))
 				require.Empty(t, mux.Vars(r)["IDENTIFIER_ID"])
 				require.Equal(t, tc.identifier, mux.Vars(r)["APPLICATION_ID"])
 				w.WriteHeader(200)
 			})))
-			req := httptest.NewRequest("GET", "/"+tc.app+"/build/resolve/android/"+tc.identifier, nil)
+			req := httptest.NewRequest("GET", "/"+tc.app+"/build/resolve/"+string(tc.requestedPlatform)+"/"+tc.identifier, nil)
 			req.Header.Set("Authorization", "Bearer eoo_key")
 			recorder := httptest.NewRecorder()
 			router.ServeHTTP(recorder, req)
 			require.Equal(t, tc.status, recorder.Code, recorder.Body.String())
+			if tc.status == http.StatusBadRequest {
+				require.Contains(t, recorder.Body.String(), "platform")
+				require.Empty(t, repo.app, "invalid platforms must fail before identifier lookup")
+			}
 			if tc.err != nil {
 				var problem handlers.APIError
 				require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &problem))
@@ -390,6 +403,176 @@ func TestBuildResolveTargetedLookup(t *testing.T) {
 				require.Equal(t, apikeyrestrictions.BuildActionCreate, policy.requests[0].Action)
 			} else {
 				require.Empty(t, policy.requests)
+			}
+		})
+	}
+}
+
+// Every build registry mutation runs behind the same guard as the build
+// inputs, including uploads that also require a per-build token.
+func TestBuildRegistryRoutesRequireBuildCreate(t *testing.T) {
+	previous := licensing.Current()
+	licensing.Activate(licensing.License{PlanCode: licensing.PlanEnterprise})
+	t.Cleanup(func() {
+		if previous == nil {
+			licensing.Deactivate()
+		} else {
+			licensing.Activate(*previous)
+		}
+	})
+	registry := handlers.NewBuildRegistryHandler(services.NewBuildService(nil, nil, nil))
+	endpoints := []struct{ method, suffix, body string }{
+		{http.MethodPut, "/artifacts/" + buildID + "/start", `{"artifactType":"apk","metadata":{"profile":"p","cliVersion":"1","startedAt":"2026-09-08T10:00:00Z"}}`},
+		{http.MethodPut, "/artifacts/" + buildID, `{"artifactType":"apk","size":1,"sha256":"` + strings.Repeat("a", 64) + `","metadata":{"profile":"p","cliVersion":"1","buildNumber":"1","fingerprint":"` + strings.Repeat("a", 40) + `","startedAt":"2026-09-08T10:00:00Z","finishedAt":"2026-09-08T10:01:00Z"}}`},
+		{http.MethodPost, "/artifacts/" + buildID + "/failed", `{"finishedAt":"2026-09-08T10:00:00Z"}`},
+		{http.MethodPost, "/artifacts/" + buildID + "/complete", ""},
+		{http.MethodPut, "/artifacts/" + buildID + "/upload", "artifact bytes"},
+	}
+	granted := apikeyrestrictions.ApiKeyAccess{ApiKeyID: 42, BuildRules: []apikeyrestrictions.BuildRule{{AppIdentifierID: buildID, Actions: []apikeyrestrictions.BuildAction{apikeyrestrictions.BuildActionCreate}}}}
+	elsewhere := apikeyrestrictions.ApiKeyAccess{ApiKeyID: 42, BuildRules: []apikeyrestrictions.BuildRule{{AppIdentifierID: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", Actions: []apikeyrestrictions.BuildAction{apikeyrestrictions.BuildActionCreate}}}}
+	for _, tc := range []struct {
+		name   string
+		auth   services.CliAuthRepository
+		access apikeyrestrictions.ApiKeyAccess
+		id     string
+		status int
+	}{
+		{"allowed", acceptingCliRepo{}, granted, buildID, http.StatusBadRequest},
+		{"denied", acceptingCliRepo{}, elsewhere, buildID, http.StatusForbidden},
+		{"unauthenticated", failingBuildAuth{}, granted, buildID, http.StatusUnauthorized},
+		{"unregistered token", buildAuthKeyID{keyID: 0}, granted, buildID, http.StatusUnauthorized},
+		{"foreign identifier", acceptingCliRepo{}, granted, "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", http.StatusNotFound},
+	} {
+		for _, endpoint := range endpoints {
+			t.Run(tc.name+" "+endpoint.method+" "+endpoint.suffix, func(t *testing.T) {
+				access := &buildAccessRepo{access: tc.access}
+				container := &AppContainer{AppRepo: buildAppRepo{}, CliAuthService: services.NewCliAuthService(tc.auth), ApiKeyAccessService: apikeyrestrictions.NewApiKeyAccessService(access), AppIdentifierRepo: &buildIdentifierRepo{platform: types.PlatformAndroid}, BuildHandler: handlers.NewBuildHandler(nil, nil, nil), BuildRegistryHandler: registry}
+				router := mux.NewRouter()
+				registerBuildRoutes(router, container)
+				req := httptest.NewRequest(endpoint.method, "/app-1/build/"+tc.id+endpoint.suffix, strings.NewReader(endpoint.body))
+				req.Header.Set("Authorization", "Bearer eoo_key")
+				req.RemoteAddr = "192.0.2.1:4000"
+				w := httptest.NewRecorder()
+				router.ServeHTTP(w, req)
+				require.Equal(t, tc.status, w.Code, w.Body.String())
+				require.Equal(t, tc.status == http.StatusBadRequest || tc.status == http.StatusForbidden, access.app != "", "the policy is consulted only for an authenticated, resolvable target")
+				if tc.status == http.StatusBadRequest {
+					require.Contains(t, w.Body.String(), "stateless mode", "the guard let the request through to the registry handler")
+				} else {
+					require.NotContains(t, w.Body.String(), "stateless mode", "the registry handler must not run")
+				}
+			})
+		}
+	}
+}
+
+func TestBuildRegistryRouteMethodsAndPublicPaths(t *testing.T) {
+	registry := handlers.NewBuildRegistryHandler(services.NewBuildService(nil, nil, nil))
+	access := &buildAccessRepo{}
+	container := &AppContainer{AppRepo: buildAppRepo{}, CliAuthService: services.NewCliAuthService(acceptingCliRepo{}), ApiKeyAccessService: apikeyrestrictions.NewApiKeyAccessService(access), AppIdentifierRepo: &buildIdentifierRepo{platform: types.PlatformAndroid}, BuildHandler: handlers.NewBuildHandler(nil, nil, nil), BuildRegistryHandler: registry}
+	router := mux.NewRouter()
+	registerBuildRoutes(router, container)
+	for _, tc := range []struct {
+		method, target string
+		status         int
+	}{
+		{http.MethodGet, "/app-1/build/" + buildID + "/artifacts/" + buildID + "/start", http.StatusNotFound},
+		{http.MethodPost, "/app-1/build/" + buildID + "/artifacts/" + buildID + "/start", http.StatusNotFound},
+		{http.MethodPut, "/app-1/build/" + buildID + "/artifacts/" + buildID + "/failed", http.StatusNotFound},
+		{http.MethodGet, "/app-1/build/" + buildID + "/artifacts/" + buildID, http.StatusNotFound},
+		{http.MethodPut, "/build-uploads/forged-grant", http.StatusNotFound},
+		{http.MethodPost, "/build-uploads/forged-grant", http.StatusNotFound},
+	} {
+		t.Run(tc.method+" "+tc.target, func(t *testing.T) {
+			req := httptest.NewRequest(tc.method, tc.target, strings.NewReader("{}"))
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+			require.Equal(t, tc.status, w.Code, w.Body.String())
+		})
+	}
+	require.Empty(t, access.app, "removed paths and wrong methods never consult the build policy")
+}
+
+type localUploadCliRepo struct{ acceptingCliRepo }
+
+func (localUploadCliRepo) ValidateCliCredential(_ context.Context, app string, auth types.Auth) (int64, error) {
+	if app != "app-1" || auth.Token == nil || *auth.Token != "eoo_valid" {
+		return 0, services.ErrUnauthorized
+	}
+	return 42, nil
+}
+
+type localUploadBuildRepo struct{ services.BuildRepository }
+
+func (localUploadBuildRepo) Get(_ context.Context, app, id string) (*types.BuildRecord, error) {
+	if app != "app-1" || id != buildID {
+		return nil, &store.ErrResourceNotFound{Resource: "build", Identifier: id}
+	}
+	return &types.BuildRecord{ID: id, AppID: app, AppIdentifierID: buildID, ArtifactType: types.BuildArtifactAPK, Status: types.BuildStatusUploading, Size: 3}, nil
+}
+
+func TestBuildLocalUploadRequiresBothTokensAndBuildPermission(t *testing.T) {
+	t.Setenv("JWT_SECRET", "upload-test-secret")
+	previous := licensing.Current()
+	licensing.Activate(licensing.License{PlanCode: licensing.PlanEnterprise})
+	t.Cleanup(func() {
+		if previous == nil {
+			licensing.Deactivate()
+		} else {
+			licensing.Activate(*previous)
+		}
+	})
+	grant, err := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"sub": "build-upload", "exp": time.Now().Add(time.Minute).Unix(),
+		"appId": "app-1", "identifierId": buildID, "buildId": buildID,
+	}).SignedString([]byte("upload-test-secret"))
+	require.NoError(t, err)
+	for _, tc := range []struct {
+		name, bearer, token, query string
+		denied                     bool
+		status                     int
+	}{
+		{"both tokens", "eoo_valid", grant, "", false, http.StatusNoContent},
+		{"missing EOO", "", grant, "", false, http.StatusUnauthorized},
+		{"invalid EOO", "eoo_invalid", grant, "", false, http.StatusUnauthorized},
+		{"upload grant is not EOO", grant, grant, "", false, http.StatusUnauthorized},
+		{"missing grant", "eoo_valid", "", "", false, http.StatusUnauthorized},
+		{"grant in query", "eoo_valid", "", "?token=" + grant, false, http.StatusUnauthorized},
+		{"invalid grant", "eoo_valid", "forged", "", false, http.StatusUnauthorized},
+		{"denied identifier", "eoo_valid", grant, "", true, http.StatusForbidden},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			identifier := buildID
+			if tc.denied {
+				identifier = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+			}
+			access := &buildAccessRepo{access: apikeyrestrictions.ApiKeyAccess{ApiKeyID: 42, BuildRules: []apikeyrestrictions.BuildRule{{AppIdentifierID: identifier, Actions: []apikeyrestrictions.BuildAction{apikeyrestrictions.BuildActionCreate}}}}}
+			identifiers := &buildIdentifierRepo{platform: types.PlatformAndroid}
+			service := services.NewBuildService(localUploadBuildRepo{}, identifiers, &bucket.LocalBucket{BasePath: root})
+			container := &AppContainer{AppRepo: buildAppRepo{}, CliAuthService: services.NewCliAuthService(localUploadCliRepo{}), ApiKeyAccessService: apikeyrestrictions.NewApiKeyAccessService(access), AppIdentifierRepo: identifiers, BuildHandler: handlers.NewBuildHandler(nil, nil, nil), BuildRegistryHandler: handlers.NewBuildRegistryHandler(service)}
+			router := mux.NewRouter()
+			registerBuildRoutes(router, container)
+			body := strings.NewReader("apk")
+			req := httptest.NewRequest(http.MethodPut, "/app-1/build/"+buildID+"/artifacts/"+buildID+"/upload"+tc.query, body)
+			if tc.bearer != "" {
+				req.Header.Set("Authorization", "Bearer "+tc.bearer)
+			}
+			req.Header.Set(bucket.LocalUploadTokenHeader, tc.token)
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+			require.Equal(t, tc.status, w.Code, w.Body.String())
+			if tc.status == http.StatusNoContent {
+				key, err := (bucket.BuildArtifact{IdentifierID: buildID, BuildID: buildID, Type: types.BuildArtifactAPK}).Key(true)
+				require.NoError(t, err)
+				contents, err := os.ReadFile(filepath.Join(root, key))
+				require.NoError(t, err)
+				require.Equal(t, "apk", string(contents))
+			} else {
+				require.Equal(t, 3, body.Len(), "authorization failures must precede reading the body")
+				entries, err := os.ReadDir(root)
+				require.NoError(t, err)
+				require.Empty(t, entries)
 			}
 		})
 	}

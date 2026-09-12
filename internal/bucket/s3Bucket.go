@@ -796,17 +796,17 @@ func (b *S3Bucket) deleteObject(ctx context.Context, key string) error {
 	return nil
 }
 
-func (b *S3Bucket) RequestBuildArtifactUploadURL(ctx context.Context, ref BuildArtifact) (string, error) {
+func (b *S3Bucket) RequestBuildArtifactUploadURL(ctx context.Context, _ string, ref BuildArtifact) (*UploadRequest, error) {
 	key, err := b.buildArtifactKey(ref, true)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	if b.BucketName == "" {
-		return "", errors.New("BucketName not set")
+		return nil, errors.New("BucketName not set")
 	}
 	s3Client, err := aws.GetS3Client()
 	if err != nil {
-		return "", fmt.Errorf("error getting S3 client: %w", err)
+		return nil, fmt.Errorf("error getting S3 client: %w", err)
 	}
 	presignResult, err := s3.NewPresignClient(s3Client).PresignPutObject(ctx, &s3.PutObjectInput{
 		Bucket: awssdk.String(b.BucketName),
@@ -815,7 +815,7 @@ func (b *S3Bucket) RequestBuildArtifactUploadURL(ctx context.Context, ref BuildA
 		opt.Expires = buildUploadExpiry
 	})
 	if err != nil {
-		return "", fmt.Errorf("error presigning URL: %w", err)
+		return nil, fmt.Errorf("error presigning URL: %w", err)
 	}
-	return presignResult.URL, nil
+	return &UploadRequest{URL: presignResult.URL, Method: "PUT"}, nil
 }

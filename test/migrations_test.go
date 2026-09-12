@@ -236,7 +236,7 @@ func (b *dummyMigrationsBucket) DeleteBuildArtifact(context.Context, bucket.Buil
 	return nil
 }
 
-func (b *dummyMigrationsBucket) RequestBuildArtifactUploadURL(context.Context, bucket.BuildArtifact) (string, error) {
+func (b *dummyMigrationsBucket) RequestBuildArtifactUploadURL(context.Context, string, bucket.BuildArtifact) (*bucket.UploadRequest, error) {
 	b.actionsRecorded = append(b.actionsRecorded, "RequestBuildArtifactUploadURL")
-	return "", nil
+	return &bucket.UploadRequest{Method: "PUT"}, nil
 }

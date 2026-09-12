@@ -62,6 +62,12 @@ const (
 	// identifiers) and their signing credentials (Android keystore, submit
 	// keys). Reading the non-secret metadata is open to any viewer.
 	PermCredentialsManage Permission = "credentials:manage"
+	// PermBuildRead lists the app's builds and opens one: its metadata and
+	// its log. It does not cover the artifact itself.
+	PermBuildRead Permission = "build:read"
+	// PermBuildDownload fetches the signed artifact (APK or AAB) of a ready
+	// build.
+	PermBuildDownload Permission = "build:download"
 	// PermEnvRead reveals the plaintext values of the app's environment
 	// variables. Listing environments and keys (never values) is open to any
 	// viewer.
@@ -89,6 +95,8 @@ var AllPermissions = []Permission{
 	PermUpdateRolloutManage,
 	PermUpdatePublish,
 	PermCredentialsManage,
+	PermBuildRead,
+	PermBuildDownload,
 	PermEnvRead,
 	PermEnvManage,
 	PermApiKeysManage,
@@ -115,9 +123,11 @@ func IsValidPermission(p string) bool {
 // FallbackAnyMember; everything else falls back to admin-only. The route and
 // tool declarations pair the same values.
 var anyMemberPermissions = map[Permission]bool{
-	PermIdentityRead: true,
-	PermObserveRead:  true,
-	PermEnvRead:      true,
+	PermIdentityRead:  true,
+	PermObserveRead:   true,
+	PermEnvRead:       true,
+	PermBuildRead:     true,
+	PermBuildDownload: true,
 }
 
 // DefaultFallback is what gates a permission's actions when roles are not

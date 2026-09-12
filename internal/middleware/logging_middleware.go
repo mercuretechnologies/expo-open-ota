@@ -11,7 +11,7 @@ import (
 func redactHeaders(headers http.Header) http.Header {
 	redactedHeaders := make(http.Header)
 	for key, values := range headers {
-		if strings.EqualFold(key, "Authorization") || strings.EqualFold(key, "X-Expo-Access-Token") || strings.EqualFold(key, "local-upload-token") {
+		if strings.EqualFold(key, "Authorization") || strings.EqualFold(key, "X-Expo-Access-Token") || strings.EqualFold(key, "Expo-Session") || strings.EqualFold(key, "Cookie") || strings.EqualFold(key, "local-upload-token") {
 			redactedHeaders[key] = []string{"REDACTED"}
 		} else {
 			redactedHeaders[key] = values

@@ -287,9 +287,12 @@ func (v *validatingBucket) DeleteBuildArtifact(ctx context.Context, ref BuildArt
 	return v.Inner.DeleteBuildArtifact(ctx, ref, staging)
 }
 
-func (v *validatingBucket) RequestBuildArtifactUploadURL(ctx context.Context, ref BuildArtifact) (string, error) {
-	if err := ref.Validate(); err != nil {
-		return "", err
+func (v *validatingBucket) RequestBuildArtifactUploadURL(ctx context.Context, appID string, ref BuildArtifact) (*UploadRequest, error) {
+	if err := validateSegment("appId", appID); err != nil {
+		return nil, err
 	}
-	return v.Inner.RequestBuildArtifactUploadURL(ctx, ref)
+	if err := ref.Validate(); err != nil {
+		return nil, err
+	}
+	return v.Inner.RequestBuildArtifactUploadURL(ctx, appID, ref)
 }

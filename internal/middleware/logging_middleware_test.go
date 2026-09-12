@@ -60,23 +60,53 @@ func captureLogs(t *testing.T) *bytes.Buffer {
 const uploadGrant = "eyJhbGciOiJIUzI1NiJ9.UPLOADGRANT.sig"
 
 func TestLoggingMiddlewareRedactsLocalUploadHeader(t *testing.T) {
-	for _, header := range []string{"local-upload-token", "Local-Upload-Token", "LOCAL-UPLOAD-TOKEN"} {
-		for _, panics := range []bool{false, true} {
-			logs := captureLogs(t)
-			handler := LoggingMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				require.Equal(t, []string{uploadGrant}, r.Header[header], "logging must not alter the request")
-				if panics {
-					panic("upload failed")
+	for _, target := range []string{"/app-1/build/identifier-1/artifacts/build-1/upload", "/app-1/uploadLocalFile"} {
+		t.Run(target, func(t *testing.T) {
+			for _, header := range []string{"local-upload-token", "Local-Upload-Token", "LOCAL-UPLOAD-TOKEN"} {
+				for _, panics := range []bool{false, true} {
+					logs := captureLogs(t)
+					handler := LoggingMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						require.Equal(t, []string{uploadGrant}, r.Header[header], "logging must not alter the request")
+						if panics {
+							panic("upload failed")
+						}
+						w.WriteHeader(http.StatusNoContent)
+					}))
+					request := httptest.NewRequest(http.MethodPut, target, nil)
+					request.Header[header] = []string{uploadGrant}
+					request.Header.Set("Authorization", "Bearer eoo-secret")
+					request.Header.Set("X-Expo-Access-Token", "expo-secret")
+					request.Header.Set("Expo-Session", "session-secret")
+					request.Header.Set("Cookie", "session=cookie-secret")
+					request.Header.Set("User-Agent", "eoas/2.0")
+					handler.ServeHTTP(httptest.NewRecorder(), request)
+					require.Contains(t, logs.String(), "REDACTED")
+					require.NotContains(t, logs.String(), uploadGrant)
+					require.NotContains(t, logs.String(), "eoo-secret")
+					require.NotContains(t, logs.String(), "expo-secret")
+					require.NotContains(t, logs.String(), "session-secret")
+					require.NotContains(t, logs.String(), "cookie-secret")
+					require.Contains(t, logs.String(), "eoas/2.0", "ordinary headers stay visible")
 				}
-				w.WriteHeader(http.StatusNoContent)
-			}))
-			request := httptest.NewRequest(http.MethodPut, "/app-1/uploadLocalFile", nil)
-			request.Header[header] = []string{uploadGrant}
-			request.Header.Set("Authorization", "Bearer eoo-secret")
-			handler.ServeHTTP(httptest.NewRecorder(), request)
-			require.Contains(t, logs.String(), "REDACTED")
-			require.NotContains(t, logs.String(), uploadGrant)
-			require.NotContains(t, logs.String(), "eoo-secret")
-		}
+			}
+		})
 	}
+}
+
+func TestLoggingMiddlewareKeepsOrdinaryQueries(t *testing.T) {
+	logs := captureLogs(t)
+	handler := LoggingMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	request := httptest.NewRequest(http.MethodGet, "/app-1/build/id-1/environment?channel=production", nil)
+	request.Header.Set("Authorization", "Bearer eoo_secret")
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	output := logs.String()
+	require.Contains(t, output, "channel=production")
+	require.Contains(t, output, "/app-1/build/id-1/environment?channel=production")
+	require.NotContains(t, output, "/[REDACTED]")
+	require.NotContains(t, output, "?[REDACTED]")
+	require.NotContains(t, output, "eoo_secret")
+	require.Contains(t, output, "Authorization:[REDACTED]")
 }

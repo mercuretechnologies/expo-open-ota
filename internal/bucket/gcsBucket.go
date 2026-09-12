@@ -636,17 +636,17 @@ func (b *GCSBucket) deleteObject(ctx context.Context, key string) error {
 	return err
 }
 
-func (b *GCSBucket) RequestBuildArtifactUploadURL(_ context.Context, ref BuildArtifact) (string, error) {
+func (b *GCSBucket) RequestBuildArtifactUploadURL(_ context.Context, _ string, ref BuildArtifact) (*UploadRequest, error) {
 	key, err := b.buildArtifactKey(ref, true)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	if b.BucketName == "" {
-		return "", errors.New("BucketName not set")
+		return nil, errors.New("BucketName not set")
 	}
 	url, err := gcp.SignedURL(b.BucketName, key, "PUT", "", buildUploadExpiry)
 	if err != nil {
-		return "", fmt.Errorf("error generating signed URL: %w", err)
+		return nil, fmt.Errorf("error generating signed URL: %w", err)
 	}
-	return url, nil
+	return &UploadRequest{URL: url, Method: "PUT"}, nil
 }
