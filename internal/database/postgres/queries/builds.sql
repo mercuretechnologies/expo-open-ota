@@ -19,3 +19,27 @@ SELECT * FROM builds WHERE app_id=$1 ORDER BY created_at DESC,id DESC LIMIT $2 O
 
 -- name: CountBuilds :one
 SELECT count(*) FROM builds WHERE app_id=$1;
+
+-- name: ListDueBuildArtifactCleanup :many
+SELECT id, app_identifier_id, build_id, artifact_type, attempts
+FROM build_artifact_cleanup WHERE due_at <= now()
+ORDER BY due_at, id LIMIT sqlc.arg('batch_size') FOR UPDATE SKIP LOCKED;
+
+-- name: DeferBuildArtifactCleanup :exec
+UPDATE build_artifact_cleanup SET attempts = attempts + 1, last_error = sqlc.arg('last_error'), due_at = now() + sqlc.arg('backoff')::interval
+WHERE id = sqlc.arg('id');
+
+-- name: DeleteBuildArtifactCleanup :exec
+DELETE FROM build_artifact_cleanup WHERE id = $1;
+
+-- name: ListStaleBuildStaging :many
+SELECT b.id, b.app_identifier_id, b.artifact_type
+FROM builds b LEFT JOIN build_staging_sweeps s ON s.build_id = b.id
+WHERE b.updated_at < now() - sqlc.arg('stale_after')::interval
+  AND b.status IN ('ready', 'failed', 'uploading')
+  AND (s.build_id IS NULL OR (b.status <> 'ready' AND s.swept_at < now() - sqlc.arg('stale_after')::interval))
+ORDER BY b.created_at, b.id LIMIT sqlc.arg('batch_size') FOR UPDATE OF b SKIP LOCKED;
+
+-- name: MarkBuildStagingSwept :exec
+INSERT INTO build_staging_sweeps (build_id, swept_at) VALUES ($1, now())
+ON CONFLICT (build_id) DO UPDATE SET swept_at = now();

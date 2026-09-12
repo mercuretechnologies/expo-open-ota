@@ -9,8 +9,8 @@ import (
 	"time"
 	"xprem/internal/bucket"
 	"xprem/internal/database"
+	"xprem/internal/database/postgres/pgdb"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
@@ -86,12 +86,6 @@ func (c *BuildCleanup) loop(ctx context.Context, interval time.Duration, name st
 	}
 }
 
-type buildCleanupItem struct {
-	id       int64
-	ref      bucket.BuildArtifact
-	attempts int32
-}
-
 // DrainOutbox deletes the final and staging objects of one batch of due
 // outbox rows and removes each row once both deletes succeeded.
 func (c *BuildCleanup) DrainOutbox(ctx context.Context) (int, error) {
@@ -100,47 +94,29 @@ func (c *BuildCleanup) DrainOutbox(ctx context.Context) (int, error) {
 		return 0, err
 	}
 	defer tx.Rollback(ctx)
-	rows, err := tx.Query(ctx, `SELECT id, app_identifier_id, build_id, artifact_type, attempts
-FROM build_artifact_cleanup WHERE due_at <= now() ORDER BY due_at, id LIMIT $1 FOR UPDATE SKIP LOCKED`, buildOutboxBatchSize)
-	if err != nil {
-		return 0, err
-	}
-	items, err := scanCleanupItems(rows)
+	q := pgdb.New(tx)
+	rows, err := q.ListDueBuildArtifactCleanup(ctx, buildOutboxBatchSize)
 	if err != nil {
 		return 0, err
 	}
 	done := 0
-	for _, item := range items {
-		if err := c.deleteArtifact(ctx, item.ref, true, true); err != nil {
-			backoff := buildOutboxBackoff(item.attempts)
-			log.Printf("🧹 [BUILD-CLEANUP] build %s artifact delete failed (attempt %d, retry in %s): %v", item.ref.BuildID, item.attempts+1, backoff, err)
-			if _, err := tx.Exec(ctx, `UPDATE build_artifact_cleanup SET attempts = attempts + 1, last_error = $2, due_at = now() + $3::interval WHERE id = $1`, item.id, truncateError(err), pgtype.Interval{Microseconds: backoff.Microseconds(), Valid: true}); err != nil {
+	for _, row := range rows {
+		ref := bucket.BuildArtifact{IdentifierID: row.AppIdentifierID.String(), BuildID: row.BuildID.String(), Type: row.ArtifactType}
+		if err := c.deleteArtifact(ctx, ref, true, true); err != nil {
+			backoff := buildOutboxBackoff(row.Attempts)
+			log.Printf("🧹 [BUILD-CLEANUP] build %s artifact delete failed (attempt %d, retry in %s): %v", ref.BuildID, row.Attempts+1, backoff, err)
+			lastError := truncateError(err)
+			if err := q.DeferBuildArtifactCleanup(ctx, pgdb.DeferBuildArtifactCleanupParams{ID: row.ID, LastError: &lastError, Backoff: pgtype.Interval{Microseconds: backoff.Microseconds(), Valid: true}}); err != nil {
 				return done, err
 			}
 			continue
 		}
-		if _, err := tx.Exec(ctx, `DELETE FROM build_artifact_cleanup WHERE id = $1`, item.id); err != nil {
+		if err := q.DeleteBuildArtifactCleanup(ctx, row.ID); err != nil {
 			return done, err
 		}
 		done++
 	}
 	return done, tx.Commit(ctx)
-}
-
-func scanCleanupItems(rows pgx.Rows) ([]buildCleanupItem, error) {
-	defer rows.Close()
-	var items []buildCleanupItem
-	for rows.Next() {
-		var item buildCleanupItem
-		var identifier, build pgtype.UUID
-		if err := rows.Scan(&item.id, &identifier, &build, &item.ref.Type, &item.attempts); err != nil {
-			return nil, err
-		}
-		item.ref.IdentifierID = identifier.String()
-		item.ref.BuildID = build.String()
-		items = append(items, item)
-	}
-	return items, rows.Err()
 }
 
 // SweepStaging deletes the staging upload of builds untouched for a day whose
@@ -152,48 +128,24 @@ func (c *BuildCleanup) SweepStaging(ctx context.Context) (int, error) {
 		return 0, err
 	}
 	defer tx.Rollback(ctx)
-	rows, err := tx.Query(ctx, `SELECT b.id, b.app_identifier_id, b.artifact_type
-FROM builds b LEFT JOIN build_staging_sweeps s ON s.build_id = b.id
-WHERE b.updated_at < now() - $1::interval
-  AND b.status IN ('ready', 'failed', 'uploading')
-  AND (s.build_id IS NULL OR (b.status <> 'ready' AND s.swept_at < now() - $1::interval))
-ORDER BY b.created_at, b.id LIMIT $2 FOR UPDATE OF b SKIP LOCKED`, pgtype.Interval{Microseconds: buildStagingStaleAfter.Microseconds(), Valid: true}, buildStagingSweepBatchSize)
-	if err != nil {
-		return 0, err
-	}
-	refs, err := scanStagingRefs(rows)
+	q := pgdb.New(tx)
+	rows, err := q.ListStaleBuildStaging(ctx, pgdb.ListStaleBuildStagingParams{StaleAfter: pgtype.Interval{Microseconds: buildStagingStaleAfter.Microseconds(), Valid: true}, BatchSize: buildStagingSweepBatchSize})
 	if err != nil {
 		return 0, err
 	}
 	swept := 0
-	for _, ref := range refs {
+	for _, row := range rows {
+		ref := bucket.BuildArtifact{IdentifierID: row.AppIdentifierID.String(), BuildID: row.ID.String(), Type: row.ArtifactType}
 		if err := c.deleteArtifact(ctx, ref, true, false); err != nil {
 			log.Printf("🧹 [BUILD-CLEANUP] build %s staging delete failed: %v", ref.BuildID, err)
 			continue
 		}
-		if _, err := tx.Exec(ctx, `INSERT INTO build_staging_sweeps (build_id, swept_at) VALUES ($1, now())
-ON CONFLICT (build_id) DO UPDATE SET swept_at = now()`, ref.BuildID); err != nil {
+		if err := q.MarkBuildStagingSwept(ctx, row.ID); err != nil {
 			return swept, err
 		}
 		swept++
 	}
 	return swept, tx.Commit(ctx)
-}
-
-func scanStagingRefs(rows pgx.Rows) ([]bucket.BuildArtifact, error) {
-	defer rows.Close()
-	var refs []bucket.BuildArtifact
-	for rows.Next() {
-		var ref bucket.BuildArtifact
-		var identifier, build pgtype.UUID
-		if err := rows.Scan(&build, &identifier, &ref.Type); err != nil {
-			return nil, err
-		}
-		ref.IdentifierID = identifier.String()
-		ref.BuildID = build.String()
-		refs = append(refs, ref)
-	}
-	return refs, rows.Err()
 }
 
 func (c *BuildCleanup) deleteArtifact(ctx context.Context, ref bucket.BuildArtifact, staging, final bool) error {
