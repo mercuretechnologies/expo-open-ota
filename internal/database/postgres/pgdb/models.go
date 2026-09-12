@@ -145,6 +145,23 @@ type Build struct {
 	ReadyAt         pgtype.Timestamptz      `json:"ready_at"`
 }
 
+type BuildArtifactCleanup struct {
+	ID              int64              `json:"id"`
+	BuildID         pgtype.UUID        `json:"build_id"`
+	Platform        string             `json:"platform"`
+	AppIdentifierID pgtype.UUID        `json:"app_identifier_id"`
+	ArtifactType    string             `json:"artifact_type"`
+	DueAt           pgtype.Timestamptz `json:"due_at"`
+	Attempts        int32              `json:"attempts"`
+	LastError       *string            `json:"last_error"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+}
+
+type BuildStagingSweep struct {
+	BuildID pgtype.UUID        `json:"build_id"`
+	SweptAt pgtype.Timestamptz `json:"swept_at"`
+}
+
 type BundlePatch struct {
 	BranchID         int64                   `json:"branch_id"`
 	TargetUpdateID   int64                   `json:"target_update_id"`
