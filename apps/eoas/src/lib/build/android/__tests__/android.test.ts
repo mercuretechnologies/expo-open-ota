@@ -55,6 +55,7 @@ describe('Android orchestration', () => {
   let temporaryProject: string | undefined;
   let syncArgs: string[] | undefined;
   let failExport = false;
+  let gradleProfileHtml: string | undefined;
   beforeEach(async () => {
     vi.clearAllMocks();
     events.length = 0;
@@ -91,6 +92,10 @@ describe('Android orchestration', () => {
     vi.mocked(finishBuildRecord).mockResolvedValue();
     vi.mocked(failBuildRecord).mockResolvedValue();
     failExport = false;
+    gradleProfileHtml = `<h2>Task Execution</h2><table>
+      <tr><td>:app</td><td>2.000s</td><td>(total)</td></tr>
+      <tr><td class="indentPath">:app:bundleRelease</td><td>2.000s</td><td></td></tr>
+    </table>`;
     temporaryProject = undefined;
     syncArgs = undefined;
     project = await fs.mkdtemp(path.join(os.tmpdir(), 'eoas-test-project-'));
@@ -193,6 +198,7 @@ describe('Android orchestration', () => {
       if (command.endsWith('gradlew')) {
         events.push('gradle');
         expect(args).toContain(':app:bundleRelease');
+        expect(args).toContain('--profile');
         expect(options?.env?.JAVA_HOME).toBe('/checked/jdk');
         expect(await fs.readFile(path.join(cwd, 'gradlew'), 'utf8')).not.toContain('\r');
         expect((await fs.stat(path.join(cwd, 'gradlew'))).mode & 0o111).toBe(0o111);
@@ -205,6 +211,12 @@ describe('Android orchestration', () => {
           path.join(cwd, 'app/build/outputs/bundle/release/app-release.aab'),
           'artifact'
         );
+        if (gradleProfileHtml !== undefined) {
+          await fs.outputFile(
+            path.join(cwd, 'build/reports/profile/profile-2026-09-09-10-00-00.html'),
+            gradleProfileHtml
+          );
+        }
       }
       return { stdout: '', stderr: '' } as never;
     }) as unknown as typeof spawnAsync);
@@ -280,6 +292,8 @@ describe('Android orchestration', () => {
     expect(logs).toHaveLength(1);
     const log = await fs.readFile(path.join(project, 'build-artifacts/logs', logs[0]), 'utf8');
     expect(log).toContain('[RUN_GRADLEW]');
+    expect(log).toContain('[GRADLE_BUILD_PROFILE] Gradle Build — Task Execution Profile');
+    expect(log).toContain('1 task, total task time: 2.0s');
     expect(log).toContain('versionCode 42');
     expect(createLogUploader).not.toHaveBeenCalled();
   });
@@ -357,7 +371,37 @@ describe('Android orchestration', () => {
       expect(sink.write.mock.calls.map(([event]) => event.msg).join('\n')).toContain(
         failure ? 'fingerprint failed' : 'versionCode 42'
       );
+      if (!failure) {
+        const streamed = sink.write.mock.calls.map(([event]) => event);
+        const profile = streamed.filter(event => event.phase === 'GRADLE_BUILD_PROFILE');
+        expect(profile[0]).toMatchObject({
+          marker: 'START_PHASE',
+          buildStepDisplayName: 'Gradle build profile',
+        });
+        expect(profile.at(-1)).toMatchObject({ marker: 'END_PHASE', result: 'success' });
+        expect(profile.map(event => event.msg).join('\n')).toContain('└─ bundleRelease');
+        const phases = streamed
+          .filter(event => event.marker === 'START_PHASE')
+          .map(event => event.phase);
+        expect(
+          phases.slice(phases.indexOf('RUN_GRADLEW'), phases.indexOf('RUN_GRADLEW') + 3)
+        ).toEqual(['RUN_GRADLEW', 'GRADLE_BUILD_PROFILE', 'PREPARE_ARTIFACTS']);
+      }
       expect(sink.close).toHaveBeenCalledOnce();
+    }
+  );
+  it.each([undefined, '<invalid/>'])(
+    'still uploads the artifact when Gradle profiling is unavailable (%s)',
+    async report => {
+      gradleProfileHtml = report;
+      await buildAndroid(project, {
+        profile: 'production',
+        envFile: 'override.env',
+        serverUrl: 'https://example.com',
+        appId: 'app',
+      });
+      expect(uploadBuildArtifact).toHaveBeenCalledOnce();
+      expect(failBuildRecord).not.toHaveBeenCalled();
     }
   );
   it('does not fetch an environment when the profile selects neither channel nor environment', async () => {
