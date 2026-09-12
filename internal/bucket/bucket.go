@@ -334,14 +334,6 @@ type UploadFile struct {
 	InUpdateFolder bool
 }
 
-// uploadHeaders are the headers the uploader must send verbatim on its PUT.
-func uploadHeaders(bucket Bucket) map[string]string {
-	if _, ok := UnwrapBucket(bucket).(*AzureBucket); ok {
-		return map[string]string{"x-ms-blob-type": "BlockBlob"}
-	}
-	return nil
-}
-
 // RequestUploadUrlsForFileUpdates presigns one publish's uploads, routing each
 // file by where it lives: cas/{hash} for content-addressed files, the update
 // folder for the rest.

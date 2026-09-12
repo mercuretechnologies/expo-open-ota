@@ -176,6 +176,11 @@ func (b *AzureBucket) GetFile(update types.Update, assetPath string) (*types.Buc
 	return &types.BucketFile{Reader: resp.Body, CreatedAt: created}, nil
 }
 
+// uploadHeaders are the headers the uploader must send verbatim on its PUT.
+func (b *AzureBucket) uploadHeaders() map[string]string {
+	return map[string]string{"x-ms-blob-type": "BlockBlob"}
+}
+
 func (b *AzureBucket) RequestUploadUrlForFileUpdate(appId string, branch string, runtimeVersion string, updateId string, fileName string) (*UploadRequest, error) {
 	if b.ContainerName == "" {
 		return nil, errors.New("ContainerName not set")
@@ -185,7 +190,7 @@ func (b *AzureBucket) RequestUploadUrlForFileUpdate(appId string, branch string,
 	if err != nil {
 		return nil, fmt.Errorf("error generating SAS URL: %w", err)
 	}
-	return &UploadRequest{URL: url, Method: "PUT", Headers: uploadHeaders(b)}, nil
+	return &UploadRequest{URL: url, Method: "PUT", Headers: b.uploadHeaders()}, nil
 }
 
 func (b *AzureBucket) blobKey(appId, hash string) string {
@@ -274,7 +279,7 @@ func (b *AzureBucket) RequestBlobUploadURL(appId, hash, _ string) (*UploadReques
 	if err != nil {
 		return nil, fmt.Errorf("error generating SAS URL: %w", err)
 	}
-	return &UploadRequest{URL: url, Method: "PUT", Headers: uploadHeaders(b)}, nil
+	return &UploadRequest{URL: url, Method: "PUT", Headers: b.uploadHeaders()}, nil
 }
 
 func (b *AzureBucket) UploadFileIntoUpdate(update types.Update, fileName string, file io.Reader) error {
