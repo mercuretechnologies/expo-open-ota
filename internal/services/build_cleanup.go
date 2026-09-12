@@ -20,8 +20,8 @@ const (
 	buildStagingSweepInterval  = 15 * time.Minute
 	buildCleanupBatchTimeout   = 5 * time.Minute
 	buildCleanupItemTimeout    = 30 * time.Second
-	buildOutboxBatchSize       = 25
-	buildStagingSweepBatchSize = 100
+	buildOutboxBatchSize       = 4 // Two deletes per row leave 1 minute for SQL and commit.
+	buildStagingSweepBatchSize = 9 // One delete per row leaves 30 seconds for SQL and commit.
 	buildOutboxMaxBackoff      = 6 * time.Hour
 	buildStagingStaleAfter     = 24 * time.Hour
 )
