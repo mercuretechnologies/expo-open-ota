@@ -5,20 +5,15 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"io"
-	"net/url"
 	"os"
 	"regexp"
-	"strings"
 	"time"
-	"xprem/config"
 	"xprem/internal/bucket"
 	"xprem/internal/store"
 	"xprem/internal/types"
 	"xprem/internal/validation"
 
-	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 )
 
@@ -76,8 +71,8 @@ type FailBuildInput struct {
 	FinishedAt time.Time `json:"finishedAt"`
 }
 type BuildRegistration struct {
-	Build  *types.BuildRecord  `json:"build"`
-	Upload *bucket.BuildUpload `json:"upload,omitempty"`
+	Build  *types.BuildRecord    `json:"build"`
+	Upload *bucket.UploadRequest `json:"upload,omitempty"`
 }
 
 func validateBuildID(id string) error {
@@ -279,35 +274,11 @@ func (s *BuildService) RegisterArtifact(ctx context.Context, appID, identifierID
 	if existing.Status == types.BuildStatusReady {
 		return result, nil
 	}
-	result.Upload, err = bucket.RequestBuildArtifactUpload(ctx, s.storage, artifactRef(*existing))
+	result.Upload, err = s.storage.RequestBuildArtifactUploadURL(ctx, existing.AppID, artifactRef(*existing))
 	if err != nil {
 		return nil, err
 	}
-	if result.Upload.URL == "" {
-		result.Upload.URL, err = publicBuildURL(fmt.Sprintf("/%s/build/%s/artifacts/%s/upload", existing.AppID, existing.AppIdentifierID, existing.ID))
-		if err != nil {
-			return nil, err
-		}
-		token, tokenErr := s.uploadToken(*existing)
-		if tokenErr != nil {
-			return nil, tokenErr
-		}
-		result.Upload.Headers = map[string]string{bucket.LocalUploadTokenHeader: token}
-	}
 	return result, nil
-}
-
-// publicBuildURL appends route to BASE_URL, keeping any sub-path it is served from.
-func publicBuildURL(route string) (string, error) {
-	base, err := url.Parse(strings.TrimRight(config.GetEnv("BASE_URL"), "/"))
-	if err != nil || base.Host == "" || (base.Scheme != "https" && base.Scheme != "http") || base.User != nil {
-		return "", fmt.Errorf("invalid BASE_URL")
-	}
-	base.Path = strings.TrimRight(base.Path, "/") + route
-	base.RawPath = ""
-	base.RawQuery = ""
-	base.Fragment = ""
-	return base.String(), nil
 }
 
 func (s *BuildService) Get(ctx context.Context, appID, id string) (*types.BuildRecord, error) {
@@ -445,17 +416,6 @@ func (s *BuildService) Download(ctx context.Context, record types.BuildRecord) (
 	return s.storage.GetBuildArtifact(ctx, artifactRef(record), false)
 }
 
-type buildUploadClaims struct {
-	jwt.RegisteredClaims
-	AppID        string `json:"appId"`
-	IdentifierID string `json:"identifierId"`
-	BuildID      string `json:"buildId"`
-}
-
-func (s *BuildService) uploadToken(b types.BuildRecord) (string, error) {
-	return jwt.NewWithClaims(jwt.SigningMethodHS256, buildUploadClaims{RegisteredClaims: jwt.RegisteredClaims{Subject: "build-upload", ExpiresAt: jwt.NewNumericDate(s.now().Add(10 * time.Minute))}, AppID: b.AppID, IdentifierID: b.AppIdentifierID, BuildID: b.ID}).SignedString([]byte(config.GetEnv("JWT_SECRET")))
-}
-
 type countingReader struct {
 	io.Reader
 	n int64
@@ -472,17 +432,15 @@ func (s *BuildService) UploadLocal(ctx context.Context, appID, identifierID, id,
 	if s.repo == nil {
 		return store.ErrNotSupportedInStatelessMode
 	}
-	claims := &buildUploadClaims{}
-	_, err := jwt.ParseWithClaims(token, claims, func(*jwt.Token) (any, error) { return []byte(config.GetEnv("JWT_SECRET")), nil }, jwt.WithValidMethods([]string{"HS256"}), jwt.WithExpirationRequired(), jwt.WithSubject("build-upload"), jwt.WithTimeFunc(s.now))
-	if err != nil || claims.AppID != appID || claims.IdentifierID != identifierID || claims.BuildID != id {
+	if err := bucket.ValidateBuildUploadToken(token, appID, identifierID, id); err != nil {
 		return ErrUnauthorized
 	}
 	b, err := s.Get(ctx, appID, id)
 	if err != nil {
 		return err
 	}
-	if b.AppIdentifierID != claims.IdentifierID {
-		return &store.ErrResourceNotFound{Resource: "build", Identifier: claims.BuildID}
+	if b.AppIdentifierID != identifierID {
+		return &store.ErrResourceNotFound{Resource: "build", Identifier: id}
 	}
 	if b.Status != types.BuildStatusUploading {
 		return ErrBuildState

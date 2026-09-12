@@ -223,7 +223,7 @@ type Bucket interface {
 	GetBuildArtifact(ctx context.Context, ref BuildArtifact, staging bool) (*types.BucketFile, error)
 	PutBuildArtifact(ctx context.Context, ref BuildArtifact, staging bool, body io.Reader) error
 	DeleteBuildArtifact(ctx context.Context, ref BuildArtifact, staging bool) error
-	RequestBuildArtifactUploadURL(ctx context.Context, ref BuildArtifact) (string, error)
+	RequestBuildArtifactUploadURL(ctx context.Context, appID string, ref BuildArtifact) (*UploadRequest, error)
 }
 
 type BucketType string

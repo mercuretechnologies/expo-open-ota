@@ -662,17 +662,17 @@ func (b *AzureBucket) deleteObject(ctx context.Context, key string) error {
 	return err
 }
 
-func (b *AzureBucket) RequestBuildArtifactUploadURL(_ context.Context, ref BuildArtifact) (string, error) {
+func (b *AzureBucket) RequestBuildArtifactUploadURL(_ context.Context, _ string, ref BuildArtifact) (*UploadRequest, error) {
 	key, err := b.buildArtifactKey(ref, true)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	if b.ContainerName == "" {
-		return "", errors.New("ContainerName not set")
+		return nil, errors.New("ContainerName not set")
 	}
 	url, err := azure.SignBlobSAS(b.ContainerName, key, sas.BlobPermissions{Create: true, Write: true}, buildUploadExpiry)
 	if err != nil {
-		return "", fmt.Errorf("error generating SAS URL: %w", err)
+		return nil, fmt.Errorf("error generating SAS URL: %w", err)
 	}
-	return url, nil
+	return &UploadRequest{URL: url, Method: "PUT", Headers: b.uploadHeaders()}, nil
 }

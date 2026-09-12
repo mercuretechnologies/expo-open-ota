@@ -862,8 +862,50 @@ func pruneEmptyBuildDirs(root, dir string) {
 	}
 }
 
-// RequestBuildArtifactUploadURL returns an empty URL: local uploads go
-// through the server.
-func (b *LocalBucket) RequestBuildArtifactUploadURL(context.Context, BuildArtifact) (string, error) {
-	return "", nil
+// buildUploadClaims binds a local upload token to one app, identifier, and build.
+type buildUploadClaims struct {
+	jwt.RegisteredClaims
+	AppID        string `json:"appId"`
+	IdentifierID string `json:"identifierId"`
+	BuildID      string `json:"buildId"`
+}
+
+// ValidateBuildUploadToken verifies a local build upload token and its scope
+// against the app, identifier, and build named in the request.
+func ValidateBuildUploadToken(token, appID, identifierID, buildID string) error {
+	claims := &buildUploadClaims{}
+	_, err := jwt.ParseWithClaims(token, claims, func(*jwt.Token) (any, error) {
+		return []byte(config.GetEnv("JWT_SECRET")), nil
+	}, jwt.WithValidMethods([]string{"HS256"}), jwt.WithExpirationRequired(), jwt.WithSubject("build-upload"))
+	if err != nil {
+		return err
+	}
+	if claims.AppID != appID || claims.IdentifierID != identifierID || claims.BuildID != buildID {
+		return errors.New("upload token does not match the requested build")
+	}
+	return nil
+}
+
+// RequestBuildArtifactUploadURL returns the server URL and authorization header
+// for a local build artifact upload.
+func (b *LocalBucket) RequestBuildArtifactUploadURL(_ context.Context, appID string, ref BuildArtifact) (*UploadRequest, error) {
+	uploadURL, err := url.Parse(strings.TrimRight(config.GetEnv("BASE_URL"), "/"))
+	if err != nil || uploadURL.Host == "" || (uploadURL.Scheme != "https" && uploadURL.Scheme != "http") || uploadURL.User != nil {
+		return nil, errors.New("invalid BASE_URL")
+	}
+	uploadURL.Path = strings.TrimRight(uploadURL.Path, "/") + fmt.Sprintf("/%s/build/%s/artifacts/%s/upload", appID, ref.IdentifierID, ref.BuildID)
+	uploadURL.RawPath = ""
+	uploadURL.RawQuery = ""
+	uploadURL.Fragment = ""
+	token, err := jwt.NewWithClaims(jwt.SigningMethodHS256, buildUploadClaims{
+		RegisteredClaims: jwt.RegisteredClaims{
+			Subject:   "build-upload",
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(buildUploadExpiry)),
+		},
+		AppID: appID, IdentifierID: ref.IdentifierID, BuildID: ref.BuildID,
+	}).SignedString([]byte(config.GetEnv("JWT_SECRET")))
+	if err != nil {
+		return nil, err
+	}
+	return &UploadRequest{URL: uploadURL.String(), Method: "PUT", Headers: map[string]string{LocalUploadTokenHeader: token}}, nil
 }

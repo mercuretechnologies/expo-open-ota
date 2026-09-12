@@ -1346,6 +1346,6 @@ func (fakeRolloutBucket) DeleteBuildArtifact(context.Context, bucket.BuildArtifa
 	return nil
 }
 
-func (fakeRolloutBucket) RequestBuildArtifactUploadURL(context.Context, bucket.BuildArtifact) (string, error) {
-	return "", nil
+func (fakeRolloutBucket) RequestBuildArtifactUploadURL(context.Context, string, bucket.BuildArtifact) (*bucket.UploadRequest, error) {
+	return &bucket.UploadRequest{Method: "PUT"}, nil
 }

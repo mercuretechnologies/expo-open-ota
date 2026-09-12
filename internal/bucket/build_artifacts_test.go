@@ -9,8 +9,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 	"xprem/internal/types"
 
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/stretchr/testify/require"
 )
 
@@ -28,6 +30,8 @@ func testBuildBucket(base, keyPrefix string) *validatingBucket {
 }
 
 func TestRequestBuildArtifactUpload(t *testing.T) {
+	t.Setenv("BASE_URL", "https://ota.example.com/sub/path/?ignored=query#fragment")
+	t.Setenv("JWT_SECRET", "build-upload-test-secret")
 	t.Setenv("AZURE_STORAGE_ACCOUNT_NAME", "buildtest")
 	t.Setenv("AZURE_STORAGE_ACCOUNT_KEY", base64.StdEncoding.EncodeToString([]byte("build-upload-test-key")))
 	t.Setenv("AZURE_BLOB_ENDPOINT", "")
@@ -39,13 +43,27 @@ func TestRequestBuildArtifactUpload(t *testing.T) {
 		{"azure", &AzureBucket{ContainerName: "artifacts", KeyPrefix: "prefix/"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			storage := &validatingBucket{Inner: tc.storage}
-			upload, err := RequestBuildArtifactUpload(context.Background(), storage, testArtifact())
+			var storage Bucket = &validatingBucket{Inner: tc.storage}
+			before := time.Now()
+			upload, err := storage.RequestBuildArtifactUploadURL(context.Background(), "app-1", testArtifact())
 			require.NoError(t, err)
 			require.Equal(t, "PUT", upload.Method)
 			if tc.name == "local" {
-				require.Empty(t, upload.URL, "the service supplies the authorized local URL")
-				require.Nil(t, upload.Headers)
+				require.Equal(t, "https://ota.example.com/sub/path/app-1/build/"+testIdentifierID+"/artifacts/"+testBuildID+"/upload", upload.URL)
+				require.Len(t, upload.Headers, 1)
+				require.NoError(t, ValidateBuildUploadToken(upload.Headers[LocalUploadTokenHeader], "app-1", testIdentifierID, testBuildID))
+				claims := jwt.MapClaims{}
+				_, err := jwt.ParseWithClaims(upload.Headers[LocalUploadTokenHeader], claims, func(*jwt.Token) (any, error) {
+					return []byte("build-upload-test-secret"), nil
+				}, jwt.WithValidMethods([]string{"HS256"}), jwt.WithExpirationRequired(), jwt.WithSubject("build-upload"))
+				require.NoError(t, err)
+				require.Equal(t, "app-1", claims["appId"])
+				require.Equal(t, testIdentifierID, claims["identifierId"])
+				require.Equal(t, testBuildID, claims["buildId"])
+				expiresAt, err := claims.GetExpirationTime()
+				require.NoError(t, err)
+				require.GreaterOrEqual(t, expiresAt.Unix(), before.Add(10*time.Minute).Unix())
+				require.LessOrEqual(t, expiresAt.Unix(), time.Now().Add(10*time.Minute).Unix())
 			} else {
 				require.Equal(t, map[string]string{"x-ms-blob-type": "BlockBlob"}, upload.Headers)
 				signedURL, err := url.Parse(upload.URL)
@@ -55,9 +73,51 @@ func TestRequestBuildArtifactUpload(t *testing.T) {
 				require.Equal(t, "cw", signedURL.Query().Get("sp"))
 			}
 
-			upload, err = RequestBuildArtifactUpload(context.Background(), storage, BuildArtifact{})
+			upload, err = storage.RequestBuildArtifactUploadURL(context.Background(), "app-1", BuildArtifact{})
 			require.Error(t, err)
 			require.Nil(t, upload, "validation failures do not return an upload descriptor")
+		})
+	}
+}
+
+func TestValidateBuildUploadTokenRejectsInvalidGrants(t *testing.T) {
+	t.Setenv("JWT_SECRET", "build-upload-test-secret")
+	require.Error(t, ValidateBuildUploadToken("not-a-token", "app-1", testIdentifierID, testBuildID))
+	for name, tc := range map[string]struct {
+		change func(jwt.MapClaims)
+		method jwt.SigningMethod
+		secret string
+	}{
+		"expired":            {change: func(c jwt.MapClaims) { c["exp"] = time.Now().Add(-time.Minute).Unix() }},
+		"missing expiration": {change: func(c jwt.MapClaims) { delete(c, "exp") }},
+		"wrong subject":      {change: func(c jwt.MapClaims) { c["sub"] = "uploadLocalFile" }},
+		"missing subject":    {change: func(c jwt.MapClaims) { delete(c, "sub") }},
+		"another app":        {change: func(c jwt.MapClaims) { c["appId"] = "app-2" }},
+		"another identifier": {change: func(c jwt.MapClaims) { c["identifierId"] = testBuildID }},
+		"another build":      {change: func(c jwt.MapClaims) { c["buildId"] = testIdentifierID }},
+		"missing app":        {change: func(c jwt.MapClaims) { delete(c, "appId") }},
+		"missing identifier": {change: func(c jwt.MapClaims) { delete(c, "identifierId") }},
+		"missing build":      {change: func(c jwt.MapClaims) { delete(c, "buildId") }},
+		"wrong algorithm":    {method: jwt.SigningMethodHS384},
+		"wrong secret":       {secret: "other-secret"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			claims := jwt.MapClaims{
+				"sub": "build-upload", "exp": time.Now().Add(10 * time.Minute).Unix(),
+				"appId": "app-1", "identifierId": testIdentifierID, "buildId": testBuildID,
+			}
+			if tc.change != nil {
+				tc.change(claims)
+			}
+			if tc.method == nil {
+				tc.method = jwt.SigningMethodHS256
+			}
+			if tc.secret == "" {
+				tc.secret = "build-upload-test-secret"
+			}
+			token, err := jwt.NewWithClaims(tc.method, claims).SignedString([]byte(tc.secret))
+			require.NoError(t, err)
+			require.Error(t, ValidateBuildUploadToken(token, "app-1", testIdentifierID, testBuildID))
 		})
 	}
 }
@@ -89,8 +149,13 @@ func TestBuildObjectKeysAreIsolatedAndValidated(t *testing.T) {
 		require.Error(t, err, name)
 		require.Error(t, v.PutBuildArtifact(ctx, bad, false, strings.NewReader("x")), name)
 		require.Error(t, v.DeleteBuildArtifact(ctx, bad, false), name)
-		_, err = v.RequestBuildArtifactUploadURL(ctx, bad)
+		_, err = v.RequestBuildArtifactUploadURL(ctx, "app-1", bad)
 		require.Error(t, err, name)
+	}
+	for _, appID := range []string{"", "../escape", "app/other"} {
+		upload, err := v.RequestBuildArtifactUploadURL(ctx, appID, ref)
+		require.Error(t, err, appID)
+		require.Nil(t, upload)
 	}
 	require.False(t, stub.called)
 }

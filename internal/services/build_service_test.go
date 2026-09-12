@@ -17,6 +17,7 @@ import (
 	"xprem/internal/types"
 	"xprem/internal/validation"
 
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/stretchr/testify/require"
 )
 
@@ -124,7 +125,7 @@ func newBuildFixture(t *testing.T) *buildFixture {
 	storage := &bucket.LocalBucket{BasePath: root}
 	repo := newMemoryBuildRepo()
 	service := NewBuildService(repo, identifiers, storage)
-	now := time.Date(2026, 9, 9, 12, 0, 0, 0, time.UTC)
+	now := time.Now().UTC().Truncate(time.Microsecond)
 	service.now = func() time.Time { return now }
 	return &buildFixture{service: service, repo: repo, storage: storage, root: root, now: now}
 }
@@ -645,12 +646,18 @@ func TestBuildUploadLocalBounds(t *testing.T) {
 	require.ErrorIs(t, f.service.UploadLocal(ctx, testBuildApp, testBuildIdentifier, testBuildID, "not-a-token", strings.NewReader("12345")), ErrUnauthorized)
 	require.ErrorIs(t, f.service.UploadLocal(ctx, testBuildApp, testBuildIdentifier, testBuildID, registration.Upload.Headers[bucket.LocalUploadTokenHeader]+"x", strings.NewReader("12345")), ErrUnauthorized)
 
-	forged, err := f.service.uploadToken(types.BuildRecord{ID: testBuildID, AppID: testBuildApp, AppIdentifierID: otherBuildID})
+	otherUpload, err := f.storage.RequestBuildArtifactUploadURL(ctx, testBuildApp, bucket.BuildArtifact{IdentifierID: otherBuildID, BuildID: testBuildID, Type: types.BuildArtifactAPK})
 	require.NoError(t, err)
-	require.ErrorIs(t, f.service.UploadLocal(ctx, testBuildApp, testBuildIdentifier, testBuildID, forged, strings.NewReader("12345")), ErrUnauthorized)
+	require.ErrorIs(t, f.service.UploadLocal(ctx, testBuildApp, testBuildIdentifier, testBuildID, otherUpload.Headers[bucket.LocalUploadTokenHeader], strings.NewReader("12345")), ErrUnauthorized)
 
-	f.service.now = func() time.Time { return f.now.Add(11 * time.Minute) }
-	require.ErrorIs(t, f.service.UploadLocal(ctx, testBuildApp, testBuildIdentifier, testBuildID, registration.Upload.Headers[bucket.LocalUploadTokenHeader], strings.NewReader("12345")), ErrUnauthorized, "grants expire after ten minutes")
+	expiredToken, err := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"sub": "build-upload", "exp": time.Now().Add(-time.Minute).Unix(),
+		"appId": testBuildApp, "identifierId": testBuildIdentifier, "buildId": testBuildID,
+	}).SignedString([]byte("test-secret"))
+	require.NoError(t, err)
+	body := strings.NewReader("12345")
+	require.ErrorIs(t, f.service.UploadLocal(ctx, testBuildApp, testBuildIdentifier, testBuildID, expiredToken, body), ErrUnauthorized)
+	require.Equal(t, 5, body.Len(), "expired grants must not consume the body")
 }
 
 func TestBuildTokenRejectsOtherSecret(t *testing.T) {

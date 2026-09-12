@@ -172,7 +172,7 @@ func (u unreachableBucket) DeleteBuildArtifact(context.Context, bucket.BuildArti
 	return nil
 }
 
-func (u unreachableBucket) RequestBuildArtifactUploadURL(context.Context, bucket.BuildArtifact) (string, error) {
+func (u unreachableBucket) RequestBuildArtifactUploadURL(context.Context, string, bucket.BuildArtifact) (*bucket.UploadRequest, error) {
 	u.t.Fatal("migration should have skipped")
-	return "", nil
+	return nil, nil
 }
