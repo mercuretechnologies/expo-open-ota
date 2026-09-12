@@ -19,3 +19,16 @@ SELECT * FROM builds WHERE app_id=$1 ORDER BY created_at DESC,id DESC LIMIT $2 O
 
 -- name: CountBuilds :one
 SELECT count(*) FROM builds WHERE app_id=$1;
+
+-- name: InsertBuildShare :one
+INSERT INTO build_shares(id,build_id,token_hash,expires_at) VALUES ($1,$2,$3,$4) RETURNING *;
+
+-- name: ListBuildShares :many
+SELECT * FROM build_shares WHERE build_id=$1 ORDER BY created_at DESC;
+
+-- name: RevokeBuildShare :execrows
+UPDATE build_shares SET revoked_at=COALESCE(revoked_at,now()) WHERE build_id=$1 AND id=$2;
+
+-- name: ResolveBuildShare :one
+SELECT b.id, b.app_id, s.expires_at AS share_expires_at FROM build_shares s JOIN builds b ON b.id=s.build_id
+WHERE s.token_hash=$1 AND s.revoked_at IS NULL AND s.expires_at>now() AND b.status='ready' AND b.artifact_type='apk';

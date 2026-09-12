@@ -1,7 +1,7 @@
 import { ReactNode, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useNavigate, useParams } from 'react-router';
-import { Check, Copy, Download } from 'lucide-react';
+import { Check, Copy, Download, Link2 } from 'lucide-react';
 import { api, ApiProblemError, BuildRecord, describeApiError } from '@/lib/api';
 import { useSelectedApp } from '@/lib/SelectedAppContext';
 import { useSettings } from '@/lib/SettingsContext';
@@ -12,6 +12,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { ApiError } from '@/components/APIError';
 import { AdminOnlyNote } from '@/components/ui/admin-only-note';
 import { GitCommitLink } from '@/components/GitCommitLink';
@@ -26,10 +27,13 @@ import {
 import { useAppPermission } from '@/ee/lib/PermissionsContext';
 import { PlatformLogo } from '@/pages/BuildCredentials/components/PlatformLogo';
 import { BuildStatusBadge } from './components/BuildStatusBadge';
+import { BuildSharesCard } from './components/BuildSharesCard';
+import { ShareBuildDialog } from './components/ShareBuildDialog';
 import {
   artifactLabel,
   buildFileName,
   buildVersionLabel,
+  canShareBuild,
   formatBytes,
   formatDuration,
 } from './format';
@@ -106,8 +110,10 @@ export const BuildDetail = () => {
   // Display gating only: the server re-checks the permission on its routes.
   const canRead = useAppPermission('build:read', 'any-member');
   const canDownload = useAppPermission('build:download', 'admin-only');
+  const canShare = useAppPermission('build:share', 'admin-only');
 
   const [isDownloading, setIsDownloading] = useState(false);
+  const [isShareDialogOpen, setIsShareDialogOpen] = useState(false);
 
   const buildQuery = useQuery({
     queryKey: ['build', selectedAppId, buildId],
@@ -189,6 +195,7 @@ export const BuildDetail = () => {
   }
 
   const { metadata } = build;
+  const shareable = canShareBuild(build);
 
   return (
     <div className="w-full space-y-6">
@@ -229,6 +236,20 @@ export const BuildDetail = () => {
             </div>
           </div>
           <div className="flex shrink-0 items-center gap-2">
+            {canShare && build.artifactType !== 'apk' && (
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <span className="inline-flex" tabIndex={0}>
+                      <Button variant="outline" disabled>
+                        <Link2 className="h-4 w-4" /> Share
+                      </Button>
+                    </span>
+                  </TooltipTrigger>
+                  <TooltipContent>You can only share APK</TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+            )}
             {canDownload && (
               <Button
                 disabled={build.status !== 'ready' || isDownloading}
@@ -250,6 +271,15 @@ export const BuildDetail = () => {
           This build did not complete. Check its local log. If the artifact exists, retry its upload
           with eoas build:upload.
         </div>
+      )}
+
+      {build.artifactType === 'apk' && (
+        <BuildSharesCard
+          key={`shares/${selectedAppId}/${build.id}`}
+          build={build}
+          canShare={canShare}
+          onCreateShare={() => setIsShareDialogOpen(true)}
+        />
       )}
 
       <div className="grid gap-6 lg:grid-cols-2">
@@ -347,6 +377,13 @@ export const BuildDetail = () => {
         </div>
       </div>
 
+      {shareable && (
+        <ShareBuildDialog
+          build={build}
+          isOpen={isShareDialogOpen}
+          onClose={() => setIsShareDialogOpen(false)}
+        />
+      )}
     </div>
   );
 };

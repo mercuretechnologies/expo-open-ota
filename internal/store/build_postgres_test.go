@@ -341,3 +341,70 @@ func TestBuildStoreFailWaitsForCompletion(t *testing.T) {
 	require.Equal(t, types.BuildStatusReady, current.Status)
 	require.NotNil(t, current.ReadyAt)
 }
+
+func TestBuildStoreShares(t *testing.T) {
+	f := setupBuildStore(t)
+	ctx := context.Background()
+	id := uuid.NewString()
+	_, _, err := f.builds.Create(ctx, withArtifact(f.record(id, types.BuildStatusUploading)))
+	require.NoError(t, err)
+	hash := strings.Repeat("1", 64)
+	share, err := f.builds.CreateShare(ctx, uuid.NewString(), id, hash, time.Now().Add(time.Hour))
+	require.NoError(t, err)
+	var missing *store.ErrResourceNotFound
+	_, _, err = f.builds.ResolveShare(ctx, hash)
+	require.ErrorAs(t, err, &missing, "only ready builds resolve")
+
+	_, err = f.builds.Transition(ctx, f.app, id, func(current types.BuildRecord) (*types.BuildRecord, error) {
+		next := current
+		next.Status = types.BuildStatusReady
+		return &next, nil
+	})
+	require.NoError(t, err)
+	resolved, expiry, err := f.builds.ResolveShare(ctx, hash)
+	require.NoError(t, err)
+	require.Equal(t, id, resolved.ID)
+	require.Equal(t, share.ExpiresAt.UnixMicro(), expiry.UnixMicro())
+	_, _, err = f.builds.ResolveShare(ctx, strings.Repeat("2", 64))
+	require.ErrorAs(t, err, &missing)
+
+	expiredHash := strings.Repeat("3", 64)
+	_, err = f.builds.CreateShare(ctx, uuid.NewString(), id, expiredHash, time.Now().Add(-time.Second))
+	require.NoError(t, err)
+	_, _, err = f.builds.ResolveShare(ctx, expiredHash)
+	require.ErrorAs(t, err, &missing)
+
+	shares, err := f.builds.ListShares(ctx, id)
+	require.NoError(t, err)
+	require.Len(t, shares, 2)
+
+	require.NoError(t, f.builds.RevokeShare(ctx, id, share.ID))
+	_, _, err = f.builds.ResolveShare(ctx, hash)
+	require.ErrorAs(t, err, &missing)
+	require.NoError(t, f.builds.RevokeShare(ctx, id, share.ID), "revoking twice is harmless")
+	require.ErrorAs(t, f.builds.RevokeShare(ctx, uuid.NewString(), share.ID), &missing, "shares are scoped to their build")
+	require.ErrorAs(t, f.builds.RevokeShare(ctx, id, uuid.NewString()), &missing)
+
+	aab := withArtifact(f.record(uuid.NewString(), types.BuildStatusUploading))
+	aab.ArtifactType = "aab"
+	aab.ArtifactKey = strings.TrimSuffix(aab.ArtifactKey, ".apk") + ".aab"
+	_, _, err = f.builds.Create(ctx, aab)
+	require.NoError(t, err)
+	_, err = f.builds.Transition(ctx, f.app, aab.ID, func(current types.BuildRecord) (*types.BuildRecord, error) {
+		next := current
+		next.Status = types.BuildStatusReady
+		return &next, nil
+	})
+	require.NoError(t, err)
+	aabHash := strings.Repeat("4", 64)
+	_, err = f.builds.CreateShare(ctx, uuid.NewString(), aab.ID, aabHash, time.Now().Add(time.Hour))
+	require.NoError(t, err)
+	_, _, err = f.builds.ResolveShare(ctx, aabHash)
+	require.ErrorAs(t, err, &missing, "only APKs are installable from a link")
+
+	_, err = f.pool.Exec(ctx, "DELETE FROM apps WHERE id = $1", f.app)
+	require.NoError(t, err)
+	var remaining int
+	require.NoError(t, f.pool.QueryRow(ctx, "SELECT count(*) FROM build_shares WHERE build_id=$1", id).Scan(&remaining))
+	require.Zero(t, remaining, "shares follow their app")
+}

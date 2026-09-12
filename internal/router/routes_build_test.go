@@ -482,6 +482,9 @@ func TestBuildRegistryRouteMethodsAndPublicPaths(t *testing.T) {
 		{http.MethodGet, "/app-1/build/" + buildID + "/artifacts/" + buildID, http.StatusNotFound},
 		{http.MethodPut, "/build-uploads/forged-grant", http.StatusNotFound},
 		{http.MethodPost, "/build-uploads/forged-grant", http.StatusNotFound},
+		{http.MethodGet, "/build-shares/" + strings.Repeat("0", 64), http.StatusGone},
+		{http.MethodGet, "/build-shares/" + strings.Repeat("0", 64) + "/download", http.StatusGone},
+		{http.MethodGet, "/build-shares/short", http.StatusGone},
 	} {
 		t.Run(tc.method+" "+tc.target, func(t *testing.T) {
 			req := httptest.NewRequest(tc.method, tc.target, strings.NewReader("{}"))

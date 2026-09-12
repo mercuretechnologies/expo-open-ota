@@ -54,6 +54,14 @@ func buildTiming(metadata types.BuildMetadata) (pgtype.Timestamptz, *int64) {
 	return pgtype.Timestamptz{Time: metadata.FinishedAt, Valid: !metadata.FinishedAt.IsZero()}, &duration
 }
 
+func buildShare(row pgdb.BuildShare) types.BuildShare {
+	share := types.BuildShare{ID: row.ID.String(), CreatedAt: row.CreatedAt.Time, ExpiresAt: row.ExpiresAt.Time}
+	if row.RevokedAt.Valid {
+		share.RevokedAt = &row.RevokedAt.Time
+	}
+	return share
+}
+
 func buildNotFound(err error) error {
 	if errors.Is(err, pgx.ErrNoRows) {
 		return &ErrResourceNotFound{Resource: "build", Identifier: "requested build"}
@@ -138,4 +146,41 @@ func (s *PostgresBuildStore) Transition(ctx context.Context, appID, id string, d
 		return nil, err
 	}
 	return record, nil
+}
+
+func (s *PostgresBuildStore) CreateShare(ctx context.Context, id, buildID, hash string, expires time.Time) (types.BuildShare, error) {
+	row, err := s.engine.Queries.InsertBuildShare(ctx, pgdb.InsertBuildShareParams{ID: ToPgUUID(id), BuildID: ToPgUUID(buildID), TokenHash: hash, ExpiresAt: pgtype.Timestamptz{Time: expires, Valid: true}})
+	return buildShare(row), err
+}
+
+func (s *PostgresBuildStore) ListShares(ctx context.Context, buildID string) ([]types.BuildShare, error) {
+	rows, err := s.engine.Queries.ListBuildShares(ctx, ToPgUUID(buildID))
+	shares := make([]types.BuildShare, 0, len(rows))
+	for _, row := range rows {
+		shares = append(shares, buildShare(row))
+	}
+	return shares, err
+}
+
+func (s *PostgresBuildStore) RevokeShare(ctx context.Context, buildID, id string) error {
+	count, err := s.engine.Queries.RevokeBuildShare(ctx, pgdb.RevokeBuildShareParams{BuildID: ToPgUUID(buildID), ID: ToPgUUID(id)})
+	if err != nil {
+		return err
+	}
+	if count == 0 {
+		return &ErrResourceNotFound{Resource: "share", Identifier: id}
+	}
+	return nil
+}
+
+func (s *PostgresBuildStore) ResolveShare(ctx context.Context, hash string) (*types.BuildRecord, time.Time, error) {
+	row, err := s.engine.Queries.ResolveBuildShare(ctx, hash)
+	if err != nil {
+		return nil, time.Time{}, buildNotFound(err)
+	}
+	record, err := s.Get(ctx, row.AppID.String(), row.ID.String())
+	if err != nil {
+		return nil, time.Time{}, err
+	}
+	return record, row.ShareExpiresAt.Time, nil
 }
