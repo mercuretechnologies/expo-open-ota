@@ -1,6 +1,7 @@
 package bucket
 
 import (
+	"context"
 	"time"
 	"xprem/internal/types"
 )
@@ -18,6 +19,22 @@ type BuildArtifact struct {
 	IdentifierID string
 	BuildID      string
 	Type         types.BuildArtifactType
+}
+
+type BuildUpload struct {
+	URL     string            `json:"url"`
+	Method  string            `json:"method"`
+	Headers map[string]string `json:"headers,omitempty"`
+}
+
+// RequestBuildArtifactUpload returns the upload instructions for an artifact.
+// An empty URL leaves local upload authorization to the service.
+func RequestBuildArtifactUpload(ctx context.Context, storage Bucket, ref BuildArtifact) (*BuildUpload, error) {
+	url, err := storage.RequestBuildArtifactUploadURL(ctx, ref)
+	if err != nil {
+		return nil, err
+	}
+	return &BuildUpload{URL: url, Method: "PUT", Headers: uploadHeaders(storage)}, nil
 }
 
 func (r BuildArtifact) Validate() error {

@@ -2,7 +2,9 @@ package bucket
 
 import (
 	"context"
+	"encoding/base64"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -23,6 +25,41 @@ func testArtifact() BuildArtifact {
 
 func testBuildBucket(base, keyPrefix string) *validatingBucket {
 	return &validatingBucket{Inner: &LocalBucket{BasePath: base, KeyPrefix: keyPrefix}}
+}
+
+func TestRequestBuildArtifactUpload(t *testing.T) {
+	t.Setenv("AZURE_STORAGE_ACCOUNT_NAME", "buildtest")
+	t.Setenv("AZURE_STORAGE_ACCOUNT_KEY", base64.StdEncoding.EncodeToString([]byte("build-upload-test-key")))
+	t.Setenv("AZURE_BLOB_ENDPOINT", "")
+	for _, tc := range []struct {
+		name    string
+		storage Bucket
+	}{
+		{"local", &LocalBucket{BasePath: t.TempDir()}},
+		{"azure", &AzureBucket{ContainerName: "artifacts", KeyPrefix: "prefix/"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			storage := &validatingBucket{Inner: tc.storage}
+			upload, err := RequestBuildArtifactUpload(context.Background(), storage, testArtifact())
+			require.NoError(t, err)
+			require.Equal(t, "PUT", upload.Method)
+			if tc.name == "local" {
+				require.Empty(t, upload.URL, "the service supplies the authorized local URL")
+				require.Nil(t, upload.Headers)
+			} else {
+				require.Equal(t, map[string]string{"x-ms-blob-type": "BlockBlob"}, upload.Headers)
+				signedURL, err := url.Parse(upload.URL)
+				require.NoError(t, err)
+				require.Equal(t, "/artifacts/prefix/builds/android/"+testIdentifierID+"/.uploads/"+testBuildID+".apk", signedURL.Path)
+				require.NotEmpty(t, signedURL.Query().Get("sig"))
+				require.Equal(t, "cw", signedURL.Query().Get("sp"))
+			}
+
+			upload, err = RequestBuildArtifactUpload(context.Background(), storage, BuildArtifact{})
+			require.Error(t, err)
+			require.Nil(t, upload, "validation failures do not return an upload descriptor")
+		})
+	}
 }
 
 func TestBuildObjectKeysAreIsolatedAndValidated(t *testing.T) {

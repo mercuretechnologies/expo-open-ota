@@ -330,7 +330,7 @@ type UploadFile struct {
 }
 
 // uploadHeaders are the headers the uploader must send verbatim on its PUT.
-func UploadHeaders(bucket Bucket) map[string]string {
+func uploadHeaders(bucket Bucket) map[string]string {
 	if _, ok := UnwrapBucket(bucket).(*AzureBucket); ok {
 		return map[string]string{"x-ms-blob-type": "BlockBlob"}
 	}
@@ -342,7 +342,7 @@ func UploadHeaders(bucket Bucket) map[string]string {
 // folder for the rest.
 func RequestUploadUrlsForFileUpdates(appId, branch, runtimeVersion, updateId string, files []UploadFile) ([]FileUploadRequest, error) {
 	resolvedBucket := GetBucket()
-	headers := UploadHeaders(resolvedBucket)
+	headers := uploadHeaders(resolvedBucket)
 
 	// Several files may name the same blob; presign it once.
 	toSign := make([]UploadFile, 0, len(files))

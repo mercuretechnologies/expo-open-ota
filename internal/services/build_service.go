@@ -72,15 +72,10 @@ type RegisterBuildInput struct {
 type FailBuildInput struct {
 	FinishedAt time.Time `json:"finishedAt"`
 }
-type BuildUpload struct {
-	URL     string            `json:"url"`
-	Method  string            `json:"method"`
-	Headers map[string]string `json:"headers,omitempty"`
-}
 type BuildRegistration struct {
-	Build      *types.BuildRecord `json:"build"`
-	Upload     *BuildUpload       `json:"upload,omitempty"`
-	LocalToken string             `json:"-"`
+	Build      *types.BuildRecord  `json:"build"`
+	Upload     *bucket.BuildUpload `json:"upload,omitempty"`
+	LocalToken string              `json:"-"`
 }
 
 func validateBuildID(id string) error {
@@ -282,12 +277,11 @@ func (s *BuildService) RegisterArtifact(ctx context.Context, appID, identifierID
 	if existing.Status == types.BuildStatusReady {
 		return result, nil
 	}
-	url, err := s.storage.RequestBuildArtifactUploadURL(ctx, artifactRef(*existing))
+	result.Upload, err = bucket.RequestBuildArtifactUpload(ctx, s.storage, artifactRef(*existing))
 	if err != nil {
 		return nil, err
 	}
-	result.Upload = &BuildUpload{URL: url, Method: "PUT", Headers: bucket.UploadHeaders(s.storage)}
-	if url == "" {
+	if result.Upload.URL == "" {
 		result.LocalToken, err = s.uploadToken(*existing)
 	}
 	return result, err
