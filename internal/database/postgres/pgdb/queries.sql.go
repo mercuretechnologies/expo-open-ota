@@ -4690,6 +4690,47 @@ func (q *Queries) ListUpdateHealthStateDeltas(ctx context.Context, arg ListUpdat
 	return items, nil
 }
 
+const listUpdatesWithoutAssetMapping = `-- name: ListUpdatesWithoutAssetMapping :many
+SELECT u.id, b.app_id, b.name AS branch, rv.version AS runtime_version
+FROM updates u
+JOIN branches b ON u.branch_id = b.id
+JOIN runtime_versions rv ON u.runtime_version_id = rv.id
+WHERE u.asset_mapping IS NULL AND u.update_type = $1
+ORDER BY b.app_id, u.id
+`
+
+type ListUpdatesWithoutAssetMappingRow struct {
+	ID             int64       `json:"id"`
+	AppID          pgtype.UUID `json:"app_id"`
+	Branch         string      `json:"branch"`
+	RuntimeVersion string      `json:"runtime_version"`
+}
+
+func (q *Queries) ListUpdatesWithoutAssetMapping(ctx context.Context, updateType int32) ([]ListUpdatesWithoutAssetMappingRow, error) {
+	rows, err := q.db.Query(ctx, listUpdatesWithoutAssetMapping, updateType)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListUpdatesWithoutAssetMappingRow
+	for rows.Next() {
+		var i ListUpdatesWithoutAssetMappingRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.AppID,
+			&i.Branch,
+			&i.RuntimeVersion,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listUserAppGrants = `-- name: ListUserAppGrants :many
 SELECT g.user_id, g.app_id, g.role_id, g.extra_permissions,
        r.name AS role_name, r.permissions AS role_permissions
