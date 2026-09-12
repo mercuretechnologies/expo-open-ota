@@ -34,7 +34,7 @@ func renderBuildRegistryError(w http.ResponseWriter, err error) {
 	case errors.Is(err, services.ErrBuildIntegrity):
 		RenderError(w, http.StatusBadRequest, err.Error())
 	case errors.As(err, &missing):
-		RenderError(w, http.StatusNotFound, "Build or share not found.")
+		RenderError(w, http.StatusNotFound, "Build not found.")
 	case validation.IsValidationError(err), errors.Is(err, store.ErrNotSupportedInStatelessMode):
 		RenderError(w, http.StatusBadRequest, err.Error())
 	default:

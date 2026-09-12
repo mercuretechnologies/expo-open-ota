@@ -123,10 +123,11 @@ func IsValidPermission(p string) bool {
 // FallbackAnyMember; everything else falls back to admin-only. The route and
 // tool declarations pair the same values.
 var anyMemberPermissions = map[Permission]bool{
-	PermIdentityRead: true,
-	PermObserveRead:  true,
-	PermEnvRead:      true,
-	PermBuildRead:    true,
+	PermIdentityRead:  true,
+	PermObserveRead:   true,
+	PermEnvRead:       true,
+	PermBuildRead:     true,
+	PermBuildDownload: true,
 }
 
 // DefaultFallback is what gates a permission's actions when roles are not
