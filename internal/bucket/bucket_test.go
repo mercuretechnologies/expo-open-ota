@@ -107,19 +107,26 @@ func TestRequestUploadUrlsCarryAzureBlobTypeHeader(t *testing2.T) {
 	assert.Contains(t, requests[0].RequestUploadUrl, "sig=")
 }
 
-func TestRequestUploadUrlsCarryNoHeadersOnLocal(t *testing2.T) {
+func TestRequestUploadUrlsCarryLocalUploadTokenInHeaders(t *testing2.T) {
 	teardown := setup(t)
 	defer teardown()
 	os.Setenv("STORAGE_MODE", "local")
 	os.Setenv("LOCAL_BUCKET_BASE_PATH", t.TempDir())
 	os.Setenv("BASE_URL", "http://localhost:3000")
 	os.Setenv("JWT_SECRET", "test_jwt_secret")
-	requests, err := RequestUploadUrlsForFileUpdates("app", "branch", "1", "100", []UploadFile{{Name: "bundles/android.js", Hash: testBlobHash}})
+	requests, err := RequestUploadUrlsForFileUpdates("app", "branch", "1", "100", []UploadFile{
+		{Name: "bundles/android.js", Hash: testBlobHash},
+		{Name: "metadata.json", InUpdateFolder: true},
+	})
 	assert.Nil(t, err)
-	assert.Len(t, requests, 1)
+	assert.Len(t, requests, 2)
 	assert.Equal(t, "android.js", requests[0].FileName)
 	assert.Equal(t, "bundles/android.js", requests[0].OriginalFileName)
-	assert.Nil(t, requests[0].Headers)
+	for _, request := range requests {
+		assert.Equal(t, "http://localhost:3000/app/uploadLocalFile", request.RequestUploadUrl)
+		assert.NotEmpty(t, request.Headers["local-upload-token"])
+	}
+	assert.NotEqual(t, requests[0].Headers["local-upload-token"], requests[1].Headers["local-upload-token"], "each file has its own grant")
 }
 
 func TestConvertReadCloserToBytes(t *testing2.T) {

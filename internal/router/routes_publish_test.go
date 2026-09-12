@@ -4,7 +4,6 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"os"
 	"testing"
 
@@ -134,15 +133,16 @@ func TestUploadTokenBranchResolution(t *testing.T) {
 
 	valid := mintUploadToken(t, "app-1", "production")
 	for name, tc := range map[string]struct {
-		query string
+		query, token string
 		// branch empty means the request must be refused without asking the policy.
 		branch string
 		status int
 	}{
-		"valid token":   {"?token=" + valid, "production", http.StatusOK},
-		"no token":      {"", "", http.StatusForbidden},
-		"garbage token": {"?token=not-a-jwt", "", http.StatusForbidden},
-		"foreign token": {"?token=" + mintForeignUploadToken(t, "app-1", "production"), "", http.StatusForbidden},
+		"valid token":         {"", valid, "production", http.StatusOK},
+		"query token refused": {"?token=" + valid, "", "", http.StatusForbidden},
+		"no token":            {"", "", "", http.StatusForbidden},
+		"garbage token":       {"", "not-a-jwt", "", http.StatusForbidden},
+		"foreign token":       {"", mintForeignUploadToken(t, "app-1", "production"), "", http.StatusForbidden},
 	} {
 		t.Run(name, func(t *testing.T) {
 			policy := &recordingPolicy{}
@@ -158,6 +158,7 @@ func TestUploadTokenBranchResolution(t *testing.T) {
 
 			r := httptest.NewRequest(http.MethodPut, "/app-1/uploadLocalFile"+tc.query, nil)
 			r.Header.Set("Authorization", "Bearer eoo_key")
+			r.Header.Set(bucket.LocalUploadTokenHeader, tc.token)
 			w := httptest.NewRecorder()
 			router.ServeHTTP(w, r)
 
@@ -222,13 +223,9 @@ func mintUploadToken(t *testing.T, appId, branch string) string {
 	// local bucket from this env, so minting anywhere else is not "the way the
 	// local bucket does".
 	local := &bucket.LocalBucket{BasePath: os.Getenv("LOCAL_BUCKET_BASE_PATH")}
-	uploadURL, err := local.RequestUploadUrlForFileUpdate(appId, branch, "1.0.0", "1", "bundle.js")
+	upload, err := local.RequestUploadUrlForFileUpdate(appId, branch, "1.0.0", "1", "bundle.js")
 	if err != nil {
 		t.Fatalf("could not mint an upload token: %v", err)
 	}
-	parsed, err := url.Parse(uploadURL)
-	if err != nil {
-		t.Fatalf("could not parse the upload url: %v", err)
-	}
-	return parsed.Query().Get("token")
+	return upload.Headers[bucket.LocalUploadTokenHeader]
 }

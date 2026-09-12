@@ -51,7 +51,7 @@ func routeBranch(r *http.Request) string {
 // same validation the handler runs. Anything unreadable, expired,
 // foreign-signed or claimless yields "".
 func uploadTokenBranch(r *http.Request) string {
-	branchName, err := bucket.ResolveUploadTokenBranch(r.URL.Query().Get("token"))
+	branchName, err := bucket.ResolveUploadTokenBranch(r.Header.Get(bucket.LocalUploadTokenHeader))
 	if err != nil {
 		return ""
 	}

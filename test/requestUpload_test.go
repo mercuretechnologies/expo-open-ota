@@ -263,7 +263,8 @@ func TestRequestUploadUrlWithSampleUpdate(t *testing.T) {
 		assert.Equal(t, "http", parsedUrl.Scheme, "Expected HTTP scheme")
 		assert.Equal(t, "localhost:3000", parsedUrl.Host, "Expected localhost:3000 host")
 		assert.Equal(t, "/test-app-id/uploadLocalFile", parsedUrl.Path, "Expected /{appId}/uploadLocalFile path")
-		token := parsedUrl.Query().Get("token")
+		assert.Empty(t, parsedUrl.RawQuery)
+		token := req.Headers[bucket.LocalUploadTokenHeader]
 		assert.NotEmpty(t, token, "Expected non-empty token")
 		claims := jwt.MapClaims{}
 		decoded, err := crypto.DecodeAndExtractJWTToken("test_jwt_secret", token, claims)
@@ -312,8 +313,8 @@ func TestRequestUploadUrlWithSampleUpdate(t *testing.T) {
 				errs <- err
 				return
 			}
-			token := parsedUrl.Query().Get("token")
-			uploadFileReq := httptest.NewRequest("PUT", "/test-app-id/uploadLocalFile?token="+token, body)
+			uploadFileReq := httptest.NewRequest("PUT", parsedUrl.RequestURI(), body)
+			uploadFileReq.Header.Set(bucket.LocalUploadTokenHeader, uploadReq.Headers[bucket.LocalUploadTokenHeader])
 			uploadFileReq.Header.Set("Content-Type", writer.FormDataContentType())
 			uploadFileReq.Header.Set("Authorization", "Bearer expo_test_token")
 			serveThroughRouter(ws[index], uploadFileReq)

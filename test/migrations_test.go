@@ -19,9 +19,9 @@ func (b *dummyMigrationsBucket) DeleteUpdateFolder(_, _, _, _ string) error {
 	b.actionsRecorded = append(b.actionsRecorded, "DeleteUpdateFolder")
 	return nil
 }
-func (b *dummyMigrationsBucket) RequestUploadUrlForFileUpdate(_, _, _, _, _ string) (string, error) {
+func (b *dummyMigrationsBucket) RequestUploadUrlForFileUpdate(_, _, _, _, _ string) (*bucket.UploadRequest, error) {
 	b.actionsRecorded = append(b.actionsRecorded, "RequestUploadUrlForFileUpdate")
-	return "", nil
+	return &bucket.UploadRequest{Method: "PUT"}, nil
 }
 func (b *dummyMigrationsBucket) GetUpdates(_, _, _ string) ([]types.Update, error) {
 	b.actionsRecorded = append(b.actionsRecorded, "GetUpdates")
@@ -99,9 +99,9 @@ func (b *dummyMigrationsBucket) DeleteBSDiffs(context.Context, string, string) e
 	b.actionsRecorded = append(b.actionsRecorded, "DeleteBSDiffs")
 	return nil
 }
-func (b *dummyMigrationsBucket) RequestBlobUploadURL(_, _, _ string) (string, error) {
+func (b *dummyMigrationsBucket) RequestBlobUploadURL(_, _, _ string) (*bucket.UploadRequest, error) {
 	b.actionsRecorded = append(b.actionsRecorded, "RequestBlobUploadURL")
-	return "", nil
+	return &bucket.UploadRequest{Method: "PUT"}, nil
 }
 
 func TestShouldNotRunAppliedMigrations(t *testing.T) {

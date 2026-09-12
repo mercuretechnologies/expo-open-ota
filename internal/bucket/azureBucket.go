@@ -176,16 +176,16 @@ func (b *AzureBucket) GetFile(update types.Update, assetPath string) (*types.Buc
 	return &types.BucketFile{Reader: resp.Body, CreatedAt: created}, nil
 }
 
-func (b *AzureBucket) RequestUploadUrlForFileUpdate(appId string, branch string, runtimeVersion string, updateId string, fileName string) (string, error) {
+func (b *AzureBucket) RequestUploadUrlForFileUpdate(appId string, branch string, runtimeVersion string, updateId string, fileName string) (*UploadRequest, error) {
 	if b.ContainerName == "" {
-		return "", errors.New("ContainerName not set")
+		return nil, errors.New("ContainerName not set")
 	}
 	key := b.prefixedKey(fmt.Sprintf("%s/%s/%s/%s/%s", appId, branch, runtimeVersion, updateId, fileName))
 	url, err := azure.SignBlobSAS(b.ContainerName, key, sas.BlobPermissions{Create: true, Write: true}, 15*time.Minute)
 	if err != nil {
-		return "", fmt.Errorf("error generating SAS URL: %w", err)
+		return nil, fmt.Errorf("error generating SAS URL: %w", err)
 	}
-	return url, nil
+	return &UploadRequest{URL: url, Method: "PUT", Headers: uploadHeaders(b)}, nil
 }
 
 func (b *AzureBucket) blobKey(appId, hash string) string {
@@ -266,15 +266,15 @@ func (b *AzureBucket) putObject(ctx context.Context, key string, body io.Reader)
 	return nil
 }
 
-func (b *AzureBucket) RequestBlobUploadURL(appId, hash, _ string) (string, error) {
+func (b *AzureBucket) RequestBlobUploadURL(appId, hash, _ string) (*UploadRequest, error) {
 	if b.ContainerName == "" {
-		return "", errors.New("ContainerName not set")
+		return nil, errors.New("ContainerName not set")
 	}
 	url, err := azure.SignBlobSAS(b.ContainerName, b.blobKey(appId, hash), sas.BlobPermissions{Create: true, Write: true}, 15*time.Minute)
 	if err != nil {
-		return "", fmt.Errorf("error generating SAS URL: %w", err)
+		return nil, fmt.Errorf("error generating SAS URL: %w", err)
 	}
-	return url, nil
+	return &UploadRequest{URL: url, Method: "PUT", Headers: uploadHeaders(b)}, nil
 }
 
 func (b *AzureBucket) UploadFileIntoUpdate(update types.Update, fileName string, file io.Reader) error {

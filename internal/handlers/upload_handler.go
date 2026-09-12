@@ -169,7 +169,7 @@ func (h *UploadHandler) RequestUploadLocalFileHandler(w http.ResponseWriter, r *
 	requestID := uuid.New().String()
 	appId := mux.Vars(r)["APP_ID"]
 
-	token := r.URL.Query().Get("token")
+	token := r.Header.Get(bucket.LocalUploadTokenHeader)
 	if token == "" {
 		log.Printf("[RequestID: %s] No token provided", requestID)
 		http.Error(w, "No token provided", http.StatusBadRequest)

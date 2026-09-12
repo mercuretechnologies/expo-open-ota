@@ -260,14 +260,14 @@ func (b *S3Bucket) GetFile(update types.Update, assetPath string) (*types.Bucket
 	}, nil
 }
 
-func (b *S3Bucket) RequestUploadUrlForFileUpdate(appId string, branch string, runtimeVersion string, updateId string, fileName string) (string, error) {
+func (b *S3Bucket) RequestUploadUrlForFileUpdate(appId string, branch string, runtimeVersion string, updateId string, fileName string) (*UploadRequest, error) {
 	if b.BucketName == "" {
-		return "", errors.New("BucketName not set")
+		return nil, errors.New("BucketName not set")
 	}
 
 	s3Client, err := aws.GetS3Client()
 	if err != nil {
-		return "", fmt.Errorf("error getting S3 client: %w", err)
+		return nil, fmt.Errorf("error getting S3 client: %w", err)
 	}
 
 	presignClient := s3.NewPresignClient(s3Client)
@@ -283,10 +283,10 @@ func (b *S3Bucket) RequestUploadUrlForFileUpdate(appId string, branch string, ru
 		opt.Expires = 15 * time.Minute
 	})
 	if err != nil {
-		return "", fmt.Errorf("error presigning URL: %w", err)
+		return nil, fmt.Errorf("error presigning URL: %w", err)
 	}
 
-	return presignResult.URL, nil
+	return &UploadRequest{URL: presignResult.URL, Method: "PUT"}, nil
 }
 
 func (b *S3Bucket) blobKey(appId, hash string) string {
@@ -389,13 +389,13 @@ func (b *S3Bucket) putObject(ctx context.Context, key string, body io.Reader) er
 	return nil
 }
 
-func (b *S3Bucket) RequestBlobUploadURL(appId, hash, _ string) (string, error) {
+func (b *S3Bucket) RequestBlobUploadURL(appId, hash, _ string) (*UploadRequest, error) {
 	if b.BucketName == "" {
-		return "", errors.New("BucketName not set")
+		return nil, errors.New("BucketName not set")
 	}
 	s3Client, err := aws.GetS3Client()
 	if err != nil {
-		return "", fmt.Errorf("error getting S3 client: %w", err)
+		return nil, fmt.Errorf("error getting S3 client: %w", err)
 	}
 	presignClient := s3.NewPresignClient(s3Client)
 	presignResult, err := presignClient.PresignPutObject(context.TODO(), &s3.PutObjectInput{
@@ -405,9 +405,9 @@ func (b *S3Bucket) RequestBlobUploadURL(appId, hash, _ string) (string, error) {
 		opt.Expires = 15 * time.Minute
 	})
 	if err != nil {
-		return "", fmt.Errorf("error presigning URL: %w", err)
+		return nil, fmt.Errorf("error presigning URL: %w", err)
 	}
-	return presignResult.URL, nil
+	return &UploadRequest{URL: presignResult.URL, Method: "PUT"}, nil
 }
 
 func (b *S3Bucket) UploadFileIntoUpdate(update types.Update, fileName string, file io.Reader) error {

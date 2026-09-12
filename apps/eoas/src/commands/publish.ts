@@ -421,6 +421,7 @@ export default class Publish extends Command {
               return {
                 method: 'PUT',
                 headers: {
+                  ...(itm.headers ?? {}),
                   ...formData.getHeaders(),
                   ...getAuthHeaders(credentials),
                 },
