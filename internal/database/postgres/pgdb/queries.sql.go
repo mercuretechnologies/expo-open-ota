@@ -4695,7 +4695,7 @@ SELECT u.id, b.app_id, b.name AS branch, rv.version AS runtime_version
 FROM updates u
 JOIN branches b ON u.branch_id = b.id
 JOIN runtime_versions rv ON u.runtime_version_id = rv.id
-WHERE u.asset_mapping IS NULL AND u.update_type = $1
+WHERE u.asset_mapping IS NULL AND u.update_type = $1 AND u.checked_at IS NOT NULL
 ORDER BY b.app_id, u.id
 `
 

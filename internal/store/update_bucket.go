@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	bucket2 "xprem/internal/bucket"
 	"xprem/internal/crypto"
 	"xprem/internal/helpers"
@@ -308,8 +309,14 @@ func (s *BucketUpdateStore) readUpdateMetadataFile(update types.Update) (*update
 		return nil, nil
 	}
 	defer file.Reader.Close()
+	// Read fully before decoding to distinguish an interrupted bucket read
+	// from malformed JSON in a complete file during the asset mapping backfill.
+	metadata, err := io.ReadAll(file.Reader)
+	if err != nil {
+		return nil, err
+	}
 	var stored updateMetadataFile
-	if err := json.NewDecoder(file.Reader).Decode(&stored); err != nil {
+	if err := json.Unmarshal(metadata, &stored); err != nil {
 		return nil, err
 	}
 	return &stored, nil

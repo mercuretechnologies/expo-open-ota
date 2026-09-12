@@ -3,6 +3,8 @@ package migrations
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"strconv"
@@ -19,7 +21,7 @@ func init() {
 }
 
 // UpBackfillUpdateAssetMapping copies into updates.asset_mapping the mapping
-// of every update imported from a bucket before that column existed.
+// of completed updates imported from a bucket before that column existed.
 func UpBackfillUpdateAssetMapping(ctx context.Context, _ *sql.DB) error {
 	// Only wire.go injects the engine; tests run goose without it and have no imported rows.
 	if dbEngine == nil {
@@ -39,6 +41,14 @@ func UpBackfillUpdateAssetMapping(ctx context.Context, _ *sql.DB) error {
 			update := types.Update{AppId: row.AppID.String(), Branch: row.Branch, RuntimeVersion: row.RuntimeVersion, UpdateId: strconv.FormatInt(row.ID, 10)}
 			mapping, err := updateStore.GetUpdateAssetMapping(ctx, update)
 			if err != nil {
+				// Corrupt historical metadata must not block startup. Storage errors
+				// still abort the migration so it can be retried.
+				var syntaxErr *json.SyntaxError
+				var typeErr *json.UnmarshalTypeError
+				if errors.As(err, &syntaxErr) || errors.As(err, &typeErr) {
+					log.Printf("⚠️ [DATABASE] Skipping invalid bucket asset mapping of update %s (app %s): %v", update.UpdateId, update.AppId, err)
+					continue
+				}
 				return fmt.Errorf("reading the bucket asset mapping of update %s (app %s): %w", update.UpdateId, update.AppId, err)
 			}
 			if mapping == nil {

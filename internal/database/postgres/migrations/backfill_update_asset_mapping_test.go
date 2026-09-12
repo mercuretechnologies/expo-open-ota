@@ -59,10 +59,17 @@ func TestUpBackfillUpdateAssetMappingCopiesBucketMappings(t *testing.T) {
 	require.NoError(t, err)
 	withoutMapping := []byte(`{"platform":"ios"}`)
 	const (
-		casUpdate      = 1001
-		legacyUpdate   = 1002
-		rollbackUpdate = 1003
-		orphanUpdate   = 1004
+		casUpdate          = 1001
+		legacyUpdate       = 1002
+		rollbackUpdate     = 1003
+		orphanUpdate       = 1004
+		truncatedUpdate    = 1005
+		emptyUpdate        = 1006
+		invalidJSONUpdate  = 1007
+		invalidTypeUpdate  = 1008
+		uncheckedUpdate    = 1009
+		existingUpdate     = 1010
+		healthyLaterUpdate = 1011
 	)
 	for _, row := range []struct {
 		id         int64
@@ -73,6 +80,13 @@ func TestUpBackfillUpdateAssetMappingCopiesBucketMappings(t *testing.T) {
 		{legacyUpdate, types.NormalUpdate, withoutMapping},
 		{rollbackUpdate, types.Rollback, withMapping},
 		{orphanUpdate, types.NormalUpdate, nil},
+		{truncatedUpdate, types.NormalUpdate, []byte(`{"assetMapping":`)},
+		{emptyUpdate, types.NormalUpdate, []byte{}},
+		{invalidJSONUpdate, types.NormalUpdate, []byte(`{"assetMapping":!}`)},
+		{invalidTypeUpdate, types.NormalUpdate, []byte(`{"assetMapping":"invalid"}`)},
+		{uncheckedUpdate, types.NormalUpdate, withMapping},
+		{existingUpdate, types.NormalUpdate, withoutMapping},
+		{healthyLaterUpdate, types.NormalUpdate, withMapping},
 	} {
 		_, err = pool.Exec(ctx, "INSERT INTO updates (id, branch_id, runtime_version_id, update_type, commit_hash, platform, checked_at) VALUES ($1, $2, $3, $4, 'abc', 'ios', now())", row.id, branchID, runtimeVersionID, int32(row.updateType))
 		require.NoError(t, err)
@@ -82,6 +96,12 @@ func TestUpBackfillUpdateAssetMappingCopiesBucketMappings(t *testing.T) {
 			require.NoError(t, os.WriteFile(filepath.Join(dir, "update-metadata.json"), row.metadata, 0o644))
 		}
 	}
+	_, err = pool.Exec(ctx, "UPDATE updates SET checked_at = NULL WHERE branch_id = $1 AND id = $2", branchID, uncheckedUpdate)
+	require.NoError(t, err)
+	existingMapping, err := json.Marshal(mapping)
+	require.NoError(t, err)
+	_, err = pool.Exec(ctx, "UPDATE updates SET asset_mapping = $1 WHERE branch_id = $2 AND id = $3", existingMapping, branchID, existingUpdate)
+	require.NoError(t, err)
 
 	storedMapping := func(id int64) []byte {
 		var raw []byte
@@ -89,13 +109,43 @@ func TestUpBackfillUpdateAssetMappingCopiesBucketMappings(t *testing.T) {
 		return raw
 	}
 
-	for run := 0; run < 2; run++ {
-		require.NoError(t, migrations.UpBackfillUpdateAssetMapping(ctx, nil), "run %d", run)
-		var got types.UpdateAssetMapping
-		require.NoError(t, json.Unmarshal(storedMapping(casUpdate), &got))
-		require.Equal(t, mapping, got)
-		require.Nil(t, storedMapping(legacyUpdate), "a bucket file without a mapping leaves the column NULL")
-		require.Nil(t, storedMapping(rollbackUpdate), "rollbacks carry no assets")
-		require.Nil(t, storedMapping(orphanUpdate), "an update with no bucket metadata is left alone")
-	}
+	t.Run("only completed normal updates without a mapping are selected", func(t *testing.T) {
+		rows, err := pgdb.New(pool).ListUpdatesWithoutAssetMapping(ctx, int32(types.NormalUpdate))
+		require.NoError(t, err)
+		for _, row := range rows {
+			if row.AppID.String() == appID {
+				require.NotContains(t, []int64{rollbackUpdate, uncheckedUpdate, existingUpdate}, row.ID)
+			}
+		}
+	})
+
+	t.Run("storage errors roll back copied mappings", func(t *testing.T) {
+		// A directory in place of the metadata file causes a real read failure.
+		metadataPath := filepath.Join(root, appID, "production", "1", strconv.Itoa(healthyLaterUpdate), "update-metadata.json")
+		require.NoError(t, os.Remove(metadataPath))
+		require.NoError(t, os.Mkdir(metadataPath, 0o755))
+		t.Cleanup(func() {
+			require.NoError(t, os.Remove(metadataPath))
+			require.NoError(t, os.WriteFile(metadataPath, withMapping, 0o644))
+		})
+		err := migrations.UpBackfillUpdateAssetMapping(ctx, nil)
+		require.ErrorContains(t, err, "reading the bucket asset mapping of update "+strconv.Itoa(healthyLaterUpdate))
+		var pathErr *os.PathError
+		require.ErrorAs(t, err, &pathErr)
+		require.Nil(t, storedMapping(casUpdate), "earlier writes must roll back after a storage failure")
+	})
+
+	t.Run("corrupt metadata is skipped and valid mappings are copied idempotently", func(t *testing.T) {
+		for run := 0; run < 2; run++ {
+			require.NoError(t, migrations.UpBackfillUpdateAssetMapping(ctx, nil), "run %d", run)
+			for _, id := range []int64{casUpdate, existingUpdate, healthyLaterUpdate} {
+				var got types.UpdateAssetMapping
+				require.NoError(t, json.Unmarshal(storedMapping(id), &got))
+				require.Equal(t, mapping, got)
+			}
+			for _, id := range []int64{legacyUpdate, rollbackUpdate, orphanUpdate, truncatedUpdate, emptyUpdate, invalidJSONUpdate, invalidTypeUpdate, uncheckedUpdate} {
+				require.Nil(t, storedMapping(id), "update %d must be left alone", id)
+			}
+		}
+	})
 }
