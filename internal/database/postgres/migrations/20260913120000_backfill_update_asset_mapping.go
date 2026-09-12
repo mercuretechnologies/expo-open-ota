@@ -15,12 +15,12 @@ import (
 )
 
 func init() {
-	goose.AddMigrationContext(UpBackfillUpdateAssetMapping, DownBackfillUpdateAssetMapping)
+	goose.AddMigrationNoTxContext(UpBackfillUpdateAssetMapping, DownBackfillUpdateAssetMapping)
 }
 
 // UpBackfillUpdateAssetMapping copies into updates.asset_mapping the mapping
 // of every update imported from a bucket before that column existed.
-func UpBackfillUpdateAssetMapping(ctx context.Context, tx *sql.Tx) error {
+func UpBackfillUpdateAssetMapping(ctx context.Context, _ *sql.DB) error {
 	// Only wire.go injects the engine; tests run goose without it and have no imported rows.
 	if dbEngine == nil {
 		return nil
@@ -54,6 +54,6 @@ func UpBackfillUpdateAssetMapping(ctx context.Context, tx *sql.Tx) error {
 	})
 }
 
-func DownBackfillUpdateAssetMapping(ctx context.Context, tx *sql.Tx) error {
+func DownBackfillUpdateAssetMapping(context.Context, *sql.DB) error {
 	return nil
 }
