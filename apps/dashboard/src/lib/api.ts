@@ -221,6 +221,56 @@ export type EnvironmentRecord = {
   vars: EnvVarRecord[];
 };
 
+// What the CLI recorded about a local build. Never carries environment
+// variable values, only the environment name the build used.
+export type BuildMetadata = {
+  profile: string;
+  mode?: 'debug' | 'release';
+  environment?: string;
+  channel?: string;
+  version?: string;
+  buildNumber: string;
+  runtimeVersion?: string;
+  fingerprint: string;
+  expoSdk?: string;
+  cliVersion: string;
+  gitCommit?: string;
+  gitMessage?: string;
+  gitDirty?: boolean;
+  startedAt: string;
+  finishedAt: string;
+  durationMs: number;
+};
+
+export type BuildStatus = 'building' | 'uploading' | 'ready' | 'failed';
+export type BuildArtifactType = 'apk' | 'aab';
+
+// One build the CLI uploaded to the registry. `readyAt` is set once the
+// artifact was fully stored; a build stays `uploading` until then.
+export type BuildRecord = {
+  id: string;
+  appId: string;
+  appIdentifierId: string;
+  platform: 'android';
+  applicationId: string;
+  status: BuildStatus;
+  artifactType: BuildArtifactType;
+  size: number;
+  sha256: string;
+  createdAt: string;
+  readyAt?: string;
+  actorType: string;
+  actorId: string;
+  actorDisplay: string;
+  metadata: BuildMetadata;
+};
+
+export type BuildsPage = {
+  builds: BuildRecord[];
+  // The total for the app, offset excluded.
+  count: number;
+};
+
 export type BranchRecord = {
   branchName: string;
   branchId: string;
@@ -1630,6 +1680,27 @@ export class ApiClient {
     return this.request<void>(
       `${this.appScope()}/identifiers/${encodeURIComponent(identifierId)}/credentials/android/google-play-service-account`,
       { method: 'DELETE' }
+    );
+  }
+
+  public async getBuilds(limit = 20, offset = 0) {
+    const query = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+    return this.request<BuildsPage>(`${this.appScope()}/builds?${query.toString()}`, {
+      method: 'GET',
+    });
+  }
+
+  public async getBuild(buildId: string) {
+    return this.request<BuildRecord>(`${this.appScope()}/builds/${encodeURIComponent(buildId)}`, {
+      method: 'GET',
+    });
+  }
+
+  public async downloadBuildArtifact(buildId: string) {
+    return this.request<Blob>(
+      `${this.appScope()}/builds/${encodeURIComponent(buildId)}/download`,
+      { method: 'GET' },
+      'blob'
     );
   }
 

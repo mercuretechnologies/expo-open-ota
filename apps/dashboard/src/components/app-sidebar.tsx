@@ -16,6 +16,7 @@ import {
   LogOut,
   Monitor,
   Moon,
+  Package,
   Plus,
   Key,
   Container,
@@ -257,7 +258,7 @@ const ExpandableSection = ({
 const serverPaths = ['/settings', '/license', '/account'];
 const accessSecurityPaths = ['/users', '/roles', '/sso', '/audit-logs'];
 const otaPaths = ['/updates', '/channels', '/branches']
-const buildPaths = ['/build-credentials', '/environments'];
+const buildPaths = ['/builds', '/build-credentials', '/environments'];
 
 const themeOptions: Array<{
   value: ThemePreference;
@@ -428,9 +429,12 @@ export function AppSidebar({
                     <ExpandableSection
                       label="Builds"
                       icon={Wrench}
-                      to={'/build-credentials'}
+                      to={'/builds'}
                       paths={buildPaths}
                       onNavigate={onNavigate}>
+                        <SubNavLink to="/builds" icon={Package} onNavigate={onNavigate}>
+                          Builds
+                        </SubNavLink>
                         <SubNavLink to="/build-credentials" icon={Key} onNavigate={onNavigate}>
                           Credentials
                         </SubNavLink>

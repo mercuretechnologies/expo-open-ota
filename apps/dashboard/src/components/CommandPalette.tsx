@@ -11,6 +11,7 @@ import {
   Info,
   Key,
   KeyRound,
+  Package,
   ScrollText,
   Settings,
   ShieldCheck,
@@ -81,6 +82,7 @@ export const CommandPalette = ({
         ...(CONTROL_PLANE_ENABLED
           ? [
               { label: 'API tokens', path: '/tokens', icon: KeyRound },
+              { label: 'Builds', path: '/builds', icon: Package },
               { label: 'Build credentials', path: '/build-credentials', icon: Key },
               { label: 'Environments', path: '/environments', icon: Container },
             ]
