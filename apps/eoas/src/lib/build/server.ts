@@ -63,9 +63,22 @@ export async function allocateBuildNumber(endpoint: string): Promise<string> {
   return buildNumber;
 }
 
-async function request<T>(
+export class BuildServerError extends Error {
+  constructor(readonly status: number) {
+    super(
+      `Build server returned HTTP ${status}. Check token permissions, identifier and environment selection.`
+    );
+  }
+}
+
+export async function request<T>(
   url: string,
-  { method = 'GET', retry = true }: { method?: string; retry?: boolean } = {}
+  {
+    method = 'GET',
+    retry = true,
+    body,
+    timeout = 30000,
+  }: { method?: string; retry?: boolean; body?: unknown; timeout?: number } = {}
 ): Promise<T> {
   const credentials = retrieveCredentials();
   if (detectServerImplementation() !== 'eoo' || !credentials.token) {
@@ -73,9 +86,13 @@ async function request<T>(
   }
   const init: RequestInit = {
     method,
-    headers: getAuthHeaders(credentials),
+    headers: {
+      ...getAuthHeaders(credentials),
+      ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
+    },
+    body: body === undefined ? undefined : JSON.stringify(body),
     redirect: 'error',
-    timeout: 30000,
+    timeout,
   };
   let response: Response;
   try {
@@ -87,9 +104,7 @@ async function request<T>(
     );
   }
   if (!response.ok) {
-    throw new Error(
-      `Build server returned HTTP ${response.status}. Check token permissions, identifier and environment selection.`
-    );
+    throw new BuildServerError(response.status);
   }
   try {
     return (await response.json()) as T;
