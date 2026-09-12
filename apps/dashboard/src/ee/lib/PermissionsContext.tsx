@@ -26,6 +26,8 @@ export type Permission =
   | 'update:publish'
   | 'apikeys:manage'
   | 'credentials:manage'
+  | 'build:read'
+  | 'build:download'
   | 'env:read'
   | 'env:manage'
   | 'identity:manage'
