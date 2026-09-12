@@ -3,11 +3,12 @@ package bucket
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
-	"mime/multipart"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -374,7 +375,10 @@ func (b *LocalBucket) GetBlob(_ context.Context, appId, hash string) (*types.Buc
 }
 
 func (b *LocalBucket) PutBlob(_ context.Context, appId, hash string, body io.Reader) error {
-	return b.writeFile(b.blobPath(appId, hash), body)
+	if b.BasePath == "" {
+		return errors.New("BasePath not set")
+	}
+	return writeFileAtomically(b.blobPath(appId, hash), body, hash)
 }
 
 func (b *LocalBucket) BSDiffExists(_ context.Context, appId, branch, targetUpdateUUID, sourceUpdateUUID string) (bool, error) {
@@ -437,16 +441,36 @@ func (b *LocalBucket) writeFile(filePath string, body io.Reader) error {
 	if b.BasePath == "" {
 		return errors.New("BasePath not set")
 	}
-	if err := os.MkdirAll(filepath.Dir(filePath), os.ModePerm); err != nil {
+	return writeFileAtomically(filePath, body, "")
+}
+
+// ErrBlobHashMismatch reports a blob whose bytes do not hash to its name.
+var ErrBlobHashMismatch = errors.New("uploaded blob does not match its hash")
+
+// writeFileAtomically streams body into a temporary file next to target and
+// renames it into place, so an interrupted write leaves nothing at target. A
+// non-empty expectedHash must equal the base64url SHA-256 of the body.
+func writeFileAtomically(target string, body io.Reader, expectedHash string) error {
+	dir := filepath.Dir(target)
+	if err := os.MkdirAll(dir, os.ModePerm); err != nil {
 		return err
 	}
-	out, err := os.Create(filePath)
+	tmp, err := os.CreateTemp(dir, ".upload-")
 	if err != nil {
 		return err
 	}
-	defer out.Close()
-	_, err = io.Copy(out, body)
-	return err
+	defer os.Remove(tmp.Name())
+	digest := sha256.New()
+	_, copyErr := io.Copy(io.MultiWriter(tmp, digest), body)
+	syncErr := tmp.Sync()
+	closeErr := tmp.Close()
+	if err := errors.Join(copyErr, syncErr, closeErr); err != nil {
+		return err
+	}
+	if expectedHash != "" && base64.RawURLEncoding.EncodeToString(digest.Sum(nil)) != expectedHash {
+		return ErrBlobHashMismatch
+	}
+	return os.Rename(tmp.Name(), target)
 }
 
 func (b *LocalBucket) RequestBlobUploadURL(appId, hash, branch string) (*UploadRequest, error) {
@@ -498,21 +522,13 @@ func ResolveUploadTokenBranch(token string) (string, error) {
 	return branch, err
 }
 
-func HandleUploadFile(filePath string, body multipart.File) (bool, error) {
-	err := os.MkdirAll(filepath.Dir(filePath), os.ModePerm)
-	if err != nil {
-		return false, err
+// HandleUploadFile stores a local upload; a file under cas/ must hash to its own name.
+func HandleUploadFile(appId, filePath string, body io.Reader) error {
+	expectedHash := ""
+	if uploadPathIsBlob(filePath, appId) {
+		expectedHash = filepath.Base(filePath)
 	}
-	file, err := os.Create(filePath)
-	if err != nil {
-		return false, err
-	}
-	defer file.Close()
-	_, err = io.Copy(file, body)
-	if err != nil {
-		return false, err
-	}
-	return true, nil
+	return writeFileAtomically(filePath, body, expectedHash)
 }
 
 func (b *LocalBucket) CreateUpdateFrom(previousUpdate *types.Update, newUpdateId string) (*types.Update, error) {

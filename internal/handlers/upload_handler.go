@@ -215,6 +215,10 @@ func (h *UploadHandler) RequestUploadLocalFileHandler(w http.ResponseWriter, r *
 			http.Error(w, "Upload token does not match this app", http.StatusForbidden)
 			return
 		}
+		if errors.Is(err, services.ErrUploadHashMismatch) {
+			http.Error(w, "Uploaded file does not match its hash", http.StatusBadRequest)
+			return
+		}
 		if errors.Is(err, services.ErrUploadFailed) {
 			http.Error(w, "Error handling upload file", http.StatusInternalServerError)
 			return

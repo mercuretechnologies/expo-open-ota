@@ -27,12 +27,13 @@ import (
 )
 
 var (
-	ErrInvalidUpdate     = errors.New("invalid update")
-	ErrNoChangesDetected = errors.New("no changes detected in the update from the previous one")
-	ErrInvalidBucketType = errors.New("the configured storage engine does not support local uploads")
-	ErrInvalidToken      = errors.New("the provided upload token is invalid or expired")
-	ErrTokenAppMismatch  = errors.New("upload token does not match the requested application context")
-	ErrUploadFailed      = errors.New("failed to write upload file stream to destination storage")
+	ErrInvalidUpdate      = errors.New("invalid update")
+	ErrNoChangesDetected  = errors.New("no changes detected in the update from the previous one")
+	ErrInvalidBucketType  = errors.New("the configured storage engine does not support local uploads")
+	ErrInvalidToken       = errors.New("the provided upload token is invalid or expired")
+	ErrTokenAppMismatch   = errors.New("upload token does not match the requested application context")
+	ErrUploadFailed       = errors.New("failed to write upload file stream to destination storage")
+	ErrUploadHashMismatch = errors.New("uploaded file does not match its hash")
 	// ErrActiveRolloutBlocksPublish refuses any publish, republish or rollback on a
 	// (branch, runtime version) that has an active per-update rollout.
 	ErrActiveRolloutBlocksPublish = errors.New("a progressive rollout is active on this branch and runtime version; finish or revert it from the dashboard first")
@@ -317,16 +318,13 @@ func (s *DeploymentService) RequestUploadLocalFile(ctx context.Context, params R
 		return ErrTokenAppMismatch
 	}
 
-	success, err := bucket.HandleUploadFile(params.FilePath, params.Body)
-	if err != nil {
+	if err := bucket.HandleUploadFile(params.AppID, params.FilePath, params.Body); err != nil {
 		log.Printf("[RequestID: %s] Error handling upload file: %v", params.RequestID, err)
-		return err
-	}
-	if !success {
-		log.Printf("[RequestID: %s] Error handling upload file", params.RequestID)
+		if errors.Is(err, bucket.ErrBlobHashMismatch) {
+			return ErrUploadHashMismatch
+		}
 		return ErrUploadFailed
 	}
-
 	return nil
 }
 
