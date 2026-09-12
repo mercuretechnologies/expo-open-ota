@@ -46,42 +46,16 @@ func (b *LocalBucket) DeleteUpdateFolder(appId string, branch string, runtimeVer
 	return os.RemoveAll(dirPath)
 }
 
-func (b *LocalBucket) RequestUploadUrlForFileUpdate(appId string, branch string, runtimeVersion string, updateId string, fileName string) (string, error) {
+func (b *LocalBucket) RequestUploadUrlForFileUpdate(appId string, branch string, runtimeVersion string, updateId string, fileName string) (*UploadRequest, error) {
 	if b.BasePath == "" {
-		return "", errors.New("BasePath not set")
+		return nil, errors.New("BasePath not set")
 	}
 	dirPath := filepath.Join(b.rootPath(), appId, branch, runtimeVersion, updateId)
 	err := os.MkdirAll(dirPath, os.ModePerm)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	token, err := crypto.GenerateJWTToken(config.GetEnv("JWT_SECRET"), uploadClaims{
-		RegisteredClaims: jwt.RegisteredClaims{
-			Subject:   GetSubjectForApp(appId),
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Minute * 10)),
-		},
-		FilePath: filepath.Join(dirPath, fileName),
-		Action:   "uploadLocalFile",
-		AppID:    appId,
-		Branch:   branch,
-	})
-	if err != nil {
-		return "", err
-	}
-	parsedURL, err := url.Parse(config.GetEnv("BASE_URL"))
-	if err != nil {
-		return "", fmt.Errorf("invalid base URL: %w", err)
-	}
-	// The route is registered under the /{APP_ID} subrouter in router.go,
-	// so the URL must include the appId segment or the client PUT 404s.
-	parsedURL.Path, err = url.JoinPath(parsedURL.Path, appId, "uploadLocalFile")
-	if err != nil {
-		return "", fmt.Errorf("error joining path: %w", err)
-	}
-	query := url.Values{}
-	query.Set("token", token)
-	parsedURL.RawQuery = query.Encode()
-	return parsedURL.String(), nil
+	return b.localUploadRequest(appId, branch, filepath.Join(dirPath, fileName))
 }
 
 func (b *LocalBucket) GetUpdates(appId string, branch string, runtimeVersion string) ([]types.Update, error) {
@@ -275,7 +249,7 @@ func GetSubjectForApp(appId string) string {
 	return fmt.Sprintf("app:%s", appId)
 }
 
-// uploadClaims is the claim set of a local upload URL token. Branch is what
+// uploadClaims is the claim set of a local upload token. Branch is what
 // lets the router judge the upload route, which names no branch of its own,
 // against the API key's access rules.
 type uploadClaims struct {
@@ -291,7 +265,7 @@ type uploadClaims struct {
 // plus the appId claim so the caller can confirm the token is scoped to the
 // same app as the URL, without that check, an attacker who obtained a leaked
 // token for AppA could PUT into AppB's bucket by hitting
-// /{AppB}/uploadLocalFile?token=<appA_token>.
+// /{AppB}/uploadLocalFile with AppA's local-upload-token header.
 func ValidateUploadTokenAndResolveFilePath(token string) (filePath string, appId string, branch string, err error) {
 	claims := uploadClaims{}
 	if _, err := crypto.DecodeAndExtractJWTToken(config.GetEnv("JWT_SECRET"), token, &claims); err != nil {
@@ -475,39 +449,39 @@ func (b *LocalBucket) writeFile(filePath string, body io.Reader) error {
 	return err
 }
 
-func (b *LocalBucket) RequestBlobUploadURL(appId, hash, branch string) (string, error) {
+func (b *LocalBucket) RequestBlobUploadURL(appId, hash, branch string) (*UploadRequest, error) {
 	if b.BasePath == "" {
-		return "", errors.New("BasePath not set")
+		return nil, errors.New("BasePath not set")
 	}
 	dirPath := filepath.Join(b.rootPath(), appId, casDir)
 	if err := os.MkdirAll(dirPath, os.ModePerm); err != nil {
-		return "", err
+		return nil, err
 	}
+	return b.localUploadRequest(appId, branch, filepath.Join(dirPath, hash))
+}
+
+// localUploadRequest keeps the per-file grant out of URLs and request logs.
+func (b *LocalBucket) localUploadRequest(appId, branch, filePath string) (*UploadRequest, error) {
 	token, err := crypto.GenerateJWTToken(config.GetEnv("JWT_SECRET"), uploadClaims{
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   GetSubjectForApp(appId),
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Minute * 10)),
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(10 * time.Minute)),
 		},
-		FilePath: filepath.Join(dirPath, hash),
-		Action:   "uploadLocalFile",
-		AppID:    appId,
-		Branch:   branch,
+		FilePath: filePath, Action: "uploadLocalFile", AppID: appId, Branch: branch,
 	})
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	parsedURL, err := url.Parse(config.GetEnv("BASE_URL"))
+	uploadURL, err := url.Parse(config.GetEnv("BASE_URL"))
 	if err != nil {
-		return "", fmt.Errorf("invalid base URL: %w", err)
+		return nil, fmt.Errorf("invalid base URL: %w", err)
 	}
-	parsedURL.Path, err = url.JoinPath(parsedURL.Path, appId, "uploadLocalFile")
+	uploadURL.Path, err = url.JoinPath(uploadURL.Path, appId, "uploadLocalFile")
 	if err != nil {
-		return "", fmt.Errorf("error joining path: %w", err)
+		return nil, fmt.Errorf("error joining path: %w", err)
 	}
-	query := url.Values{}
-	query.Set("token", token)
-	parsedURL.RawQuery = query.Encode()
-	return parsedURL.String(), nil
+	uploadURL.RawQuery, uploadURL.Fragment = "", ""
+	return &UploadRequest{URL: uploadURL.String(), Method: "PUT", Headers: map[string]string{LocalUploadTokenHeader: token}}, nil
 }
 
 // ResolveUploadTokenBranch returns the branch an upload token was minted for.

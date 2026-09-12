@@ -75,21 +75,21 @@ func (v *validatingBucket) GetFile(update types.Update, assetPath string) (*type
 	return v.Inner.GetFile(update, assetPath)
 }
 
-func (v *validatingBucket) RequestUploadUrlForFileUpdate(appId, branch, runtimeVersion, updateId, fileName string) (string, error) {
+func (v *validatingBucket) RequestUploadUrlForFileUpdate(appId, branch, runtimeVersion, updateId, fileName string) (*UploadRequest, error) {
 	if err := validateSegment("appId", appId); err != nil {
-		return "", err
+		return nil, err
 	}
 	if err := validateBranch(branch); err != nil {
-		return "", err
+		return nil, err
 	}
 	if err := validateSegment("runtimeVersion", runtimeVersion); err != nil {
-		return "", err
+		return nil, err
 	}
 	if err := validateSegment("updateId", updateId); err != nil {
-		return "", err
+		return nil, err
 	}
 	if err := validateRelativePath("fileName", fileName); err != nil {
-		return "", err
+		return nil, err
 	}
 	return v.Inner.RequestUploadUrlForFileUpdate(appId, branch, runtimeVersion, updateId, fileName)
 }
@@ -253,15 +253,15 @@ func (v *validatingBucket) DeleteBSDiffs(ctx context.Context, appId, branch stri
 	return v.Inner.DeleteBSDiffs(ctx, appId, branch)
 }
 
-func (v *validatingBucket) RequestBlobUploadURL(appId, hash, branch string) (string, error) {
+func (v *validatingBucket) RequestBlobUploadURL(appId, hash, branch string) (*UploadRequest, error) {
 	if err := validateSegment("appId", appId); err != nil {
-		return "", err
+		return nil, err
 	}
 	if err := ValidateBlobHash(hash); err != nil {
-		return "", err
+		return nil, err
 	}
 	if err := validateBranch(branch); err != nil {
-		return "", err
+		return nil, err
 	}
 	return v.Inner.RequestBlobUploadURL(appId, hash, branch)
 }

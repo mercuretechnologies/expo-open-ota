@@ -34,9 +34,9 @@ func (s *stubBucket) GetFile(update types.Update, assetPath string) (*types.Buck
 	s.mark()
 	return nil, nil
 }
-func (s *stubBucket) RequestUploadUrlForFileUpdate(appId, branch, runtimeVersion, updateId, fileName string) (string, error) {
+func (s *stubBucket) RequestUploadUrlForFileUpdate(appId, branch, runtimeVersion, updateId, fileName string) (*UploadRequest, error) {
 	s.mark()
-	return "", nil
+	return &UploadRequest{Method: "PUT"}, nil
 }
 func (s *stubBucket) UploadFileIntoUpdate(update types.Update, fileName string, file io.Reader) error {
 	s.mark()
@@ -87,9 +87,9 @@ func (s *stubBucket) DeleteBSDiffs(context.Context, string, string) error {
 	s.mark()
 	return nil
 }
-func (s *stubBucket) RequestBlobUploadURL(_, _, _ string) (string, error) {
+func (s *stubBucket) RequestBlobUploadURL(_, _, _ string) (*UploadRequest, error) {
 	s.mark()
-	return "", nil
+	return &UploadRequest{Method: "PUT"}, nil
 }
 
 func validUpdate() types.Update {

@@ -233,16 +233,16 @@ func (b *GCSBucket) GetFile(update types.Update, assetPath string) (*types.Bucke
 	return &types.BucketFile{Reader: r, CreatedAt: created}, nil
 }
 
-func (b *GCSBucket) RequestUploadUrlForFileUpdate(appId string, branch string, runtimeVersion string, updateId string, fileName string) (string, error) {
+func (b *GCSBucket) RequestUploadUrlForFileUpdate(appId string, branch string, runtimeVersion string, updateId string, fileName string) (*UploadRequest, error) {
 	if b.BucketName == "" {
-		return "", errors.New("BucketName not set")
+		return nil, errors.New("BucketName not set")
 	}
 	key := b.prefixedKey(fmt.Sprintf("%s/%s/%s/%s/%s", appId, branch, runtimeVersion, updateId, fileName))
 	url, err := gcp.SignedURL(b.BucketName, key, "PUT", "", 15*time.Minute)
 	if err != nil {
-		return "", fmt.Errorf("error generating signed URL: %w", err)
+		return nil, fmt.Errorf("error generating signed URL: %w", err)
 	}
-	return url, nil
+	return &UploadRequest{URL: url, Method: "PUT"}, nil
 }
 
 func (b *GCSBucket) blobKey(appId, hash string) string {
@@ -327,15 +327,15 @@ func (b *GCSBucket) putObject(ctx context.Context, key string, body io.Reader) e
 	return w.Close()
 }
 
-func (b *GCSBucket) RequestBlobUploadURL(appId, hash, _ string) (string, error) {
+func (b *GCSBucket) RequestBlobUploadURL(appId, hash, _ string) (*UploadRequest, error) {
 	if b.BucketName == "" {
-		return "", errors.New("BucketName not set")
+		return nil, errors.New("BucketName not set")
 	}
 	url, err := gcp.SignedURL(b.BucketName, b.blobKey(appId, hash), "PUT", "", 15*time.Minute)
 	if err != nil {
-		return "", fmt.Errorf("error generating signed URL: %w", err)
+		return nil, fmt.Errorf("error generating signed URL: %w", err)
 	}
-	return url, nil
+	return &UploadRequest{URL: url, Method: "PUT"}, nil
 }
 
 func (b *GCSBucket) UploadFileIntoUpdate(update types.Update, fileName string, file io.Reader) error {
