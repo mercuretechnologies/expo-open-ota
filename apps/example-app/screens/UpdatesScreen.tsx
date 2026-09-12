@@ -265,7 +265,10 @@ export function UpdatesScreen() {
     try {
       const result = await Updates.checkForUpdateAsync()
       if (result.isRollBackToEmbedded) {
-        setFlowMessage('The server asks to roll back to the embedded bundle.')
+        // A rollback is applied by fetchUpdateAsync, which re-stamps the
+        // embedded update so the launcher picks it on the next restart.
+        await Updates.fetchUpdateAsync()
+        setFlowMessage('Rolled back to the embedded bundle. Restart to apply.')
       } else if (!result.isAvailable) {
         setFlowMessage('Up to date.')
       }
