@@ -643,8 +643,8 @@ func (fakeRolloutBucket) GetFile(_ types.Update, _ string) (*types.BucketFile, e
 	return nil, fmt.Errorf("fake bucket stores no files")
 }
 
-func (fakeRolloutBucket) RequestUploadUrlForFileUpdate(_, _, _, _, _ string) (string, error) {
-	return "", nil
+func (fakeRolloutBucket) RequestUploadUrlForFileUpdate(_, _, _, _, _ string) (*bucket.UploadRequest, error) {
+	return &bucket.UploadRequest{Method: "PUT"}, nil
 }
 
 func (fakeRolloutBucket) UploadFileIntoUpdate(_ types.Update, _ string, _ io.Reader) error {
@@ -704,8 +704,8 @@ func (fakeRolloutBucket) DeleteBSDiffs(context.Context, string, string) error {
 	return nil
 }
 
-func (fakeRolloutBucket) RequestBlobUploadURL(_, _, _ string) (string, error) {
-	return "", nil
+func (fakeRolloutBucket) RequestBlobUploadURL(_, _, _ string) (*bucket.UploadRequest, error) {
+	return &bucket.UploadRequest{Method: "PUT"}, nil
 }
 
 type rolloutTestHarness struct {

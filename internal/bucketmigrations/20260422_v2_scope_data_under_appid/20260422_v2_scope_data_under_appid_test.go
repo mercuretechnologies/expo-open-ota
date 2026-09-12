@@ -36,9 +36,9 @@ func (u unreachableBucket) GetFile(types.Update, string) (*types.BucketFile, err
 	u.t.Fatal("migration should have skipped")
 	return nil, nil
 }
-func (u unreachableBucket) RequestUploadUrlForFileUpdate(string, string, string, string, string) (string, error) {
+func (u unreachableBucket) RequestUploadUrlForFileUpdate(string, string, string, string, string) (*bucket.UploadRequest, error) {
 	u.t.Fatal("migration should have skipped")
-	return "", nil
+	return &bucket.UploadRequest{Method: "PUT"}, nil
 }
 func (u unreachableBucket) UploadFileIntoUpdate(types.Update, string, io.Reader) error {
 	u.t.Fatal("migration should have skipped")
@@ -104,9 +104,9 @@ func (u unreachableBucket) DeleteBSDiffs(context.Context, string, string) error 
 	u.t.Fatal("migration should have skipped")
 	return nil
 }
-func (u unreachableBucket) RequestBlobUploadURL(string, string, string) (string, error) {
+func (u unreachableBucket) RequestBlobUploadURL(string, string, string) (*bucket.UploadRequest, error) {
 	u.t.Fatal("migration should have skipped")
-	return "", nil
+	return &bucket.UploadRequest{Method: "PUT"}, nil
 }
 
 // resetEnv unsets every env var up() reads, then restores the previous

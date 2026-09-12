@@ -202,7 +202,7 @@ type Bucket interface {
 	GetRuntimeVersions(appId string, branch string) ([]types.RuntimeVersionWithStats, error)
 	GetUpdates(appId string, branch string, runtimeVersion string) ([]types.Update, error)
 	GetFile(update types.Update, assetPath string) (*types.BucketFile, error)
-	RequestUploadUrlForFileUpdate(appId string, branch string, runtimeVersion string, updateId string, fileName string) (string, error)
+	RequestUploadUrlForFileUpdate(appId string, branch string, runtimeVersion string, updateId string, fileName string) (*UploadRequest, error)
 	UploadFileIntoUpdate(update types.Update, fileName string, file io.Reader) error
 	CopyFileIntoUpdate(source types.Update, target types.Update, fileName string) error
 	DeleteUpdateFolder(appId string, branch string, runtimeVersion string, updateId string) error
@@ -215,7 +215,7 @@ type Bucket interface {
 	BlobExists(ctx context.Context, appId, hash string) (bool, error)
 	GetBlob(ctx context.Context, appId, hash string) (*types.BucketFile, error)
 	PutBlob(ctx context.Context, appId, hash string, body io.Reader) error
-	RequestBlobUploadURL(appId, hash, branch string) (string, error)
+	RequestBlobUploadURL(appId, hash, branch string) (*UploadRequest, error)
 	BSDiffExists(ctx context.Context, appId, branch, targetUpdateUUID, sourceUpdateUUID string) (bool, error)
 	GetBSDiff(ctx context.Context, appId, branch, targetUpdateUUID, sourceUpdateUUID string) (*types.BucketFile, error)
 	PutBSDiff(ctx context.Context, appId, branch, targetUpdateUUID, sourceUpdateUUID string, body io.Reader) error
@@ -308,6 +308,13 @@ func ResetBucketInstance() {
 
 const LocalUploadTokenHeader = "local-upload-token"
 
+// UploadRequest describes a PUT, including any per-file authorization headers.
+type UploadRequest struct {
+	URL     string            `json:"url"`
+	Method  string            `json:"method"`
+	Headers map[string]string `json:"headers,omitempty"`
+}
+
 type FileUploadRequest struct {
 	RequestUploadUrl string `json:"requestUploadUrl"`
 	FileName         string `json:"fileName"`
@@ -317,7 +324,7 @@ type FileUploadRequest struct {
 	// Headers must be sent verbatim by the uploader on its PUT to
 	// RequestUploadUrl. Azure Put Blob rejects requests missing
 	// x-ms-blob-type, and carrying the requirement in the response keeps
-	// the CLI provider-agnostic. Absent for the other backends.
+	// the CLI provider-agnostic. Local uploads carry their per-file token here.
 	Headers map[string]string `json:"headers,omitempty"`
 }
 
@@ -331,20 +338,11 @@ type UploadFile struct {
 	InUpdateFolder bool
 }
 
-// uploadHeaders are the headers the uploader must send verbatim on its PUT.
-func uploadHeaders(bucket Bucket) map[string]string {
-	if _, ok := UnwrapBucket(bucket).(*AzureBucket); ok {
-		return map[string]string{"x-ms-blob-type": "BlockBlob"}
-	}
-	return nil
-}
-
 // RequestUploadUrlsForFileUpdates presigns one publish's uploads, routing each
 // file by where it lives: cas/{hash} for content-addressed files, the update
 // folder for the rest.
 func RequestUploadUrlsForFileUpdates(appId, branch, runtimeVersion, updateId string, files []UploadFile) ([]FileUploadRequest, error) {
 	resolvedBucket := GetBucket()
-	headers := uploadHeaders(resolvedBucket)
 
 	// Several files may name the same blob; presign it once.
 	toSign := make([]UploadFile, 0, len(files))
@@ -366,24 +364,24 @@ func RequestUploadUrlsForFileUpdates(appId, branch, runtimeVersion, updateId str
 	for i, file := range toSign {
 		go func(index int, file UploadFile) {
 			defer wg.Done()
-			var requestUploadUrl string
+			var upload *UploadRequest
 			var err error
 			if file.InUpdateFolder {
-				requestUploadUrl, err = resolvedBucket.RequestUploadUrlForFileUpdate(appId, branch, runtimeVersion, updateId, file.Name)
+				upload, err = resolvedBucket.RequestUploadUrlForFileUpdate(appId, branch, runtimeVersion, updateId, file.Name)
 			} else {
-				requestUploadUrl, err = resolvedBucket.RequestBlobUploadURL(appId, file.Hash, branch)
+				upload, err = resolvedBucket.RequestBlobUploadURL(appId, file.Hash, branch)
 			}
 			if err != nil {
 				errChan <- err
 				return
 			}
 			requests[index] = FileUploadRequest{
-				RequestUploadUrl: requestUploadUrl,
+				RequestUploadUrl: upload.URL,
 				FileName:         filepath.Base(file.Name),
 				FilePath:         file.Name,
 				OriginalFileName: file.Name,
 				Hash:             file.Hash,
-				Headers:          headers,
+				Headers:          upload.Headers,
 			}
 		}(i, file)
 	}

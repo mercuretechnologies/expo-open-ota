@@ -93,19 +93,19 @@ func TestAzuriteUploadListGet(t *testing2.T) {
 
 func TestAzuriteSASUploadRequiresBlockBlobHeader(t *testing2.T) {
 	b := setupAzuriteBucket(t)
-	uploadURL, err := b.RequestUploadUrlForFileUpdate("app-1", "production", "1", "1674170951", "bundles/android.js")
+	upload, err := b.RequestUploadUrlForFileUpdate("app-1", "production", "1", "1674170951", "bundles/android.js")
 	require.NoError(t, err)
 
 	// Without the header Azure refuses the PUT: the exact failure eoas hit
 	// before the server started returning upload headers.
-	reqWithoutHeader, err := http.NewRequest(http.MethodPut, uploadURL, strings.NewReader("payload"))
+	reqWithoutHeader, err := http.NewRequest(http.MethodPut, upload.URL, strings.NewReader("payload"))
 	require.NoError(t, err)
 	respWithoutHeader, err := http.DefaultClient.Do(reqWithoutHeader)
 	require.NoError(t, err)
 	respWithoutHeader.Body.Close()
 	assert.Equal(t, http.StatusBadRequest, respWithoutHeader.StatusCode)
 
-	req, err := http.NewRequest(http.MethodPut, uploadURL, strings.NewReader("payload"))
+	req, err := http.NewRequest(http.MethodPut, upload.URL, strings.NewReader("payload"))
 	require.NoError(t, err)
 	req.Header.Set("x-ms-blob-type", "BlockBlob")
 	req.Header.Set("Content-Type", "application/javascript")

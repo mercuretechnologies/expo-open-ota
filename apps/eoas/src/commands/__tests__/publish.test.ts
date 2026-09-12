@@ -248,6 +248,25 @@ describe('publish forwards the storage backend requirements', () => {
 });
 
 describe('publish credential handling', () => {
+  it('sends the local upload grant in a header alongside the CLI credential', async () => {
+    const uploadUrl = `${SERVER}/app-1/uploadLocalFile`;
+    respondWith([
+      uploadRequest({
+        requestUploadUrl: uploadUrl,
+        headers: { 'local-upload-token': 'file-grant' },
+      }),
+    ]);
+
+    await runPublish();
+
+    const [call] = putCalls();
+    expect(call.url).toBe(uploadUrl);
+    expect(call.options.headers['local-upload-token']).toBe('file-grant');
+    expect(call.options.headers.Authorization).toBe('Bearer test-token');
+    expect(call.options.headers['content-type']).toMatch(/^multipart\/form-data; boundary=/);
+    expect(call.options.redirect).toBe('error');
+  });
+
   it('attaches the token only to the configured server, never to storage', async () => {
     respondWith([
       uploadRequest({ requestUploadUrl: `${SERVER}/app-1/uploadLocalFile?file=metadata.json` }),

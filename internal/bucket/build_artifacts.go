@@ -34,7 +34,11 @@ func RequestBuildArtifactUpload(ctx context.Context, storage Bucket, ref BuildAr
 	if err != nil {
 		return nil, err
 	}
-	return &BuildUpload{URL: url, Method: "PUT", Headers: uploadHeaders(storage)}, nil
+	upload := &BuildUpload{URL: url, Method: "PUT"}
+	if provider, ok := UnwrapBucket(storage).(interface{ uploadHeaders() map[string]string }); ok {
+		upload.Headers = provider.uploadHeaders()
+	}
+	return upload, nil
 }
 
 func (r BuildArtifact) Validate() error {

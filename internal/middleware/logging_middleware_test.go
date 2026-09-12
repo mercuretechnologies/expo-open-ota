@@ -61,24 +61,28 @@ const uploadGrant = "eyJhbGciOiJIUzI1NiJ9.UPLOADGRANT.sig"
 const shareToken = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
 func TestLoggingMiddlewareRedactsLocalUploadHeader(t *testing.T) {
-	for _, header := range []string{"local-upload-token", "Local-Upload-Token", "LOCAL-UPLOAD-TOKEN"} {
-		for _, panics := range []bool{false, true} {
-			logs := captureLogs(t)
-			handler := LoggingMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				require.Equal(t, []string{uploadGrant}, r.Header[header], "logging must not alter the request")
-				if panics {
-					panic("upload failed")
+	for _, target := range []string{"/app-1/build/identifier-1/artifacts/build-1/upload", "/app-1/uploadLocalFile"} {
+		t.Run(target, func(t *testing.T) {
+			for _, header := range []string{"local-upload-token", "Local-Upload-Token", "LOCAL-UPLOAD-TOKEN"} {
+				for _, panics := range []bool{false, true} {
+					logs := captureLogs(t)
+					handler := LoggingMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						require.Equal(t, []string{uploadGrant}, r.Header[header], "logging must not alter the request")
+						if panics {
+							panic("upload failed")
+						}
+						w.WriteHeader(http.StatusNoContent)
+					}))
+					request := httptest.NewRequest(http.MethodPut, target, nil)
+					request.Header[header] = []string{uploadGrant}
+					request.Header.Set("Authorization", "Bearer eoo-secret")
+					handler.ServeHTTP(httptest.NewRecorder(), request)
+					require.Contains(t, logs.String(), "REDACTED")
+					require.NotContains(t, logs.String(), uploadGrant)
+					require.NotContains(t, logs.String(), "eoo-secret")
 				}
-				w.WriteHeader(http.StatusNoContent)
-			}))
-			request := httptest.NewRequest(http.MethodPut, "/app-1/build/identifier-1/artifacts/build-1/upload", nil)
-			request.Header[header] = []string{uploadGrant}
-			request.Header.Set("Authorization", "Bearer eoo-secret")
-			handler.ServeHTTP(httptest.NewRecorder(), request)
-			require.Contains(t, logs.String(), "REDACTED")
-			require.NotContains(t, logs.String(), uploadGrant)
-			require.NotContains(t, logs.String(), "eoo-secret")
-		}
+			}
+		})
 	}
 }
 
