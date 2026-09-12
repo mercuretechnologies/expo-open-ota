@@ -661,6 +661,10 @@ func (s *DeploymentService) republishUpdateInternal(ctx context.Context, previou
 	if metadata.Platform != platform {
 		return nil, &RepublishError{Status: http.StatusBadRequest, Message: "Update platform mismatch"}
 	}
+	mapping, err := s.updateRepo.GetUpdateAssetMapping(ctx, *existing)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read the source update asset mapping: %w", err)
+	}
 
 	updateId := update2.GenerateUpdateTimestamp(platform)
 	_, err = s.bucket.CreateUpdateFrom(previousUpdate, update2.ConvertUpdateTimestampToString(updateId))
@@ -670,6 +674,13 @@ func (s *DeploymentService) republishUpdateInternal(ctx context.Context, previou
 	newUpdate, err := s.updateRepo.CreateUpdate(ctx, previousUpdate.AppId, updateId, previousUpdate.Branch, previousUpdate.RuntimeVersion, platform, commitHash, "", publishGroup)
 	if err != nil {
 		return nil, err
+	}
+	// Shared blobs are not copied with the update folder. Preserve their mapping
+	// before publishing the new update; legacy updates have no mapping to copy.
+	if mapping != nil {
+		if err := s.updateRepo.StoreUpdateAssetMapping(ctx, *newUpdate, mapping); err != nil {
+			return nil, fmt.Errorf("failed to store the republished update asset mapping: %w", err)
+		}
 	}
 	err = s.MarkUpdateAsChecked(ctx, *newUpdate, types.NormalUpdate)
 	if err != nil {
