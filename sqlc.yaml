@@ -37,6 +37,14 @@ sql:
             go_type:
               import: "xprem/internal/types"
               type: "BuildArtifactType"
+          - column: "build_artifact_cleanup.platform"
+            go_type:
+              import: "xprem/internal/types"
+              type: "Platform"
+          - column: "build_artifact_cleanup.artifact_type"
+            go_type:
+              import: "xprem/internal/types"
+              type: "BuildArtifactType"
           - column: "updates.platform"
             go_type:
               import: "xprem/internal/types"

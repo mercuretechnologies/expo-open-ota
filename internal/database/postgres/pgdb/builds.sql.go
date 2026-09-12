@@ -23,6 +23,31 @@ func (q *Queries) CountBuilds(ctx context.Context, appID pgtype.UUID) (int64, er
 	return count, err
 }
 
+const deferBuildArtifactCleanup = `-- name: DeferBuildArtifactCleanup :exec
+UPDATE build_artifact_cleanup SET attempts = attempts + 1, last_error = $1, due_at = now() + $2::interval
+WHERE id = $3
+`
+
+type DeferBuildArtifactCleanupParams struct {
+	LastError *string         `json:"last_error"`
+	Backoff   pgtype.Interval `json:"backoff"`
+	ID        int64           `json:"id"`
+}
+
+func (q *Queries) DeferBuildArtifactCleanup(ctx context.Context, arg DeferBuildArtifactCleanupParams) error {
+	_, err := q.db.Exec(ctx, deferBuildArtifactCleanup, arg.LastError, arg.Backoff, arg.ID)
+	return err
+}
+
+const deleteBuildArtifactCleanup = `-- name: DeleteBuildArtifactCleanup :exec
+DELETE FROM build_artifact_cleanup WHERE id = $1
+`
+
+func (q *Queries) DeleteBuildArtifactCleanup(ctx context.Context, id int64) error {
+	_, err := q.db.Exec(ctx, deleteBuildArtifactCleanup, id)
+	return err
+}
+
 const getBuild = `-- name: GetBuild :one
 SELECT id, app_id, app_identifier_id, platform, application_id, status, artifact_type, size, sha256, artifact_key, metadata, actor_type, actor_id, actor_display, started_at, finished_at, duration_ms, created_at, updated_at, ready_at FROM builds WHERE app_id=$1 AND id=$2
 `
@@ -183,6 +208,86 @@ func (q *Queries) ListBuilds(ctx context.Context, arg ListBuildsParams) ([]Build
 	return items, nil
 }
 
+const listDueBuildArtifactCleanup = `-- name: ListDueBuildArtifactCleanup :many
+SELECT id, app_identifier_id, build_id, artifact_type, attempts
+FROM build_artifact_cleanup WHERE due_at <= now()
+ORDER BY due_at, id LIMIT $1 FOR UPDATE SKIP LOCKED
+`
+
+type ListDueBuildArtifactCleanupRow struct {
+	ID              int64                   `json:"id"`
+	AppIdentifierID pgtype.UUID             `json:"app_identifier_id"`
+	BuildID         pgtype.UUID             `json:"build_id"`
+	ArtifactType    types.BuildArtifactType `json:"artifact_type"`
+	Attempts        int32                   `json:"attempts"`
+}
+
+func (q *Queries) ListDueBuildArtifactCleanup(ctx context.Context, batchSize int32) ([]ListDueBuildArtifactCleanupRow, error) {
+	rows, err := q.db.Query(ctx, listDueBuildArtifactCleanup, batchSize)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListDueBuildArtifactCleanupRow
+	for rows.Next() {
+		var i ListDueBuildArtifactCleanupRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.AppIdentifierID,
+			&i.BuildID,
+			&i.ArtifactType,
+			&i.Attempts,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listStaleBuildStaging = `-- name: ListStaleBuildStaging :many
+SELECT b.id, b.app_identifier_id, b.artifact_type
+FROM builds b LEFT JOIN build_staging_sweeps s ON s.build_id = b.id
+WHERE b.updated_at < now() - $1::interval
+  AND b.status IN ('ready', 'failed', 'uploading')
+  AND (s.build_id IS NULL OR (b.status <> 'ready' AND s.swept_at < now() - $1::interval))
+ORDER BY b.created_at, b.id LIMIT $2 FOR UPDATE OF b SKIP LOCKED
+`
+
+type ListStaleBuildStagingParams struct {
+	StaleAfter pgtype.Interval `json:"stale_after"`
+	BatchSize  int32           `json:"batch_size"`
+}
+
+type ListStaleBuildStagingRow struct {
+	ID              pgtype.UUID             `json:"id"`
+	AppIdentifierID pgtype.UUID             `json:"app_identifier_id"`
+	ArtifactType    types.BuildArtifactType `json:"artifact_type"`
+}
+
+func (q *Queries) ListStaleBuildStaging(ctx context.Context, arg ListStaleBuildStagingParams) ([]ListStaleBuildStagingRow, error) {
+	rows, err := q.db.Query(ctx, listStaleBuildStaging, arg.StaleAfter, arg.BatchSize)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListStaleBuildStagingRow
+	for rows.Next() {
+		var i ListStaleBuildStagingRow
+		if err := rows.Scan(&i.ID, &i.AppIdentifierID, &i.ArtifactType); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const lockBuild = `-- name: LockBuild :one
 SELECT id, app_id, app_identifier_id, platform, application_id, status, artifact_type, size, sha256, artifact_key, metadata, actor_type, actor_id, actor_display, started_at, finished_at, duration_ms, created_at, updated_at, ready_at FROM builds WHERE app_id=$1 AND id=$2 FOR UPDATE
 `
@@ -218,6 +323,16 @@ func (q *Queries) LockBuild(ctx context.Context, arg LockBuildParams) (Build, er
 		&i.ReadyAt,
 	)
 	return i, err
+}
+
+const markBuildStagingSwept = `-- name: MarkBuildStagingSwept :exec
+INSERT INTO build_staging_sweeps (build_id, swept_at) VALUES ($1, now())
+ON CONFLICT (build_id) DO UPDATE SET swept_at = now()
+`
+
+func (q *Queries) MarkBuildStagingSwept(ctx context.Context, buildID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, markBuildStagingSwept, buildID)
+	return err
 }
 
 const updateBuild = `-- name: UpdateBuild :one
