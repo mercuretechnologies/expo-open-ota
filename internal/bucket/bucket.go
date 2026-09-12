@@ -306,6 +306,8 @@ func ResetBucketInstance() {
 	once = sync.Once{}
 }
 
+const LocalUploadTokenHeader = "local-upload-token"
+
 type FileUploadRequest struct {
 	RequestUploadUrl string `json:"requestUploadUrl"`
 	FileName         string `json:"fileName"`

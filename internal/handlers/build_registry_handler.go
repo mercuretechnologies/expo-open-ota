@@ -6,10 +6,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"strconv"
-	"strings"
-	"xprem/config"
+	"xprem/internal/bucket"
 	"xprem/internal/services"
 	"xprem/internal/store"
 	"xprem/internal/types"
@@ -42,19 +40,6 @@ func renderBuildRegistryError(w http.ResponseWriter, err error) {
 	default:
 		RenderError(w, http.StatusInternalServerError, "Could not process the build request.")
 	}
-}
-
-// publicBuildURL appends route to BASE_URL, keeping any sub-path it is served from.
-func publicBuildURL(route string) (string, error) {
-	base, err := url.Parse(strings.TrimRight(config.GetEnv("BASE_URL"), "/"))
-	if err != nil || base.Host == "" || (base.Scheme != "https" && base.Scheme != "http") || base.User != nil {
-		return "", fmt.Errorf("invalid BASE_URL")
-	}
-	base.Path = strings.TrimRight(base.Path, "/") + route
-	base.RawPath = ""
-	base.RawQuery = ""
-	base.Fragment = ""
-	return base.String(), nil
 }
 
 func decodeBuildBody(w http.ResponseWriter, r *http.Request, target any) bool {
@@ -91,13 +76,6 @@ func (h *BuildRegistryHandler) RegisterArtifact(w http.ResponseWriter, r *http.R
 		renderBuildRegistryError(w, err)
 		return
 	}
-	if result.LocalToken != "" {
-		result.Upload.URL, err = publicBuildURL("/build-uploads/" + result.LocalToken)
-		if err != nil {
-			renderBuildRegistryError(w, err)
-			return
-		}
-	}
 	w.Header().Set("Cache-Control", "no-store")
 	RenderJSON(w, http.StatusOK, result)
 }
@@ -129,7 +107,7 @@ func (h *BuildRegistryHandler) Complete(w http.ResponseWriter, r *http.Request) 
 func (h *BuildRegistryHandler) UploadLocal(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	r.Body = http.MaxBytesReader(w, r.Body, services.MaxBuildSize+1)
-	if err := h.service.UploadLocal(r.Context(), mux.Vars(r)["TOKEN"], r.Body); err != nil {
+	if err := h.service.UploadLocal(r.Context(), mux.Vars(r)["APP_ID"], services.BuildIdentifierFromContext(r.Context()), mux.Vars(r)["BUILD_ID"], r.Header.Get(bucket.LocalUploadTokenHeader), r.Body); err != nil {
 		renderBuildRegistryError(w, err)
 		return
 	}

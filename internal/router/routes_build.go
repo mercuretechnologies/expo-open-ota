@@ -8,7 +8,7 @@ import (
 	"github.com/gorilla/mux"
 )
 
-// registerBuildRoutes declares the CLI build endpoints: inputs, artifact lifecycle and the public upload and share links.
+// registerBuildRoutes declares the authenticated CLI build inputs and artifact lifecycle.
 func registerBuildRoutes(r *mux.Router, container *AppContainer) {
 	router := r.PathPrefix("/{APP_ID}/build").Subrouter()
 	router.Use(middleware.AppResolverMiddleware(container.AppRepo))
@@ -24,7 +24,7 @@ func registerBuildRoutes(r *mux.Router, container *AppContainer) {
 	build.route(http.MethodPut, "/{IDENTIFIER_ID}/artifacts/{BUILD_ID}", container.BuildRegistryHandler.RegisterArtifact, apikeyrestrictions.BuildActionCreate)
 	build.route(http.MethodPost, "/{IDENTIFIER_ID}/artifacts/{BUILD_ID}/failed", container.BuildRegistryHandler.Fail, apikeyrestrictions.BuildActionCreate)
 	build.route(http.MethodPost, "/{IDENTIFIER_ID}/artifacts/{BUILD_ID}/complete", container.BuildRegistryHandler.Complete, apikeyrestrictions.BuildActionCreate)
-	r.HandleFunc("/build-uploads/{TOKEN}", container.BuildRegistryHandler.UploadLocal).Methods(http.MethodPut)
+	build.route(http.MethodPut, "/{IDENTIFIER_ID}/artifacts/{BUILD_ID}/upload", container.BuildRegistryHandler.UploadLocal, apikeyrestrictions.BuildActionCreate)
 
 	build.route(http.MethodGet, "/resolve/{PLATFORM}/{APPLICATION_ID}", container.BuildHandler.ResolveIdentifier,
 		apikeyrestrictions.BuildActionCreate)

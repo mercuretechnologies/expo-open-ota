@@ -137,7 +137,7 @@ func newRegistryFixture(t *testing.T) *registryFixture {
 	router.HandleFunc("/{APP_ID}/build/{IDENTIFIER_ID}/artifacts/{BUILD_ID}", authorized(handler.RegisterArtifact)).Methods(http.MethodPut)
 	router.HandleFunc("/{APP_ID}/build/{IDENTIFIER_ID}/artifacts/{BUILD_ID}/failed", authorized(handler.Fail)).Methods(http.MethodPost)
 	router.HandleFunc("/{APP_ID}/build/{IDENTIFIER_ID}/artifacts/{BUILD_ID}/complete", authorized(handler.Complete)).Methods(http.MethodPost)
-	router.HandleFunc("/build-uploads/{TOKEN}", handler.UploadLocal).Methods(http.MethodPut)
+	router.HandleFunc("/{APP_ID}/build/{IDENTIFIER_ID}/artifacts/{BUILD_ID}/upload", authorized(handler.UploadLocal)).Methods(http.MethodPut)
 	router.HandleFunc("/api/app/{APP_ID}/builds", handler.List).Methods(http.MethodGet)
 	router.HandleFunc("/api/app/{APP_ID}/builds/{BUILD_ID}", handler.Get).Methods(http.MethodGet)
 	router.HandleFunc("/api/app/{APP_ID}/builds/{BUILD_ID}/download", handler.Download).Methods(http.MethodGet)
@@ -255,8 +255,9 @@ func TestBuildRegistryLocalUploadFlow(t *testing.T) {
 	var registration struct {
 		Build  types.BuildRecord `json:"build"`
 		Upload *struct {
-			URL    string `json:"url"`
-			Method string `json:"method"`
+			URL     string            `json:"url"`
+			Method  string            `json:"method"`
+			Headers map[string]string `json:"headers"`
 		} `json:"upload"`
 	}
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &registration))
@@ -264,15 +265,20 @@ func TestBuildRegistryLocalUploadFlow(t *testing.T) {
 	require.Equal(t, int64(240000), registration.Build.Metadata.DurationMs, "the client's durationMs is ignored")
 	require.NotNil(t, registration.Upload)
 	require.Equal(t, "PUT", registration.Upload.Method)
-	require.True(t, strings.HasPrefix(registration.Upload.URL, "https://ota.example.com/sub/path/build-uploads/"), registration.Upload.URL)
-	token := strings.TrimPrefix(registration.Upload.URL, "https://ota.example.com/sub/path/build-uploads/")
-	require.NotContains(t, token, "/")
+	require.Equal(t, "https://ota.example.com/sub/path"+registryPath+"/upload", registration.Upload.URL)
+	token := registration.Upload.Headers[bucket.LocalUploadTokenHeader]
+	require.NotEmpty(t, token)
+	require.NotContains(t, registration.Upload.URL, token)
 
-	w = f.do(http.MethodPut, "/build-uploads/"+token, string(content)+"extra")
+	for _, target := range []string{registryPath + "/upload", registryPath + "/upload?token=" + token} {
+		w = f.do(http.MethodPut, target, string(content))
+		require.Equal(t, http.StatusUnauthorized, w.Code, "only the local-upload-token header authorizes the upload")
+	}
+	w = f.do(http.MethodPut, registryPath+"/upload", string(content)+"extra", bucket.LocalUploadTokenHeader, token)
 	require.Equal(t, http.StatusBadRequest, w.Code, "bodies beyond the declared size are refused")
-	w = f.do(http.MethodPut, "/build-uploads/forged", string(content))
+	w = f.do(http.MethodPut, registryPath+"/upload", string(content), bucket.LocalUploadTokenHeader, "forged")
 	require.Equal(t, http.StatusUnauthorized, w.Code)
-	w = f.do(http.MethodPut, "/build-uploads/"+token, string(content))
+	w = f.do(http.MethodPut, registryPath+"/upload", string(content), bucket.LocalUploadTokenHeader, token)
 	require.Equal(t, http.StatusNoContent, w.Code, w.Body.String())
 	require.Equal(t, "no-store", w.Header().Get("Cache-Control"))
 
@@ -283,7 +289,7 @@ func TestBuildRegistryLocalUploadFlow(t *testing.T) {
 	require.Equal(t, types.BuildStatusReady, ready.Status)
 	require.NotNil(t, ready.ReadyAt)
 
-	w = f.do(http.MethodPut, "/build-uploads/"+token, string(content))
+	w = f.do(http.MethodPut, registryPath+"/upload", string(content), bucket.LocalUploadTokenHeader, token)
 	require.Equal(t, http.StatusConflict, w.Code, "a ready build accepts no further bytes")
 	w = f.do(http.MethodPut, registryPath, registerBody(content, startedAt))
 	require.Equal(t, http.StatusOK, w.Code)
@@ -365,7 +371,7 @@ func TestBuildRegistryErrorMapping(t *testing.T) {
 
 func TestBuildRegistryUploadBodyIsBounded(t *testing.T) {
 	f := newRegistryFixture(t)
-	req := httptest.NewRequest(http.MethodPut, "/build-uploads/forged", io.LimitReader(bytes.NewReader(make([]byte, 1)), 1))
+	req := httptest.NewRequest(http.MethodPut, registryPath+"/upload", io.LimitReader(bytes.NewReader(make([]byte, 1)), 1))
 	w := httptest.NewRecorder()
 	f.router.ServeHTTP(w, req)
 	require.Equal(t, http.StatusUnauthorized, w.Code, "the token is checked before any byte is read")

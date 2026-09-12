@@ -377,6 +377,36 @@ func TestBuildRejectsArtifactForAnotherPlatform(t *testing.T) {
 	}
 }
 
+func TestBuildRegistrationLocalUploadURL(t *testing.T) {
+	for _, tc := range []struct {
+		baseURL string
+		wantURL string
+	}{
+		{baseURL: "https://ota.example.com", wantURL: "https://ota.example.com/" + testBuildApp + "/build/" + testBuildIdentifier + "/artifacts/" + testBuildID + "/upload"},
+		{baseURL: "https://ota.example.com/sub/path/", wantURL: "https://ota.example.com/sub/path/" + testBuildApp + "/build/" + testBuildIdentifier + "/artifacts/" + testBuildID + "/upload"},
+		{baseURL: "not a url"},
+		{baseURL: "ftp://ota.example.com"},
+		{baseURL: "https://user:secret@ota.example.com"},
+		{baseURL: "/relative"},
+	} {
+		t.Run(tc.baseURL, func(t *testing.T) {
+			f := newBuildFixture(t)
+			t.Setenv("BASE_URL", tc.baseURL)
+			registration, err := f.service.RegisterArtifact(context.Background(), testBuildApp, testBuildIdentifier, testBuildID, f.registerInput([]byte("apk")))
+			if tc.wantURL == "" {
+				require.Error(t, err)
+				require.Nil(t, registration, "an invalid base URL must not return partial upload instructions")
+				return
+			}
+			require.NoError(t, err)
+			require.NotNil(t, registration.Upload)
+			require.Equal(t, tc.wantURL, registration.Upload.URL)
+			require.Equal(t, "PUT", registration.Upload.Method)
+			require.NotEmpty(t, registration.Upload.Headers[bucket.LocalUploadTokenHeader])
+		})
+	}
+}
+
 func TestBuildLifecycleStartUploadComplete(t *testing.T) {
 	f := newBuildFixture(t)
 	ctx := WithCliAuth(context.Background(), CliCredential{AppID: testBuildApp, KeyID: 7, KeyName: "ci-key"})
@@ -397,13 +427,13 @@ func TestBuildLifecycleStartUploadComplete(t *testing.T) {
 	require.Equal(t, int64(9*time.Minute/time.Millisecond), b.Metadata.DurationMs, "duration is computed by the server, not taken from the client")
 	require.NotNil(t, registration.Upload)
 	require.Equal(t, "PUT", registration.Upload.Method)
-	require.Empty(t, registration.Upload.URL, "local storage hands out a token instead of a presigned URL")
-	require.NotEmpty(t, registration.LocalToken)
+	require.NotEmpty(t, registration.Upload.URL, "registration returns complete upload instructions")
+	require.NotEmpty(t, registration.Upload.Headers[bucket.LocalUploadTokenHeader])
 
 	retry, err := f.service.RegisterArtifact(context.Background(), testBuildApp, testBuildIdentifier, testBuildID, f.registerInput(content))
 	require.NoError(t, err)
 	require.Equal(t, types.BuildStatusUploading, retry.Build.Status)
-	require.NotEmpty(t, retry.LocalToken, "an identical retry gets a fresh upload grant")
+	require.NotEmpty(t, retry.Upload.Headers[bucket.LocalUploadTokenHeader], "an identical retry gets a fresh upload grant")
 
 	_, err = f.service.Complete(ctx, testBuildApp, testBuildIdentifier, testBuildID)
 	require.ErrorIs(t, err, ErrBuildIntegrity, "nothing staged yet")
@@ -416,7 +446,7 @@ func TestBuildLifecycleStartUploadComplete(t *testing.T) {
 	retry, err = f.service.RegisterArtifact(context.Background(), testBuildApp, testBuildIdentifier, testBuildID, f.registerInput(content))
 	require.NoError(t, err)
 	require.Equal(t, types.BuildStatusUploading, retry.Build.Status, "a failed upload can be retried with the same artifact")
-	require.NoError(t, f.service.UploadLocal(ctx, retry.LocalToken, bytes.NewReader(content)))
+	require.NoError(t, f.service.UploadLocal(ctx, testBuildApp, testBuildIdentifier, testBuildID, retry.Upload.Headers[bucket.LocalUploadTokenHeader], bytes.NewReader(content)))
 	staged, err := os.ReadFile(f.stagedPath(t, *retry.Build))
 	require.NoError(t, err)
 	require.Equal(t, content, staged)
@@ -441,7 +471,6 @@ func TestBuildLifecycleStartUploadComplete(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, types.BuildStatusReady, registration.Build.Status)
 	require.Nil(t, registration.Upload, "a ready build gets no upload grant")
-	require.Empty(t, registration.LocalToken)
 
 	failed, err := f.service.Fail(ctx, testBuildApp, testBuildIdentifier, testBuildID, FailBuildInput{FinishedAt: f.now})
 	require.NoError(t, err)
@@ -545,7 +574,7 @@ func TestBuildFailFromUploadingDiscardsStaging(t *testing.T) {
 	content := []byte("partial")
 	registration, err := f.service.RegisterArtifact(ctx, testBuildApp, testBuildIdentifier, testBuildID, f.registerInput(content))
 	require.NoError(t, err)
-	require.NoError(t, f.service.UploadLocal(ctx, registration.LocalToken, bytes.NewReader(content)))
+	require.NoError(t, f.service.UploadLocal(ctx, testBuildApp, testBuildIdentifier, testBuildID, registration.Upload.Headers[bucket.LocalUploadTokenHeader], bytes.NewReader(content)))
 	_, err = os.Stat(f.stagedPath(t, *registration.Build))
 	require.NoError(t, err)
 
@@ -557,7 +586,7 @@ func TestBuildFailFromUploadingDiscardsStaging(t *testing.T) {
 	_, err = os.Stat(f.stagedPath(t, *registration.Build))
 	require.True(t, os.IsNotExist(err))
 
-	require.ErrorIs(t, f.service.UploadLocal(ctx, registration.LocalToken, bytes.NewReader(content)), ErrBuildState, "an old grant cannot upload into a failed build")
+	require.ErrorIs(t, f.service.UploadLocal(ctx, testBuildApp, testBuildIdentifier, testBuildID, registration.Upload.Headers[bucket.LocalUploadTokenHeader], bytes.NewReader(content)), ErrBuildState, "an old grant cannot upload into a failed build")
 	_, err = f.service.Complete(ctx, testBuildApp, testBuildIdentifier, testBuildID)
 	require.ErrorIs(t, err, ErrBuildState)
 }
@@ -596,7 +625,7 @@ func TestBuildCompleteRejectsTamperedUpload(t *testing.T) {
 	registration, err = f.service.RegisterArtifact(ctx, testBuildApp, testBuildIdentifier, testBuildID, f.registerInput([]byte("declared")))
 	require.NoError(t, err)
 	require.Equal(t, types.BuildStatusUploading, registration.Build.Status)
-	require.NoError(t, f.service.UploadLocal(ctx, registration.LocalToken, strings.NewReader("declared")))
+	require.NoError(t, f.service.UploadLocal(ctx, testBuildApp, testBuildIdentifier, testBuildID, registration.Upload.Headers[bucket.LocalUploadTokenHeader], strings.NewReader("declared")))
 	ready, err := f.service.Complete(ctx, testBuildApp, testBuildIdentifier, testBuildID)
 	require.NoError(t, err)
 	require.Equal(t, types.BuildStatusReady, ready.Status)
@@ -608,21 +637,20 @@ func TestBuildUploadLocalBounds(t *testing.T) {
 	registration, err := f.service.RegisterArtifact(ctx, testBuildApp, testBuildIdentifier, testBuildID, f.registerInput([]byte("12345")))
 	require.NoError(t, err)
 
-	err = f.service.UploadLocal(ctx, registration.LocalToken, strings.NewReader("123456"))
+	err = f.service.UploadLocal(ctx, testBuildApp, testBuildIdentifier, testBuildID, registration.Upload.Headers[bucket.LocalUploadTokenHeader], strings.NewReader("123456"))
 	require.ErrorIs(t, err, ErrBuildIntegrity)
 	_, err = os.Stat(f.stagedPath(t, *registration.Build))
 	require.True(t, os.IsNotExist(err), "an oversized body is not kept")
 
-	require.ErrorIs(t, f.service.UploadLocal(ctx, "not-a-token", strings.NewReader("12345")), ErrUnauthorized)
-	require.ErrorIs(t, f.service.UploadLocal(ctx, registration.LocalToken+"x", strings.NewReader("12345")), ErrUnauthorized)
+	require.ErrorIs(t, f.service.UploadLocal(ctx, testBuildApp, testBuildIdentifier, testBuildID, "not-a-token", strings.NewReader("12345")), ErrUnauthorized)
+	require.ErrorIs(t, f.service.UploadLocal(ctx, testBuildApp, testBuildIdentifier, testBuildID, registration.Upload.Headers[bucket.LocalUploadTokenHeader]+"x", strings.NewReader("12345")), ErrUnauthorized)
 
 	forged, err := f.service.uploadToken(types.BuildRecord{ID: testBuildID, AppID: testBuildApp, AppIdentifierID: otherBuildID})
 	require.NoError(t, err)
-	var missing *store.ErrResourceNotFound
-	require.ErrorAs(t, f.service.UploadLocal(ctx, forged, strings.NewReader("12345")), &missing)
+	require.ErrorIs(t, f.service.UploadLocal(ctx, testBuildApp, testBuildIdentifier, testBuildID, forged, strings.NewReader("12345")), ErrUnauthorized)
 
 	f.service.now = func() time.Time { return f.now.Add(11 * time.Minute) }
-	require.ErrorIs(t, f.service.UploadLocal(ctx, registration.LocalToken, strings.NewReader("12345")), ErrUnauthorized, "grants expire after ten minutes")
+	require.ErrorIs(t, f.service.UploadLocal(ctx, testBuildApp, testBuildIdentifier, testBuildID, registration.Upload.Headers[bucket.LocalUploadTokenHeader], strings.NewReader("12345")), ErrUnauthorized, "grants expire after ten minutes")
 }
 
 func TestBuildTokenRejectsOtherSecret(t *testing.T) {
@@ -631,7 +659,27 @@ func TestBuildTokenRejectsOtherSecret(t *testing.T) {
 	registration, err := f.service.RegisterArtifact(ctx, testBuildApp, testBuildIdentifier, testBuildID, f.registerInput([]byte("x")))
 	require.NoError(t, err)
 	t.Setenv("JWT_SECRET", "rotated")
-	require.ErrorIs(t, f.service.UploadLocal(ctx, registration.LocalToken, strings.NewReader("x")), ErrUnauthorized)
+	require.ErrorIs(t, f.service.UploadLocal(ctx, testBuildApp, testBuildIdentifier, testBuildID, registration.Upload.Headers[bucket.LocalUploadTokenHeader], strings.NewReader("x")), ErrUnauthorized)
+}
+
+func TestBuildLocalUploadTokenIsBoundToRequestedTarget(t *testing.T) {
+	f := newBuildFixture(t)
+	registration, err := f.service.RegisterArtifact(context.Background(), testBuildApp, testBuildIdentifier, testBuildID, f.registerInput([]byte("apk")))
+	require.NoError(t, err)
+	token := registration.Upload.Headers[bucket.LocalUploadTokenHeader]
+	require.NotEmpty(t, token)
+	for _, target := range []struct{ app, identifier, build string }{
+		{otherBuildID, testBuildIdentifier, testBuildID},
+		{testBuildApp, otherBuildID, testBuildID},
+		{testBuildApp, testBuildIdentifier, otherBuildID},
+	} {
+		body := strings.NewReader("apk")
+		err := f.service.UploadLocal(context.Background(), target.app, target.identifier, target.build, token, body)
+		require.ErrorIs(t, err, ErrUnauthorized)
+		require.Equal(t, 3, body.Len(), "rejected grants must not consume the body")
+	}
+	_, err = os.Stat(f.stagedPath(t, *registration.Build))
+	require.True(t, os.IsNotExist(err))
 }
 
 func TestBuildConcurrentRegistrationsAgree(t *testing.T) {
